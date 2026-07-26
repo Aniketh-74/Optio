@@ -10,10 +10,13 @@ returns fallback and agent proceeds*.
 
 from __future__ import annotations
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
 from agentmeter.runtime import failopen
+
+pytestmark = pytest.mark.property
 
 # Arbitrary exception *types*, including ones constructed on the fly, to avoid
 # the guard accidentally depending on a known class hierarchy.
