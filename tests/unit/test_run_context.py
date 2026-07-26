@@ -137,7 +137,10 @@ class TestContextTracking:
         def end_it() -> None:
             try:
                 run.end()
-            except BaseException as exc:
+            # Deliberately broad: the assertion is that end() raises *nothing*.
+            # Narrowing to Exception would let a BaseException slip past and
+            # silently weaken the test.
+            except BaseException as exc:  # noqa: BLE001
                 error.append(exc)
 
         thread = threading.Thread(target=end_it)

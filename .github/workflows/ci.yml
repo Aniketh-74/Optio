@@ -111,7 +111,7 @@ jobs:
   # ---------------------------------------------------------------------------
 
   failinject:
-    name: Fail-open proof (SC-4) [M1+]
+    name: Fail-open proof (SC-4)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -121,10 +121,16 @@ jobs:
           cache: pip
       - run: pip install -e ".[dev]"
       - name: Agent is never broken by an internal failure
-        # No-op until M1 adds failopen.py and the injection suite. `-m failinject`
-        # exits 5 (no tests collected) while the suite is empty, which is not a
-        # failure condition yet.
-        run: pytest -v -m failinject || [ $? -eq 5 ]
+        # Blocking as of M1 (R-TECH-4). An empty suite is now itself a failure:
+        # exit 5 would mean the proof silently stopped running.
+        run: pytest -v -m failinject
+      - name: Guard is fully covered
+        # Section 17 requires 100% on failopen.py. This is the one component
+        # that must be correct, so partial coverage fails the build rather than
+        # relying on anyone remembering the rule.
+        run: |
+          pytest -q --cov=agentmeter.runtime.failopen \
+                    --cov-report=term-missing --cov-fail-under=100
 
   benchmark:
     name: Overhead budget (SC-5) [M2+]

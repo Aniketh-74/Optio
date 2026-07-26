@@ -86,6 +86,7 @@ select = [
     "SIM",  # simplify
     "TID",  # tidy imports
     "RUF",  # ruff-specific
+    "BLE",  # blind except — only failopen.py may catch broadly (ADR-004)
     "D",    # pydocstyle (Google convention, §4.1)
 ]
 ignore = [
