@@ -1,0 +1,140 @@
+name: CI
+
+# The quality gates from IMPLEMENTATION.md Section 17. These are the contract:
+# a PR that cannot pass them does not merge, because the implementer is an AI
+# agent and the reviewer is one human -- tests are the primary defense against
+# confident-but-wrong code (Section 9), not an afterthought.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_COLOR: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  lint:
+    name: Lint, types, and import boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+
+      - name: ruff (lint)
+        run: ruff check --output-format=github .
+      - name: ruff (format)
+        run: ruff format --check .
+      - name: mypy --strict
+        run: mypy
+      - name: Import boundaries (Section 3.1)
+        # Enforces: dependencies point inward, no lane imports another lane,
+        # semconv stays a leaf. A violation here is an architecture change and
+        # needs an ADR, not a lint suppression.
+        run: lint-imports
+
+  test:
+    name: Tests (py${{ matrix.python-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor and ceiling of the supported range, on both major platforms.
+        python-version: ["3.10", "3.13"]
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -e ".[dev]"
+
+      - name: Unit and contract tests
+        run: pytest -v --cov --cov-report=term-missing --cov-report=xml
+
+      - name: Coverage gate
+        # Section 17: >= 85% core. The 100% requirement on ledger.py and
+        # failopen.py is added when those modules land (M1, M2).
+        run: coverage report --fail-under=85
+
+      - name: Upload coverage
+        if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+
+  contract:
+    name: Signal contract (SC-2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+
+      - name: Emitted names match pinned semconv and docs/signals.md
+        # Blocking on every PR. Downstream OPA/Cedar/AGT policies are written
+        # against these exact strings (R-TECH-2).
+        run: pytest -v -m contract
+
+  security:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: pip-audit
+        run: pip-audit --strict --desc
+
+  # ---------------------------------------------------------------------------
+  # Gates below activate as their milestones land. They are declared now, and
+  # skipped rather than omitted, so the full Section 17 checklist is visible in
+  # every CI run instead of being remembered later.
+  # ---------------------------------------------------------------------------
+
+  failinject:
+    name: Fail-open proof (SC-4) [M1+]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: Agent is never broken by an internal failure
+        # No-op until M1 adds failopen.py and the injection suite. `-m failinject`
+        # exits 5 (no tests collected) while the suite is empty, which is not a
+        # failure condition yet.
+        run: pytest -v -m failinject || [ $? -eq 5 ]
+
+  benchmark:
+    name: Overhead budget (SC-5) [M2+]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: Cost + behavior lanes under 5 ms p99
+        run: pytest -v -m bench || [ $? -eq 5 ]
