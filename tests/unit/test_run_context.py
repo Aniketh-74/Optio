@@ -175,3 +175,44 @@ class TestConfiguration:
         assert "active" in repr(run)
         run.end()
         assert "ended" in repr(run)
+
+
+class TestSamplingDecision:
+    """The decision is frozen at construction (M1-2, §7 RunContext fields).
+
+    A run whose sampled-ness could change mid-flight would let run start and run
+    end disagree, producing quality signals on runs that were never scored.
+    """
+
+    def test_sampling_is_off_when_the_quality_lane_is_off(self):
+        # Off by default (ADR-003), so the default run is never sampled.
+        assert RunContext().sampled is False
+
+    def test_quality_lane_off_overrides_a_high_sample_rate(self):
+        config = Config(quality_lane=False, quality_sample_rate=1.0)
+        assert RunContext(config=config).sampled is False
+
+    def test_full_sample_rate_always_samples(self):
+        config = Config(quality_lane=True, quality_sample_rate=1.0)
+        assert all(RunContext(config=config).sampled for _ in range(20))
+
+    def test_zero_sample_rate_never_samples(self):
+        config = Config(quality_lane=True, quality_sample_rate=0.0)
+        assert not any(RunContext(config=config).sampled for _ in range(20))
+
+    def test_decision_is_stable_across_the_run_lifecycle(self):
+        config = Config(quality_lane=True, quality_sample_rate=0.5)
+        run = RunContext(config=config)
+        decided = run.sampled
+
+        run.start()
+        assert run.sampled is decided
+        run.end()
+        assert run.sampled is decided
+
+    def test_partial_rate_selects_a_plausible_fraction(self):
+        # Statistical, so the bounds are deliberately loose: this catches a rate
+        # that is ignored entirely (all or nothing), not a small bias.
+        config = Config(quality_lane=True, quality_sample_rate=0.5)
+        sampled = sum(RunContext(config=config).sampled for _ in range(400))
+        assert 100 < sampled < 300

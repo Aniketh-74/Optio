@@ -21,6 +21,7 @@ current run.
 from __future__ import annotations
 
 import logging
+import random
 import time
 import uuid
 from contextvars import ContextVar, Token
@@ -62,9 +63,19 @@ class RunContext:
         run_id: Stable unique identifier for this run.
         budget: Optional spend limit, emitted as a signal, never enforced.
         config: Configuration governing which lanes are active.
+        sampled: Whether this run is selected for the expensive quality path.
     """
 
-    __slots__ = ("_ended", "_token", "budget", "config", "ended_at", "run_id", "started_at")
+    __slots__ = (
+        "_ended",
+        "_token",
+        "budget",
+        "config",
+        "ended_at",
+        "run_id",
+        "sampled",
+        "started_at",
+    )
 
     def __init__(
         self,
@@ -93,6 +104,35 @@ class RunContext:
         self.ended_at: float | None = None
         self._ended: bool = False
         self._token: Token[RunContext | None] | None = None
+        self.sampled: bool = self._decide_sampling()
+
+    def _decide_sampling(self) -> bool:
+        """Decide once, at construction, whether this run takes the costly path.
+
+        Frozen for the run's lifetime rather than re-rolled per query. Re-rolling
+        would let run start and run end disagree about whether a run is sampled,
+        which produces quality signals attached to runs that were never scored
+        -- the silent-wrong class of bug, not a crash.
+
+        The decision is made even when the quality lane is off, so enabling the
+        lane mid-flight cannot retroactively change a run's tier. Selecting the
+        tier itself (heuristic-inline vs async LLM-judge) is M5-1's job; this
+        only answers "is this run eligible".
+
+        Returns:
+            ``True`` if this run is selected for sampling.
+        """
+        if not self.config.quality_lane:
+            return False
+        rate = self.config.quality_sample_rate
+        # Exact 0.0 and 1.0 are worth short-circuiting: random() returns a value
+        # in [0, 1), so `random() < 1.0` is always true but `< 0.0` is never,
+        # and being explicit keeps the boundary behaviour obvious.
+        if rate <= 0.0:
+            return False
+        if rate >= 1.0:
+            return True
+        return random.random() < rate
 
     @property
     def is_active(self) -> bool:

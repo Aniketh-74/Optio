@@ -53,9 +53,20 @@ incident. The activation counter still records every occurrence.
    (`semconv.GENAI_SEMCONV_VERSION`). If your backend expects different
    attribute names, the signals are arriving under names it does not display.
    The contract test in `tests/contract/` shows the exact names emitted.
-3. **Is the lane enabled?** The quality lane is **off by default** (ADR-003).
+3. **Is there a run span?** Signals are written to the enclosing *run* span, not
+   to individual step spans (ADR-009). `@meter` opens one for you. If you drive
+   `RunContext` directly, you must open a span yourself:
+
+   ```python
+   with tracer.start_as_current_span("agent-run"), RunContext():
+       agent.invoke(...)
+   ```
+
+   Without an enclosing span there is nowhere to put the signals and they are
+   dropped.
+4. **Is the lane enabled?** The quality lane is **off by default** (ADR-003).
    Cost and behavior are on.
-4. **Fail-open activations.** See above — a broken lane emits nothing.
+5. **Fail-open activations.** See above — a broken lane emits nothing.
 
 **A missing attribute means "unknown", not "zero".** When a value cannot be
 computed the attribute is *omitted* rather than emitted as zero, so a policy can

@@ -47,10 +47,22 @@ class TestSurface:
         assert isinstance(agentmeter.__version__, str)
 
     def test_instrument_signature_is_locked(self):
+        # Additive keyword-only parameters with defaults are compatible; a
+        # *breaking* change to this surface needs an ADR (§16 rule 12). What
+        # must not drift is the positional target and the keyword-only-ness of
+        # everything else, since that is what callers actually depend on.
         params = inspect.signature(instrument).parameters
-        assert list(params) == ["target", "adapter", "config", "overrides"]
-        assert params["adapter"].kind is inspect.Parameter.KEYWORD_ONLY
-        assert params["config"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert list(params) == [
+            "target",
+            "adapter",
+            "config",
+            "provider",
+            "overrides",
+        ]
+        assert params["target"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        for name in ("adapter", "config", "provider"):
+            assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
+            assert params[name].default is None
 
     def test_public_callables_are_annotated(self):
         for fn in (instrument, meter):
@@ -58,26 +70,56 @@ class TestSurface:
             assert "return" in hints, fn.__name__
 
 
+class _FakeGraph:
+    """Stands in for a compiled LangGraph graph.
+
+    ``__module__`` is rewritten below so adapter resolution sees a LangGraph
+    object without this test suite depending on LangGraph being installed.
+    """
+
+    def invoke(self, *args, **kwargs):
+        return None
+
+    def stream(self, *args, **kwargs):
+        return iter(())
+
+
+_FakeGraph.__module__ = "langgraph.graph.state"
+
+
 class TestInstrument:
     def test_returns_the_same_object(self):
-        agent = object()
+        agent = _FakeGraph()
         assert instrument(agent) is agent
 
-    def test_accepts_a_known_adapter(self):
-        agent = object()
+    def test_accepts_an_explicit_adapter(self):
+        agent = _FakeGraph()
         assert instrument(agent, adapter="langgraph") is agent
 
     def test_unknown_adapter_raises_at_setup(self):
         with pytest.raises(AgentMeterConfigError, match="unknown adapter"):
-            instrument(object(), adapter="not_a_framework")
+            instrument(_FakeGraph(), adapter="not_a_framework")
+
+    def test_planned_adapter_reports_that_it_is_unimplemented(self):
+        # "Planned but not built" and "no such thing" are different problems
+        # with different fixes, so they get different messages.
+        with pytest.raises(AgentMeterConfigError, match="not implemented yet"):
+            instrument(_FakeGraph(), adapter="crewai")
+
+    def test_unrecognised_target_raises_at_setup(self):
+        # Section 6.1: an unknown framework fails loudly at setup. Silently
+        # instrumenting nothing would leave the user believing they have
+        # coverage they do not have.
+        with pytest.raises(AgentMeterConfigError, match="no adapter matches"):
+            instrument(object())
 
     def test_unknown_config_option_raises_at_setup(self):
         with pytest.raises(AgentMeterConfigError, match="unknown config option"):
-            instrument(object(), definitely_not_an_option=True)
+            instrument(_FakeGraph(), definitely_not_an_option=True)
 
     def test_overrides_apply(self):
         # Should not raise; the override is a real field.
-        assert instrument(object(), quality_lane=True) is not None
+        assert instrument(_FakeGraph(), quality_lane=True) is not None
 
 
 class TestMeter:
