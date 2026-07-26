@@ -112,9 +112,13 @@ signal must be reviewed for content-freedom before it is added to this table (R-
 
 | Lane | Milestone | Status |
 |---|---|---|
-| Cost | M2 | Not implemented — names frozen here. |
-| Behavior | M3 | Not implemented — names frozen here. |
+| Cost | M2 | **Implemented.** `actual_cost`, `projected_cost`, `budget_remaining` emit today. |
+| Behavior | M3 | **Implemented.** `loop_state`, `repeat_count` emit today. |
 | Quality | M5 | Not implemented — names frozen here; off by default. |
 
-Names are contract-frozen ahead of implementation so policy packs and adapters can be written
-against a stable surface.
+`cost_per_successful_task` needs a success signal, so it stays absent until the quality lane
+lands (M5) — see *Absence is meaningful* above. A policy may reference it now; it will simply
+never match, which is the correct behavior for an unknown value rather than a wrong one.
+
+Names were contract-frozen ahead of implementation so policy packs and adapters could be written
+against a stable surface. No name has changed since.
