@@ -111,13 +111,25 @@ class Lane(ABC):
 def enabled_lanes(config: Config) -> list[Any]:
     """Return the lane instances enabled by configuration.
 
-    M0 returns nothing -- lanes land in M2, M3, and M5. Centralising the wiring
-    here keeps ``runtime`` free of concrete lane imports (Section 3.1).
+    Centralising the wiring here keeps ``runtime`` free of concrete lane imports
+    (Section 3.1) -- the tap asks for lanes rather than knowing which exist.
+
+    Concrete lanes are imported inside the function so that ``lanes.base``
+    itself stays importable by anything, and so a lane module that fails to
+    import cannot take down the whole library at import time.
 
     Args:
         config: Active configuration.
 
     Returns:
-        Enabled lane instances, in dispatch order.
+        Enabled lane instances, in dispatch order. Behavior lands in M3 and
+        quality in M5; until then only cost is wired.
     """
-    return []
+    lanes: list[Any] = []
+
+    if config.cost_lane:
+        from agentmeter.lanes.cost.lane import CostLane
+
+        lanes.append(CostLane(config))
+
+    return lanes

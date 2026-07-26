@@ -20,6 +20,10 @@ from typing import TYPE_CHECKING, Final
 
 from opentelemetry import trace
 
+from agentmeter.runtime.run_context import (
+    register_run_end_observer,
+    unregister_run_end_observer,
+)
 from agentmeter.runtime.span_tap import AgentMeterSpanTap
 
 if TYPE_CHECKING:
@@ -70,6 +74,9 @@ def install_tap(config: Config, provider: TracerProvider | None = None) -> Agent
 
         tap = AgentMeterSpanTap(config)
         add_processor(tap)
+        # Run end is driven by RunContext, not by the OTel SDK, so the tap has
+        # to be told about it separately from being added as a processor.
+        register_run_end_observer(tap.on_run_end)
         _installed[key] = tap
         return tap
 
@@ -93,6 +100,12 @@ def reset_installations() -> None:
     Test-support only. Does not remove processors from a provider -- the OTel
     SDK has no supported way to do that -- so tests that need a clean slate
     should build a fresh provider as well.
+
+    Run-end observers *are* unregistered, because those do leak across tests: a
+    tap left registered would keep receiving run ends after its provider was
+    discarded.
     """
     with _lock:
+        for tap in _installed.values():
+            unregister_run_end_observer(tap.on_run_end)
         _installed.clear()

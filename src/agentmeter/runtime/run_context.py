@@ -29,13 +29,47 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Final, Literal
 
 from agentmeter.config import BudgetPolicy, Config, default_config
+from agentmeter.runtime.failopen import guard
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     # typing.Self is 3.11+; the floor is 3.10. Type-checking-only, so this adds
     # no runtime dependency.
     from typing_extensions import Self
 
 _log = logging.getLogger("agentmeter")
+
+#: Callables invoked when any run ends, in registration order.
+#:
+#: A registry rather than a direct call into the span tap: the tap imports this
+#: module, so importing it back would be a cycle. Inverting the dependency keeps
+#: run lifecycle ignorant of what observes it, which is also what lets the tap
+#: be swapped or absent entirely.
+_run_end_observers: list[Callable[[RunContext], None]] = []
+
+
+def register_run_end_observer(observer: Callable[[RunContext], None]) -> None:
+    """Register a callable to run when any run ends.
+
+    Args:
+        observer: Called with the ending run. Invoked behind the fail-open
+            guard, so it may raise without reaching the agent.
+    """
+    if observer not in _run_end_observers:
+        _run_end_observers.append(observer)
+
+
+def unregister_run_end_observer(observer: Callable[[RunContext], None]) -> None:
+    """Remove a previously registered observer.
+
+    Args:
+        observer: The observer to remove. Removing an unregistered observer is
+            not an error.
+    """
+    if observer in _run_end_observers:
+        _run_end_observers.remove(observer)
+
 
 _current_run: Final[ContextVar[RunContext | None]] = ContextVar(
     "agentmeter_current_run", default=None
@@ -165,11 +199,16 @@ class RunContext:
         self._ended = True
         self.ended_at = time.monotonic()
 
-        # M0: no lanes are wired yet. M2 attaches the ledger reconcile sweep and
-        # M5 the quality scoring here -- both behind the fail-open guard, so a
-        # failure at run end can never surface to the agent (ADR-004).
-
-        self._clear_current()
+        # Run-end work -- the cost lane's close/reconcile sweep (M2), quality
+        # scoring (M5). Each observer is guarded individually so one failing
+        # cannot stop the others, and none can surface to the agent (ADR-004).
+        # The context is cleared afterwards in a `finally`, because a stale
+        # current run would contaminate everything the agent does next.
+        try:
+            for observer in tuple(_run_end_observers):
+                guard(observer, None, self, component="run_end")
+        finally:
+            self._clear_current()
 
     def _clear_current(self) -> None:
         """Restore the previously-current run, best-effort.

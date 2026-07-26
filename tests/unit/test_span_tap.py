@@ -350,7 +350,11 @@ class TestProcessorProtocol:
         assert failopen.activation_count() == 0
 
     def test_lanes_are_resolved_from_config_when_omitted(self) -> None:
-        # M0/M1 wire no concrete lanes yet; the point is that the tap asks
-        # `enabled_lanes` rather than importing lanes itself (§3.1).
+        # The point is that the tap asks `enabled_lanes` rather than importing
+        # concrete lanes itself (§3.1).
         tap = AgentMeterSpanTap(default_config())
+        assert [lane.name for lane in tap.lanes] == ["cost"]
+
+    def test_config_controls_which_lanes_are_wired(self) -> None:
+        tap = AgentMeterSpanTap(Config(cost_lane=False))
         assert tap.lanes == []

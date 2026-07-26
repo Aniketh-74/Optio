@@ -1,0 +1,241 @@
+"""The cost lane (M2-4) -- turns GenAI spans into economic signals.
+
+Wires together the three pieces: :mod:`pricing` says what a step cost,
+:mod:`ledger` holds the reserve/reconcile invariant, and :mod:`project` derives
+the forward-looking numbers.
+
+**Reserve and reconcile both happen at span end**, which is later than the
+ledger's own contract would suggest, and the reason deserves stating. A span
+processor only observes *finished* spans (ADR-009) -- there is no pre-step hook
+to reserve from. So a step is reserved and immediately reconciled against its
+real token counts. The reserve/reconcile machinery still earns its place:
+
+* It keeps the ledger's invariant intact for callers that *can* reserve early --
+  an adapter with a pre-step callback, or the projection path.
+* It makes a step whose cost cannot be computed visible as a leak rather than
+  silently absent, since the reservation stays open.
+
+A step with no usable price is reserved at zero and left unreconciled, so it
+surfaces as a leak at run end. Reserving a guessed cost would put a fabricated
+number into the total; skipping the step entirely would make it invisible.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, Final
+
+from agentmeter import semconv
+from agentmeter.lanes.base import Lane, Signal
+from agentmeter.lanes.cost.ledger import CostLedger
+from agentmeter.lanes.cost.pricing import DEFAULT_PROVIDER, cost_of
+from agentmeter.lanes.cost.project import (
+    budget_remaining,
+    cost_per_successful_task,
+    project_cost,
+)
+
+if TYPE_CHECKING:
+    from opentelemetry.sdk.trace import ReadableSpan
+
+    from agentmeter.config import Config
+    from agentmeter.lanes.base import RunLike
+    from agentmeter.lanes.cost.pricing import PricingProvider
+
+_log: Final = logging.getLogger("agentmeter")
+
+
+class CostLane(Lane):
+    """Computes cost signals from GenAI spans.
+
+    Attributes:
+        ledger: The reserve/reconcile ledger backing this lane.
+        pricing: The pricing provider used to value steps.
+    """
+
+    name = "cost"
+
+    def __init__(
+        self,
+        config: Config,
+        ledger: CostLedger | None = None,
+        pricing: PricingProvider | None = None,
+    ) -> None:
+        """Build the lane.
+
+        Args:
+            config: Active configuration.
+            ledger: Ledger to use. A fresh one is created when omitted.
+            pricing: Pricing source. Defaults to the built-in table.
+        """
+        super().__init__(config)
+        self.ledger = ledger if ledger is not None else CostLedger()
+        self.pricing = pricing if pricing is not None else DEFAULT_PROVIDER
+
+    def process_span(self, span: ReadableSpan, run: RunLike) -> list[Signal]:
+        """Price one step and emit the cost signals available so far.
+
+        Args:
+            span: The finished GenAI span.
+            run: The run the span belongs to.
+
+        Returns:
+            Signals to write. Empty when the span is not a priceable LLM call.
+        """
+        step_id = _step_id(span)
+        cost = self._price(span)
+
+        if cost is None:
+            # Reserved at zero and deliberately left open: the step becomes a
+            # leak at run end rather than vanishing. An unpriceable step is a
+            # gap in the evidence, and the run's cost should say so.
+            self.ledger.reserve(run.run_id, step_id, 0.0)
+            return self._forward_signals(run)
+
+        self.ledger.reserve(run.run_id, step_id, cost)
+        self.ledger.reconcile(run.run_id, step_id, cost)
+
+        snapshot = self.ledger.snapshot(run.run_id)
+        signals = [Signal(semconv.RUN_ACTUAL_COST, snapshot.actual)]
+        signals.extend(self._forward_signals(run))
+        return signals
+
+    def on_run_end(self, run: RunLike) -> list[Signal]:
+        """Close the run and emit its final cost signals.
+
+        Args:
+            run: The run that just ended.
+
+        Returns:
+            Final signals for the run.
+        """
+        snapshot = self.ledger.close_run(run.run_id)
+
+        signals: list[Signal] = []
+
+        # A run where nothing could be priced reports *no* cost, not zero.
+        # Emitting 0.0 would tell a budget policy the run was free, when the
+        # truth is that we do not know what it cost -- the exact confusion
+        # `docs/signals.md` forbids.
+        if snapshot.reconciled_steps > 0:
+            signals.append(Signal(semconv.RUN_ACTUAL_COST, snapshot.actual))
+
+        remaining = budget_remaining(snapshot, run.budget)
+        if remaining is not None:
+            signals.append(Signal(semconv.RUN_BUDGET_REMAINING, remaining))
+
+        # cost_per_successful_task needs a success count, which the quality lane
+        # owns (M5). Until then the denominator is unknown, so the signal is
+        # omitted rather than assumed -- treating an unscored run as one success
+        # would publish a headline number derived from a guess. It also needs a
+        # real numerator: dividing an unpriced run's zero would report perfect
+        # efficiency for a run we could not price at all.
+        successes = _success_count(run)
+        if successes is not None and snapshot.reconciled_steps > 0:
+            per_task = cost_per_successful_task(snapshot, successes)
+            if per_task is not None:
+                signals.append(Signal(semconv.RUN_COST_PER_SUCCESSFUL_TASK, per_task))
+
+        return signals
+
+    def _price(self, span: ReadableSpan) -> float | None:
+        """Return the cost of one span, or ``None`` when it cannot be priced.
+
+        Args:
+            span: The span to price.
+
+        Returns:
+            Cost in USD, or ``None``.
+        """
+        attributes = span.attributes or {}
+
+        model = attributes.get(semconv.GEN_AI_RESPONSE_MODEL) or attributes.get(
+            semconv.GEN_AI_REQUEST_MODEL
+        )
+        if not isinstance(model, str):
+            return None
+
+        input_tokens = _int_attribute(attributes.get(semconv.GEN_AI_USAGE_INPUT_TOKENS))
+        output_tokens = _int_attribute(attributes.get(semconv.GEN_AI_USAGE_OUTPUT_TOKENS))
+        if input_tokens is None and output_tokens is None:
+            # A tool-call span with no token usage. Not an error: not every
+            # GenAI span is a billable model call.
+            return None
+
+        return cost_of(model, input_tokens or 0, output_tokens or 0, self.pricing)
+
+    def _forward_signals(self, run: RunLike) -> list[Signal]:
+        """Return the forward-looking signals for a run.
+
+        Args:
+            run: The run being metered.
+
+        Returns:
+            Projection and budget signals, omitting any that cannot be computed.
+        """
+        snapshot = self.ledger.snapshot(run.run_id)
+        signals: list[Signal] = []
+
+        projected = project_cost(snapshot, run.budget)
+        if projected is not None:
+            signals.append(Signal(semconv.RUN_PROJECTED_COST, projected))
+
+        remaining = budget_remaining(snapshot, run.budget)
+        if remaining is not None:
+            signals.append(Signal(semconv.RUN_BUDGET_REMAINING, remaining))
+
+        return signals
+
+
+def _step_id(span: ReadableSpan) -> str:
+    """Return a stable identifier for the step a span represents.
+
+    Uses the span id, which is unique per span and stable for its lifetime. A
+    framework retry produces a *new* span, so retries are separate ledger
+    entries rather than replacements -- correct here, because each attempt
+    burned its own tokens.
+
+    Args:
+        span: The span to identify.
+
+    Returns:
+        A step identifier.
+    """
+    context = span.get_span_context()
+    if context is not None and context.span_id:
+        return format(context.span_id, "016x")
+    return f"anonymous-{id(span):x}"
+
+
+def _int_attribute(value: object) -> int | None:
+    """Coerce a span attribute to a non-negative int, or ``None``.
+
+    Args:
+        value: The raw attribute value.
+
+    Returns:
+        The integer value, or ``None`` when absent or unusable.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value < 0:
+        return None
+    return int(value)
+
+
+def _success_count(run: RunLike) -> int | None:
+    """Return the run's successful-task count, if anything has recorded one.
+
+    The quality lane (M5) owns this. Until it lands there is no success signal,
+    so the denominator is unknown.
+
+    Args:
+        run: The run being metered.
+
+    Returns:
+        Number of successes, or ``None`` when unknown.
+    """
+    successes = getattr(run, "successes", None)
+    if isinstance(successes, bool) or not isinstance(successes, int):
+        return None
+    return successes

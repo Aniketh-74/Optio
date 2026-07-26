@@ -75,6 +75,59 @@ tell the two apart. Policies must treat absence as unknown; see
 
 ---
 
+## A run ended with unreconciled reservations
+
+**Symptom.** A WARN like:
+
+```
+agentmeter: run 4f2a... ended with 3 unreconciled reservation(s); cost is
+reported as the reserved worst case for those steps.
+```
+
+**What it means.** Three steps in that run could not be priced. Almost always
+this is a model the pricing table does not carry — see
+[pricing.md](pricing.md).
+
+**How the cost is reported.** The reservation is *kept*, not discarded, so the
+run's cost includes the reserved worst case for those steps. Discarding them
+would make the run look cheaper than the evidence supports, and under-reporting
+is the direction that lets an over-budget run through.
+
+If **nothing** in the run could be priced, `actual_cost` is omitted entirely
+rather than reported as zero. A policy reading zero would conclude the run was
+free; the truth is that its cost is unknown.
+
+**What to do.** Check which model the run used. If it is one we should carry,
+please file an issue. If it is a negotiated rate or a self-hosted model, supply
+a `PricingProvider` — see [pricing.md](pricing.md).
+
+---
+
+## Cost signals look wrong
+
+**`actual_cost` is missing.** Nothing in the run could be priced. See above.
+
+**`projected_cost` is missing.** It needs a step ceiling. Pass one:
+
+```python
+@meter(budget=BudgetPolicy(limit_usd=5.00, max_steps=20))
+```
+
+Without `max_steps` there is no finite worst case, so no projection is emitted
+rather than an arbitrary one.
+
+**`budget_remaining` is lower than expected.** It subtracts *committed* cost —
+reconciled spend plus open reservations — not just what has completed. A step in
+flight has already claimed its budget; reporting that money as available would
+let a policy authorise spending it twice.
+
+**`cost_per_successful_task` is missing.** It needs a success count, which the
+quality lane supplies (M5, off by default per ADR-003). Without it the
+denominator is unknown, and assuming one success per run would publish a
+headline number derived from a guess.
+
+---
+
 ## Overhead is above budget
 
 The design budget is **< 5 ms p99** added per governed step for the cost and

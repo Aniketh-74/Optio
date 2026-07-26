@@ -56,12 +56,18 @@ class TestAbstractContracts:
             return
         raise AssertionError("StateStore must be abstract")
 
-    def test_no_lanes_are_enabled_in_m0(self):
-        # Lanes land in M2/M3/M5. Asserting the current state makes their arrival
-        # a deliberate, visible change rather than a silent one.
+    def test_cost_lane_is_enabled_by_default(self):
+        # Cost landed in M2. Behavior (M3) and quality (M5) are still pending,
+        # and quality is off by default regardless (ADR-003).
         from agentmeter.config import Config
 
-        assert enabled_lanes(Config()) == []
+        names = [lane.name for lane in enabled_lanes(Config())]
+        assert names == ["cost"]
+
+    def test_disabling_the_cost_lane_is_honoured(self):
+        from agentmeter.config import Config
+
+        assert enabled_lanes(Config(cost_lane=False)) == []
 
 
 class TestSignal:

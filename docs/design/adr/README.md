@@ -16,12 +16,17 @@ Summaries live in [IMPLEMENTATION.md §15](../../../IMPLEMENTATION.md); full rec
 | 007 | Enterprise control plane designed but not scheduled | Accepted (summary in §15) |
 | 008 | Apache-2.0 | Accepted (summary in §15) |
 | [009](adr-009-signals-are-written-to-the-run-span.md) | Signals are written to the run span, not the step span | Accepted |
+| [010](adr-010-a-closed-run-is-final.md) | A closed run is final | Accepted |
 
 ADRs 000, 001, and 004 are expanded here first because they are the ones M0 code already depends on: they determine what the library is allowed to do, and what it must never do.
 
 ADR-009 is new in M1: it records an architectural change forced by the OTel SDK
 (a span processor cannot annotate the span it observes), rather than a choice
 made freely.
+
+ADR-010 is new in M2. The ledger's stated invariant (R-TECH-1) covers ordering
+*within* a run and is silent on what happens after one ends; the property tests
+found that gap on their first run, so the answer is written down.
 
 ## Format
 
