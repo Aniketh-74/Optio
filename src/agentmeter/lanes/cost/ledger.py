@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Final
 
@@ -83,18 +84,66 @@ class _RunLedger:
     closed: bool = False
 
 
+#: How many recently-closed run ids to remember after their state is evicted.
+#:
+#: Closing is final (ADR-010), but eviction has to release memory or a
+#: long-lived agent process leaks a few hundred bytes per run forever. These two
+#: requirements conflict: forget a run entirely and a straggling callback can
+#: reserve against its id again, silently starting a *new* total under a run
+#: that was already reported.
+#:
+#: A bounded FIFO of closed ids resolves it. Finality survives eviction for the
+#: most recent N runs -- comfortably longer than any real straggler -- while
+#: memory stays capped. Beyond N, a late arrival is treated as a fresh run,
+#: which is the same behaviour as a process restart and is acceptable because
+#: nothing that old can still be in flight.
+_CLOSED_MEMORY: Final = 4096
+
+
 class CostLedger:
     """Per-run reserve/reconcile accounting.
 
-    Holds state for many concurrent runs, keyed by ``run_id``. State is evicted
-    by :meth:`close_run`; a process whose run count grows without bound is
-    failing to close runs.
+    Holds state for many concurrent runs, keyed by ``run_id``. Call
+    :meth:`close_run` to finalise a run and :meth:`evict` to release its state;
+    the cost lane does both at run end.
     """
 
-    def __init__(self) -> None:
-        """Create an empty ledger."""
+    def __init__(self, closed_memory: int = _CLOSED_MEMORY) -> None:
+        """Create an empty ledger.
+
+        Args:
+            closed_memory: How many recently-closed run ids to remember after
+                eviction, so a late reconcile is still rejected.
+        """
         self._lock: Final = threading.RLock()
         self._runs: Final[dict[str, _RunLedger]] = {}
+        self._closed_memory: Final = closed_memory
+        self._recently_closed: Final[OrderedDict[str, None]] = OrderedDict()
+
+    def _remember_closed(self, run_id: str) -> None:
+        """Record a run id as closed, evicting the oldest when full.
+
+        Args:
+            run_id: The run that was closed.
+        """
+        self._recently_closed[run_id] = None
+        self._recently_closed.move_to_end(run_id)
+        while len(self._recently_closed) > self._closed_memory:
+            self._recently_closed.popitem(last=False)
+
+    def _is_closed(self, run_id: str) -> bool:
+        """Whether a run has been closed, including after eviction.
+
+        Args:
+            run_id: The run to check.
+
+        Returns:
+            ``True`` if the run is closed or was recently closed.
+        """
+        ledger = self._runs.get(run_id)
+        if ledger is not None and ledger.closed:
+            return True
+        return run_id in self._recently_closed
 
     def reserve(self, run_id: str, step_id: str, projected: float) -> None:
         """Record the worst-case cost of a step *before* it runs.
@@ -121,12 +170,12 @@ class CostLedger:
             )
 
         with self._lock:
-            ledger = self._runs.setdefault(run_id, _RunLedger())
-            if ledger.closed:
+            if self._is_closed(run_id):
                 raise LedgerInvariantError(
                     f"cannot reserve on closed run {run_id!r}; the run's cost "
                     f"has already been reported"
                 )
+            ledger = self._runs.setdefault(run_id, _RunLedger())
             previous = ledger.open.get(step_id)
             if previous is not None:
                 _log.debug(
@@ -162,19 +211,20 @@ class CostLedger:
             )
 
         with self._lock:
+            if self._is_closed(run_id):
+                # A straggling callback after the run's cost was reported.
+                # Folding it in now would silently change a number a policy may
+                # already have acted on -- or, after eviction, start a brand new
+                # total under a run id that has already been finalised.
+                raise LedgerInvariantError(
+                    f"cannot reconcile {run_id}/{step_id} on a closed run; "
+                    f"the run's cost has already been reported"
+                )
+
             ledger = self._runs.get(run_id)
             if ledger is None:
                 raise LedgerInvariantError(
                     f"reconcile for unknown run {run_id!r}; reserve must come first"
-                )
-
-            if ledger.closed:
-                # A straggling callback after the run's cost was reported.
-                # Folding it in now would silently change a number a policy may
-                # already have acted on.
-                raise LedgerInvariantError(
-                    f"cannot reconcile {run_id}/{step_id} on a closed run; "
-                    f"the run's cost has already been reported"
                 )
 
             if step_id not in ledger.open:
@@ -197,6 +247,15 @@ class CostLedger:
         Totals are derived from the open reservations on every read rather than
         maintained alongside them. A separately-accumulated total is one missed
         decrement away from drifting, and the drift would look plausible.
+
+        **Cost is O(open reservations)**, not O(steps). In normal operation
+        reservations close immediately, so this is flat at any run length
+        (~2 microseconds, measured). It degrades only when reservations stay
+        open -- the unpriceable-model case, where every step leaks -- reaching
+        roughly 96 microseconds at 10,000 open steps. Still two orders of
+        magnitude inside the SC-5 budget, but the shape is quadratic in that
+        pathological case, so a run with very many unpriced steps is the one to
+        watch. Verified by ``tests/bench/test_overhead.py``.
 
         Args:
             run_id: The run's identifier.
@@ -245,6 +304,10 @@ class CostLedger:
             reservations that were never reconciled.
         """
         with self._lock:
+            # Remembered separately from the run's state, so finality outlives
+            # eviction: the state is released to bound memory, the id is not.
+            self._remember_closed(run_id)
+
             # A run with no state is still closed by this call. Returning early
             # would leave it re-openable, so a late reserve could start
             # accumulating cost against a run that has already been reported --
@@ -271,6 +334,23 @@ class CostLedger:
                 )
 
             return self.snapshot(run_id)
+
+    def is_finalised(self, run_id: str) -> bool:
+        """Whether this run has already been closed.
+
+        Distinct from "unknown": a caller needs to tell *this run is over* from
+        *I have never seen this run*, because an all-zero snapshot looks
+        identical either way. Deriving signals from the zeros of a finalised
+        run would report a full budget and no spend.
+
+        Args:
+            run_id: The run's identifier.
+
+        Returns:
+            ``True`` if the run was closed, whether or not its state survives.
+        """
+        with self._lock:
+            return self._is_closed(run_id)
 
     def evict(self, run_id: str) -> None:
         """Drop all state for a run.

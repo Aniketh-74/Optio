@@ -101,7 +101,7 @@ class CostLane(Lane):
         return signals
 
     def on_run_end(self, run: RunLike) -> list[Signal]:
-        """Close the run and emit its final cost signals.
+        """Close the run, emit its final cost signals, and release its state.
 
         Args:
             run: The run that just ended.
@@ -109,7 +109,21 @@ class CostLane(Lane):
         Returns:
             Final signals for the run.
         """
+        # Run end can fire more than once (M1-2), and the state is released on
+        # the first call. A second call therefore sees an all-zero snapshot,
+        # from which `budget_remaining` would compute the *full* budget and
+        # overwrite the correct value on the run span -- telling a policy the
+        # run spent nothing. Emitting nothing is the only honest answer: the
+        # evidence is gone, and re-deriving signals from its absence invents
+        # them.
+        if self.ledger.is_finalised(run.run_id):
+            return []
+
         snapshot = self.ledger.close_run(run.run_id)
+        # Read the snapshot first, then release. Agents are long-lived
+        # processes: without this the ledger retains every run it has ever seen
+        # (~368 bytes each), which is an unbounded leak rather than a slow one.
+        self.ledger.evict(run.run_id)
 
         signals: list[Signal] = []
 

@@ -16,8 +16,10 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from agentmeter import meter, semconv
 from agentmeter.config import default_config
+from agentmeter.errors import LedgerInvariantError
 from agentmeter.lanes.cost.lane import CostLane
 from agentmeter.runtime import failopen, installer
+from agentmeter.runtime.run_context import current_run
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -142,21 +144,36 @@ class TestRunEndFires:
         # Run end is driven by RunContext, not the OTel SDK, so this verifies
         # the observer wiring actually fires.
         tracer = provider.get_tracer("agent")
+        seen_run_ids: list[str] = []
 
         @meter(provider=provider)
         def run_agent() -> None:
+            run = current_run()
+            assert run is not None
+            seen_run_ids.append(run.run_id)
             with tracer.start_as_current_span("llm") as span:
                 span.set_attribute(semconv.GEN_AI_REQUEST_MODEL, "gpt-4o")
                 span.set_attribute(semconv.GEN_AI_USAGE_INPUT_TOKENS, 1_000_000)
                 span.set_attribute(semconv.GEN_AI_USAGE_OUTPUT_TOKENS, 0)
 
         run_agent()
+        (run_id,) = seen_run_ids
 
         tap = installer.installed_tap(provider)
         assert tap is not None
         cost_lane = next(lane for lane in tap.lanes if isinstance(lane, CostLane))
-        # Closed and final: nothing further may be added to this run.
-        assert cost_lane.ledger.run_count() >= 1
+
+        # State is released at run end. Agents are long-lived processes, so
+        # retaining every run seen would be an unbounded leak (~368 bytes each).
+        assert cost_lane.ledger.run_count() == 0
+
+        # Finality outlives eviction: a straggling callback must not start a new
+        # total under a run id whose cost was already reported (ADR-010).
+        with pytest.raises(LedgerInvariantError, match="closed run"):
+            cost_lane.ledger.reserve(run_id, "late-step", 1.0)
+
+        # A genuinely new run is unaffected.
+        cost_lane.ledger.reserve("a-different-run", "s", 1.0)
 
     def test_separate_runs_report_separate_costs(
         self, provider: TracerProvider, exporter: InMemorySpanExporter

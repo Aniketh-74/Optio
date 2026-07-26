@@ -156,7 +156,7 @@ jobs:
                     --cov-report=term-missing --cov-fail-under=100
 
   benchmark:
-    name: Overhead budget (SC-5) [M2+]
+    name: Overhead budget (SC-5)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -166,4 +166,8 @@ jobs:
           cache: pip
       - run: pip install -e ".[dev]"
       - name: Cost + behavior lanes under 5 ms p99
-        run: pytest -v -m bench || [ $? -eq 5 ]
+        # Blocking as of M2. Section 11 calls the overhead numbers "design
+        # budgets to be verified by benchmark, not measured results" -- this is
+        # the verification, so an empty suite is a failure rather than a pass.
+        # -s so the measured numbers appear in the log and can be published.
+        run: pytest -v -s -m bench
