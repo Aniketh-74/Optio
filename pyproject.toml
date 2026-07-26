@@ -1,0 +1,183 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentmeter"
+version = "0.1.0.dev0"
+description = "Economic cost and outcome quality signals for agent runs, in OpenTelemetry GenAI vocabulary."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "agentmeter contributors" }]
+keywords = ["opentelemetry", "genai", "agents", "observability", "governance", "cost"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
+
+# Core deps stay minimal (§10 supply chain, §4.4). Framework deps live in extras
+# and are NEVER imported at core import time.
+dependencies = [
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+]
+
+[project.optional-dependencies]
+langgraph = ["langgraph>=0.2.0", "langchain-core>=0.3.0"]
+openai = ["openai-agents>=0.0.1"]
+crewai = ["crewai>=0.60.0"]
+claude = ["claude-agent-sdk>=0.1.0"]
+redis = ["redis>=5.0.0"]
+all = [
+    "agentmeter[langgraph]",
+    "agentmeter[openai]",
+    "agentmeter[crewai]",
+    "agentmeter[claude]",
+    "agentmeter[redis]",
+]
+dev = [
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+    "typing-extensions>=4.12.0",  # Self on the 3.10 floor; type-checking only
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "pytest-benchmark>=4.0.0",
+    "hypothesis>=6.100.0",
+    "import-linter>=2.0.0",
+    "pip-audit>=2.7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/agentmeter/agentmeter"
+Documentation = "https://github.com/agentmeter/agentmeter/blob/main/docs/signals.md"
+Source = "https://github.com/agentmeter/agentmeter"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentmeter"]
+
+# ---------------------------------------------------------------------------
+# Lint / format (§4.1)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "A",    # flake8-builtins
+    "C4",   # comprehensions
+    "SIM",  # simplify
+    "TID",  # tidy imports
+    "RUF",  # ruff-specific
+    "D",    # pydocstyle (Google convention, §4.1)
+]
+ignore = [
+    "D100",  # module docstring not required on every internal module (§4.1)
+    "D104",  # package docstring not required
+    "D107",  # __init__ docstring folded into class docstring
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]          # tests document themselves via names
+"examples/**" = ["D"]
+
+# ---------------------------------------------------------------------------
+# Typing (§4.1) — strict, no silent Any
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unreachable = true
+disallow_any_unimported = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+
+# ---------------------------------------------------------------------------
+# Test (§9)
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "property: hypothesis property tests (ledger/window invariants)",
+    "failinject: fault-injection proving fail-open (SC-4)",
+    "contract: semconv conformance (SC-2)",
+    "integration: real span flow per adapter",
+    "bench: overhead benchmarks (SC-5)",
+]
+
+[tool.coverage.run]
+source = ["src/agentmeter"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+]
+
+# ---------------------------------------------------------------------------
+# Import boundaries (§3.1, rule 11)
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "agentmeter"
+
+[[tool.importlinter.contracts]]
+name = "Layered architecture (dependencies point inward)"
+type = "layers"
+layers = [
+    "agentmeter.adapters",
+    "agentmeter.api",
+    "agentmeter.runtime",
+    "agentmeter.lanes",
+    "agentmeter.store",
+    "agentmeter.semconv",
+]
+
+[[tool.importlinter.contracts]]
+name = "Lanes are mutually independent"
+type = "independence"
+modules = [
+    "agentmeter.lanes.cost",
+    "agentmeter.lanes.behavior",
+    "agentmeter.lanes.quality",
+]
+
+[[tool.importlinter.contracts]]
+name = "semconv is a leaf (stdlib only)"
+type = "forbidden"
+source_modules = ["agentmeter.semconv"]
+forbidden_modules = [
+    "agentmeter.api",
+    "agentmeter.runtime",
+    "agentmeter.lanes",
+    "agentmeter.store",
+    "agentmeter.adapters",
+    "agentmeter.config",
+]
