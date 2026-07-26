@@ -1,0 +1,170 @@
+"""The frozen public surface (Section 8.1, task M0-4).
+
+These assert the *contract*, not the implementation: signatures, the identity
+guarantee, and the setup-time-failure rule. They are what makes breaking the
+surface after M1 a visible, ADR-requiring event rather than an accident.
+"""
+
+from __future__ import annotations
+
+import inspect
+from dataclasses import FrozenInstanceError
+from types import ModuleType
+
+import pytest
+
+import agentmeter
+from agentmeter import BudgetPolicy, Config, RunContext, current_run, instrument, meter
+from agentmeter.errors import AgentMeterConfigError
+
+
+class TestSurface:
+    def test_documented_names_are_importable(self):
+        for name in ("instrument", "meter", "RunContext", "Config", "BudgetPolicy"):
+            assert hasattr(agentmeter, name), name
+
+    def test_all_entries_exist(self):
+        for name in agentmeter.__all__:
+            assert hasattr(agentmeter, name), name
+
+    def test_all_has_no_duplicates(self):
+        assert len(agentmeter.__all__) == len(set(agentmeter.__all__))
+
+    def test_all_covers_every_public_name(self):
+        # A public name missing from __all__ is an undocumented surface that
+        # users will import anyway and we will then be unable to change.
+        ignored = {"annotations"}  # __future__ import, not a public export
+        public = {
+            name
+            for name, value in vars(agentmeter).items()
+            if not name.startswith("_")
+            and name not in ignored
+            and not isinstance(value, ModuleType)
+        }
+        assert public - set(agentmeter.__all__) == set()
+
+    def test_version_is_exposed(self):
+        assert isinstance(agentmeter.__version__, str)
+
+    def test_instrument_signature_is_locked(self):
+        params = inspect.signature(instrument).parameters
+        assert list(params) == ["target", "adapter", "config", "overrides"]
+        assert params["adapter"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params["config"].kind is inspect.Parameter.KEYWORD_ONLY
+
+    def test_public_callables_are_annotated(self):
+        for fn in (instrument, meter):
+            hints = inspect.get_annotations(fn)
+            assert "return" in hints, fn.__name__
+
+
+class TestInstrument:
+    def test_returns_the_same_object(self):
+        agent = object()
+        assert instrument(agent) is agent
+
+    def test_accepts_a_known_adapter(self):
+        agent = object()
+        assert instrument(agent, adapter="langgraph") is agent
+
+    def test_unknown_adapter_raises_at_setup(self):
+        with pytest.raises(AgentMeterConfigError, match="unknown adapter"):
+            instrument(object(), adapter="not_a_framework")
+
+    def test_unknown_config_option_raises_at_setup(self):
+        with pytest.raises(AgentMeterConfigError, match="unknown config option"):
+            instrument(object(), definitely_not_an_option=True)
+
+    def test_overrides_apply(self):
+        # Should not raise; the override is a real field.
+        assert instrument(object(), quality_lane=True) is not None
+
+
+class TestMeter:
+    def test_bare_decorator_preserves_behavior(self):
+        @meter
+        def double(x: int) -> int:
+            return x * 2
+
+        assert double(21) == 42
+
+    def test_called_decorator_preserves_behavior(self):
+        @meter(budget="$0.50")
+        def double(x: int) -> int:
+            return x * 2
+
+        assert double(21) == 42
+
+    def test_preserves_metadata(self):
+        @meter
+        def documented(x: int) -> int:
+            """Docstring survives."""
+            return x
+
+        assert documented.__name__ == "documented"
+        assert documented.__doc__ == "Docstring survives."
+
+    def test_exceptions_from_the_agent_propagate(self):
+        @meter
+        def explode() -> None:
+            raise ValueError("agent error")
+
+        # agentmeter observes runs; it must never swallow the user's exception.
+        with pytest.raises(ValueError, match="agent error"):
+            explode()
+
+    def test_run_is_active_inside_and_cleared_after(self):
+        seen: list[str | None] = []
+
+        @meter
+        def inner() -> None:
+            run = current_run()
+            seen.append(run.run_id if run else None)
+
+        inner()
+        assert seen[0] is not None
+        assert current_run() is None
+
+    def test_bad_budget_raises_at_decoration_time(self):
+        with pytest.raises(AgentMeterConfigError):
+            meter(budget="not a number")
+
+
+class TestBudgetPolicy:
+    @pytest.mark.parametrize(
+        ("spec", "expected"),
+        [("$0.50", 0.50), ("0.50", 0.50), (0.5, 0.5), (2, 2.0), ("$1,000.00", 1000.0)],
+    )
+    def test_parse_accepts_documented_forms(self, spec, expected):
+        assert BudgetPolicy.parse(spec).limit_usd == pytest.approx(expected)
+
+    def test_parse_is_idempotent(self):
+        policy = BudgetPolicy(limit_usd=1.0)
+        assert BudgetPolicy.parse(policy) is policy
+
+    def test_rejects_unparseable(self):
+        with pytest.raises(AgentMeterConfigError):
+            BudgetPolicy.parse("free")
+
+    def test_rejects_non_positive(self):
+        with pytest.raises(AgentMeterConfigError):
+            BudgetPolicy(limit_usd=0)
+
+    def test_is_immutable(self):
+        with pytest.raises(FrozenInstanceError):
+            BudgetPolicy(limit_usd=1.0).limit_usd = 2.0  # type: ignore[misc]
+
+
+class TestRunContextSurface:
+    def test_usable_as_a_context_manager(self):
+        with RunContext(budget="$0.50") as run:
+            assert isinstance(run, RunContext)
+            assert run.is_active
+
+    def test_config_defaults_are_the_documented_flags(self):
+        config = Config()
+        assert config.cost_lane is True
+        assert config.behavior_lane is True
+        # Off by default is an architectural decision, not a preference (ADR-003).
+        assert config.quality_lane is False
+        assert config.store_backend == "memory"
