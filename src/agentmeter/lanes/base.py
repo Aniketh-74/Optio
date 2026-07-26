@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import ReadableSpan
@@ -108,28 +108,8 @@ class Lane(ABC):
         return f"<{type(self).__name__} name={self.name!r}>"
 
 
-def enabled_lanes(config: Config) -> list[Any]:
-    """Return the lane instances enabled by configuration.
-
-    Centralising the wiring here keeps ``runtime`` free of concrete lane imports
-    (Section 3.1) -- the tap asks for lanes rather than knowing which exist.
-
-    Concrete lanes are imported inside the function so that ``lanes.base``
-    itself stays importable by anything, and so a lane module that fails to
-    import cannot take down the whole library at import time.
-
-    Args:
-        config: Active configuration.
-
-    Returns:
-        Enabled lane instances, in dispatch order. Behavior lands in M3 and
-        quality in M5; until then only cost is wired.
-    """
-    lanes: list[Any] = []
-
-    if config.cost_lane:
-        from agentmeter.lanes.cost.lane import CostLane
-
-        lanes.append(CostLane(config))
-
-    return lanes
+# Lane *wiring* deliberately lives in `agentmeter.lanes.registry`, not here.
+# While `enabled_lanes` sat in this module it imported every concrete lane,
+# which made each lane a transitive importer of every other one through the
+# shared base -- breaking the independence contract in Section 3.1 without any
+# lane actually referring to another.

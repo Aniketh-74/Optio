@@ -17,6 +17,7 @@ Summaries live in [IMPLEMENTATION.md §15](../../../IMPLEMENTATION.md); full rec
 | 008 | Apache-2.0 | Accepted (summary in §15) |
 | [009](adr-009-signals-are-written-to-the-run-span.md) | Signals are written to the run span, not the step span | Accepted |
 | [010](adr-010-a-closed-run-is-final.md) | A closed run is final | Accepted |
+| [011](adr-011-lane-wiring-lives-outside-the-lane-abc.md) | Lane wiring lives outside the lane ABC | Accepted |
 
 ADRs 000, 001, and 004 are expanded here first because they are the ones M0 code already depends on: they determine what the library is allowed to do, and what it must never do.
 
@@ -27,6 +28,12 @@ made freely.
 ADR-010 is new in M2. The ledger's stated invariant (R-TECH-1) covers ordering
 *within* a run and is silent on what happens after one ends; the property tests
 found that gap on their first run, so the answer is written down.
+
+ADR-011 is new in M3, and is the smallest of these — it records *not* changing
+an architectural rule. Adding a second lane made the lane-independence contract
+(§3.1) fail, and the fix was to move the wiring rather than relax the boundary.
+Written down because the alternative, a one-line lint exemption, would have been
+invisible in review and is how such a contract gets dismantled.
 
 ## Format
 

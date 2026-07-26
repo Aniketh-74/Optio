@@ -16,7 +16,8 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from agentmeter import semconv
-from agentmeter.lanes.base import Lane, RunLike, Signal, enabled_lanes
+from agentmeter.lanes.base import Lane, RunLike, Signal
+from agentmeter.lanes.registry import enabled_lanes
 from agentmeter.runtime.run_context import RunContext
 from agentmeter.store.base import StateStore
 
@@ -56,18 +57,25 @@ class TestAbstractContracts:
             return
         raise AssertionError("StateStore must be abstract")
 
-    def test_cost_lane_is_enabled_by_default(self):
-        # Cost landed in M2. Behavior (M3) and quality (M5) are still pending,
-        # and quality is off by default regardless (ADR-003).
+    def test_cost_and_behavior_are_enabled_by_default(self):
+        # Cost landed in M2, behavior in M3. Quality (M5) is off by default
+        # regardless (ADR-003), so it must not appear even once it exists.
         from agentmeter.config import Config
 
         names = [lane.name for lane in enabled_lanes(Config())]
-        assert names == ["cost"]
+        assert names == ["cost", "behavior"]
+        assert "quality" not in names
 
-    def test_disabling_the_cost_lane_is_honoured(self):
+    def test_each_lane_flag_is_honoured_independently(self):
+        # Asserts the rule rather than a snapshot of today's lane set: each
+        # flag controls exactly its own lane and nothing else. A snapshot
+        # assertion would have to be rewritten every milestone, which is how a
+        # test stops being read and starts being updated reflexively.
         from agentmeter.config import Config
 
-        assert enabled_lanes(Config(cost_lane=False)) == []
+        assert [lane.name for lane in enabled_lanes(Config(cost_lane=False))] == ["behavior"]
+        assert [lane.name for lane in enabled_lanes(Config(behavior_lane=False))] == ["cost"]
+        assert enabled_lanes(Config(cost_lane=False, behavior_lane=False)) == []
 
 
 class TestSignal:

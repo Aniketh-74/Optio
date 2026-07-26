@@ -37,7 +37,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import SpanProcessor
 
 from agentmeter import semconv
-from agentmeter.lanes.base import enabled_lanes
+from agentmeter.lanes.registry import enabled_lanes
 from agentmeter.runtime.failopen import guard, guard_signals
 from agentmeter.runtime.run_context import current_run
 from agentmeter.runtime.signal_writer import write_signals
