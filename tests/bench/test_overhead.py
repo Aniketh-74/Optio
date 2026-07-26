@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import statistics
 import time
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from opentelemetry.sdk.trace import TracerProvider
@@ -26,6 +27,9 @@ from agentmeter import semconv
 from agentmeter.config import BudgetPolicy, default_config
 from agentmeter.runtime.run_context import RunContext
 from agentmeter.runtime.span_tap import AgentMeterSpanTap
+
+if TYPE_CHECKING:
+    from opentelemetry.sdk.trace import ReadableSpan
 
 pytestmark = pytest.mark.bench
 
@@ -44,13 +48,20 @@ def _percentile(values: list[float], pct: float) -> float:
 
 
 def _time_steps(tracer: object, steps: int) -> list[float]:
-    """Emit GenAI spans, returning per-step wall-clock durations."""
+    """Emit GenAI spans, returning per-step wall-clock durations.
+
+    Each step names a distinct tool. That is the *expensive* path for the
+    behavior lane: distinct signatures fill the window with unique entries, so
+    the classifier's counter does the most work it ever will. Repeating one
+    tool would collapse the counter to a single key and flatter the numbers.
+    """
     timings: list[float] = []
-    for _ in range(steps):
+    for step in range(steps):
         start = time.perf_counter()
         with tracer.start_as_current_span("llm") as span:  # type: ignore[attr-defined]
             span.set_attribute(semconv.GEN_AI_SYSTEM, "openai")
             span.set_attribute(semconv.GEN_AI_REQUEST_MODEL, "gpt-4o")
+            span.set_attribute(semconv.GEN_AI_TOOL_NAME, f"tool_{step % 64}")
             span.set_attribute(semconv.GEN_AI_USAGE_INPUT_TOKENS, 1500)
             span.set_attribute(semconv.GEN_AI_USAGE_OUTPUT_TOKENS, 300)
         timings.append(time.perf_counter() - start)
@@ -87,8 +98,12 @@ def _measure_overhead() -> tuple[float, float, float]:
     return mean, p95, p99
 
 
-def test_cost_lane_overhead_is_within_budget() -> None:
-    """Added per-step latency stays under the SC-5 p99 budget."""
+def test_lane_overhead_is_within_budget() -> None:
+    """Added per-step latency stays under the SC-5 p99 budget.
+
+    Covers cost + behavior together, which is exactly the combination SC-5
+    names (the quality lane is excluded there as opt-in and async).
+    """
     mean, p95, p99 = _measure_overhead()
 
     print(
@@ -181,6 +196,56 @@ def test_snapshot_with_many_open_reservations_stays_within_budget() -> None:
 
     print(f"\nsnapshot with 10k OPEN reservations: {per_call * 1e6:.1f}us")
     assert per_call < BUDGET_P99_SECONDS
+
+
+def test_classification_is_flat_in_run_length() -> None:
+    """The behavior lane must not get slower as a run gets longer.
+
+    ``classify`` builds a Counter over the whole window on every step, so its
+    cost is O(window) -- bounded by config, not by run length. An accidental
+    change to O(total steps) would make a long run quadratic, and would show up
+    to a user as an agent that mysteriously degrades over hours rather than as
+    any test failure.
+    """
+    from agentmeter.config import Config
+    from agentmeter.lanes.behavior.lane import BehaviorLane
+
+    class _Run:
+        run_id = "bench"
+        budget = None
+
+    lane = BehaviorLane(Config(behavior_window_size=50))
+    run = _Run()
+
+    def step_cost(after: int) -> float:
+        for n in range(after):
+            lane.process_span(_span_stub(f"tool_{n % 8}"), run)
+        start = time.perf_counter()
+        for n in range(500):
+            lane.process_span(_span_stub(f"tool_{n % 8}"), run)
+        return (time.perf_counter() - start) / 500
+
+    early = step_cost(200)
+    late = step_cost(10_000)
+
+    print(f"\nbehavior step: early {early * 1e6:.2f}us -> after 10k steps {late * 1e6:.2f}us")
+    assert late < early * 5 + 1e-5, "behavior lane cost grows with run length"
+    assert late < BUDGET_P99_SECONDS
+
+
+def _span_stub(tool: str) -> ReadableSpan:
+    """A minimal span-like object for lane-level timing."""
+    from unittest.mock import Mock
+
+    span = Mock()
+    span.name = "tool"
+    span.attributes = {
+        semconv.GEN_AI_TOOL_NAME: tool,
+        semconv.GEN_AI_REQUEST_MODEL: "gpt-4o",
+        semconv.GEN_AI_USAGE_INPUT_TOKENS: 1500,
+    }
+    span.status = None
+    return cast("ReadableSpan", span)
 
 
 def test_disabled_lanes_cost_almost_nothing() -> None:

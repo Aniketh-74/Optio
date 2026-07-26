@@ -39,6 +39,10 @@ All names live under the `gen_ai.` namespace. Monetary values are USD doubles.
 | `looping` | A repeating cycle with no state progress across the window. |
 | `retry_storm` | Error-driven retries dominate the recent window. |
 
+See [`behavior.md`](behavior.md) for the thresholds behind each state, the measured
+false-positive rate, and guidance on which states are safe to gate on. In short:
+gate on `looping` and `retry_storm`; alert on `repeating`, which normal agents produce.
+
 ### Absence is meaningful
 
 A signal is **omitted** rather than emitted as zero or null when it cannot be computed —

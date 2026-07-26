@@ -353,8 +353,10 @@ class TestProcessorProtocol:
         # The point is that the tap asks `enabled_lanes` rather than importing
         # concrete lanes itself (§3.1).
         tap = AgentMeterSpanTap(default_config())
-        assert [lane.name for lane in tap.lanes] == ["cost"]
+        assert [lane.name for lane in tap.lanes] == ["cost", "behavior"]
 
     def test_config_controls_which_lanes_are_wired(self) -> None:
-        tap = AgentMeterSpanTap(Config(cost_lane=False))
-        assert tap.lanes == []
+        assert [lane.name for lane in AgentMeterSpanTap(Config(cost_lane=False)).lanes] == [
+            "behavior"
+        ]
+        assert AgentMeterSpanTap(Config(cost_lane=False, behavior_lane=False)).lanes == []

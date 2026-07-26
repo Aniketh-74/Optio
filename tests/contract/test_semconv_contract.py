@@ -91,3 +91,30 @@ def test_signal_constants_are_unique():
         semconv.RUN_SUCCESS,
     ]
     assert len(names) == len(set(names))
+
+
+def test_the_detector_only_produces_documented_states():
+    # Binds the classifier to the published contract. semconv could list the
+    # four states while the detector returned a fifth: the signal writer would
+    # reject it and the behavior signal would vanish silently in production
+    # while every unit test stayed green.
+    from agentmeter.lanes.behavior.detectors import classify
+    from agentmeter.lanes.behavior.window import BehaviorWindow, StepSignature
+
+    produced = set()
+    patterns = [
+        [],
+        [("same", "d", False)] * 12,
+        [("api", "d", True)] * 12,
+        [(f"t{n}", f"d{n}", False) for n in range(12)],
+        [("a", "d", False)] * 6 + [(f"t{n}", f"d{n}", False) for n in range(6)],
+    ]
+    for pattern in patterns:
+        window = BehaviorWindow(50)
+        for tool, digest, errored in pattern:
+            window.add(StepSignature(tool, digest, errored))
+        produced.add(classify(window).state)
+
+    assert produced <= semconv.LOOP_STATES
+    # All four are reachable; a state nobody can produce is dead contract.
+    assert produced == semconv.LOOP_STATES
