@@ -24,19 +24,27 @@ from agentmeter.runtime.adapter_base import Adapter
 
 _log: Final = logging.getLogger("agentmeter")
 
-#: Adapter name to ``(module, class)``. M1 ships LangGraph; the rest land in M4.
-#: Names here are what users pass as ``adapter=``. The class is named explicitly
-#: rather than discovered by a naming convention -- a scan would also match the
-#: imported ``Adapter`` base class, and "find the class whose name ends in
-#: Adapter" is the kind of cleverness that fails silently later.
+#: Adapter name to ``(module, class)``. LangGraph landed in M1; the other three
+#: in M4. Names here are what users pass as ``adapter=``. The class is named
+#: explicitly rather than discovered by a naming convention -- a scan would also
+#: match the imported ``Adapter`` base class, and "find the class whose name
+#: ends in Adapter" is the kind of cleverness that fails silently later.
+#:
+#: Order matters for duck-typed resolution: ``resolve_adapter`` returns the
+#: first match, so the most specifically-matched frameworks come first. In
+#: practice the match rules are disjoint, but relying on that silently would
+#: make a future adapter's overlap a mystery rather than a merge conflict.
 _ADAPTER_MODULES: Final[dict[str, tuple[str, str]]] = {
     "langgraph": ("agentmeter.adapters.langgraph", "LangGraphAdapter"),
+    "openai_agents": ("agentmeter.adapters.openai_agents", "OpenAIAgentsAdapter"),
+    "crewai": ("agentmeter.adapters.crewai", "CrewAIAdapter"),
+    "claude_agent": ("agentmeter.adapters.claude_agent", "ClaudeAgentAdapter"),
 }
 
-#: Adapters designed but not yet implemented (M4). Listed separately so an early
-#: user gets "not implemented yet" rather than "unknown adapter", which are
-#: different problems with different fixes.
-_PLANNED_ADAPTERS: Final[frozenset[str]] = frozenset({"openai_agents", "crewai", "claude_agent"})
+#: Adapters designed but not yet implemented. Empty as of M4 -- kept, rather
+#: than deleted, because it distinguishes "designed, not built yet" from
+#: "unknown", which are different problems with different fixes for the user.
+_PLANNED_ADAPTERS: Final[frozenset[str]] = frozenset()
 
 
 def available_adapters() -> list[str]:
@@ -98,8 +106,9 @@ def resolve_adapter(target: object) -> Adapter:
             return adapter
 
     target_type = f"{type(target).__module__}.{type(target).__qualname__}"
+    planned = f" (planned: {sorted(_PLANNED_ADAPTERS)})" if _PLANNED_ADAPTERS else ""
     raise UnsupportedFrameworkError(
-        f"no adapter matches {target_type}; available: {available_adapters()}"
-        f" (planned: {sorted(_PLANNED_ADAPTERS)}). "
-        f"Pass adapter='...' to select one explicitly."
+        f"no adapter matches {target_type}; available: {available_adapters()}{planned}. "
+        f"Pass adapter='...' to select one explicitly, or use RunContext "
+        f"to govern an unsupported framework."
     )

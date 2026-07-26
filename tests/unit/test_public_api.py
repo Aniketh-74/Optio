@@ -100,10 +100,12 @@ class TestInstrument:
         with pytest.raises(AgentMeterConfigError, match="unknown adapter"):
             instrument(_FakeGraph(), adapter="not_a_framework")
 
-    def test_planned_adapter_reports_that_it_is_unimplemented(self):
-        # "Planned but not built" and "no such thing" are different problems
-        # with different fixes, so they get different messages.
-        with pytest.raises(AgentMeterConfigError, match="not implemented yet"):
+    def test_naming_the_wrong_adapter_raises_at_setup(self):
+        # All four adapters ship as of M4, so there is no longer a "planned"
+        # case to test. The mismatch this replaces it with is the one that
+        # actually costs a user: an explicit adapter= that does not fit the
+        # object, which must fail rather than instrument nothing.
+        with pytest.raises(AgentMeterConfigError, match="cannot instrument"):
             instrument(_FakeGraph(), adapter="crewai")
 
     def test_unrecognised_target_raises_at_setup(self):
