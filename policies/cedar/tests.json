@@ -1,0 +1,75 @@
+{
+  "_comment": [
+    "Cedar test cases for the agentmeter pack (M4-4).",
+    "Consumed by tests/policy/test_policy_packs.py, which runs the real `cedar`",
+    "CLI when it is installed and otherwise validates structure. Each case is a",
+    "full authorization request plus the decision it must produce.",
+    "",
+    "The absence cases are the load-bearing ones: they prove an omitted signal",
+    "is treated as unknown rather than as zero or as an error. See ADR-004."
+  ],
+  "principal": "AgentMeter::Agent::\"agent-1\"",
+  "action": "Action::\"execute_step\"",
+  "cases": [
+    {
+      "name": "cheap healthy run is allowed",
+      "decision": "Allow",
+      "run": { "projected_cost": "0.10", "loop_state": "healthy" }
+    },
+    {
+      "name": "projected cost over the ceiling is denied",
+      "decision": "Deny",
+      "run": { "projected_cost": "0.75", "loop_state": "healthy" }
+    },
+    {
+      "name": "cost exactly at the ceiling is allowed",
+      "decision": "Allow",
+      "run": { "projected_cost": "0.50", "loop_state": "healthy" }
+    },
+    {
+      "name": "exhausted budget headroom is denied",
+      "decision": "Deny",
+      "run": { "budget_remaining": "0.01", "loop_state": "healthy" }
+    },
+    {
+      "name": "looping is denied",
+      "decision": "Deny",
+      "run": { "loop_state": "looping" }
+    },
+    {
+      "name": "retry_storm is denied",
+      "decision": "Deny",
+      "run": { "loop_state": "retry_storm" }
+    },
+    {
+      "name": "repeating is allowed - healthy agents repeat",
+      "decision": "Allow",
+      "run": { "loop_state": "repeating", "repeat_count": 5 }
+    },
+    {
+      "name": "low groundedness is denied when the quality lane is on",
+      "decision": "Deny",
+      "run": { "groundedness": "0.40", "loop_state": "healthy" }
+    },
+    {
+      "name": "quality lane off does not deny",
+      "decision": "Allow",
+      "run": { "actual_cost": "0.02", "loop_state": "healthy" }
+    },
+    {
+      "name": "absent cost signal does not deny",
+      "decision": "Allow",
+      "run": { "loop_state": "healthy" }
+    },
+    {
+      "name": "absent budget does not deny - most runs have no budget policy",
+      "decision": "Allow",
+      "run": { "actual_cost": "1.50", "loop_state": "healthy" }
+    },
+    {
+      "name": "no signals at all does not deny - this is a fail-open activation",
+      "decision": "Allow",
+      "run": {}
+    }
+  ]
+}

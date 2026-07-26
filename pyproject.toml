@@ -54,6 +54,10 @@ dev = [
     "hypothesis>=6.100.0",
     "import-linter>=2.0.0",
     "pip-audit>=2.7.0",
+    # Cedar engine for the policy-pack gate (SC-3). The bindings rather than
+    # the `cedar` CLI, which needs a Rust toolchain -- this way the pack is
+    # verified locally too, not only in CI. Test-only; never a runtime import.
+    "cedarpy>=4.8.0",
 ]
 
 [project.urls]
@@ -129,6 +133,7 @@ markers = [
     "contract: semconv conformance (SC-2)",
     "integration: real span flow per adapter",
     "bench: overhead benchmarks (SC-5)",
+    "policy: policy packs evaluate correctly against sample signals (SC-3)",
 ]
 
 [tool.coverage.run]

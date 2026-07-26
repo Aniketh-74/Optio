@@ -1,0 +1,37 @@
+// Cedar schema for agentmeter signals (M4-4).
+//
+// Every attribute is OPTIONAL (`?`). That is not laziness -- it is the signal
+// contract. agentmeter omits any signal it cannot compute rather than emitting
+// a wrong value (docs/signals.md, "Absence is meaningful"), so a schema that
+// marked these required would reject exactly the runs where a lane was off,
+// unpriced, or caught by the fail-open guard.
+//
+// Attribute names drop the `gen_ai.run.` prefix and replace dots with
+// underscores, because Cedar identifiers cannot contain dots. The mapping is
+// mechanical and is spelled out in this directory's README.
+
+namespace AgentMeter {
+  entity Agent;
+
+  entity Run {
+    // cost lane
+    actual_cost?: decimal,
+    projected_cost?: decimal,
+    budget_remaining?: decimal,
+    cost_per_successful_task?: decimal,
+
+    // behavior lane
+    loop_state?: String,
+    repeat_count?: Long,
+
+    // quality lane (opt-in, off by default)
+    groundedness?: decimal,
+    task_success?: decimal,
+    success?: Bool,
+  };
+
+  action "execute_step" appliesTo {
+    principal: [Agent],
+    resource: [Run],
+  };
+}
