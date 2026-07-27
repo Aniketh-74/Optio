@@ -146,6 +146,33 @@ judgement to dismiss. Wiring it as a blocking gate would train contributors to a
 the two modules where silent wrongness is worst — the ledger and the guard — and after any
 change to cost arithmetic.
 
+## Concurrency
+
+Agent frameworks are overwhelmingly concurrent — LangGraph fans out to parallel branches,
+CrewAI runs agents on a pool — so single-threaded correctness says little about how the library
+behaves where it actually runs.
+
+Building these tests produced a result worth recording, because it contradicts the obvious
+approach. **Removing the ledger's lock entirely and hammering it with 64 threads at a 100 ns
+switch interval produces no lost update at all.** CPython's GIL makes the individual dict writes
+atomic, so the natural "many threads, check the total" test passes whether the lock exists or
+not. It looks like a concurrency test and proves nothing.
+
+What the lock actually guards is the **composite** read-modify-write in `close_run`: it reads
+`len(ledger.open)`, then writes `leaked_steps` and `closed` from that read. A `reserve` landing
+in between yields a leak count that disagrees with the ledger's own state — and the leak count
+is what tells an operator whether a reported cost is measured spend or a reserved worst case.
+
+Measured against that specific interleaving: **75 inconsistent closes in 400 rounds with the
+lock removed, 0 with it.** That is the test worth having, and every concurrency test here was
+validated the same way — by deleting the synchronisation and confirming the suite goes red.
+A concurrency test never checked against a broken lock is decoration.
+
+The suite also covers 16 simultaneous runs asserting no cross-run cost contamination (two
+plausible numbers is worse than one obviously wrong one), all three lanes writing at once,
+concurrent `install_tap` calls resolving to a single tap, and every test bounded by a timeout so
+a deadlock fails CI rather than hanging it.
+
 ## What is deliberately not tested
 
 **Detector accuracy against real agent traffic.** The false-positive rate (0/1200) is measured
