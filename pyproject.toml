@@ -188,6 +188,7 @@ markers = [
     "policy: policy packs evaluate correctly against sample signals (SC-3)",
     "demo: the standalone demo produces the signals it claims (ADR-006)",
     "frameworks: adapters against the real frameworks they claim (R-TECH-3)",
+    "soak: long-run memory stability (§11)",
 ]
 
 [tool.coverage.run]

@@ -19,7 +19,36 @@ how we know the tests would actually catch a bug.
 | Demo smoke | `docker compose up` produces the signals | blocking (ADR-006) |
 | **Real frameworks** | adapters against actual LangGraph/CrewAI/OpenAI/Claude | blocking (R-TECH-3) |
 | **Portability** | 5 Pythons × 3 OSes, dependency floor, built wheel | blocking |
+| **Soak** | memory over 50k steps and 40k runs | blocking (§11) |
 | **Mutation** | do the tests detect an injected bug? | periodic, see below |
+
+## Soak testing
+
+§11 budgets memory per run and names a soak test as its verification. It guards the failure no
+other suite can see: nothing breaks, it just grows. A few hundred bytes leaked per run is
+invisible in a unit test and fatal in an agent process that stays up for a week.
+
+Measured with `tracemalloc` rather than RSS — RSS is dominated by allocator behaviour and GC
+timing and would make the test flap; tracemalloc counts what Python actually holds.
+
+| Scenario | Result |
+|---|---|
+| One run, 50,000 steps | **+0.4 KiB** total |
+| Quality lane on, 20,000 steps | **+0.0 KiB** |
+| 40,000 short runs, steady state | **+0.0 bytes/run** |
+
+The first row is the design claim made good: cost is O(window), not O(steps), so a long-lived
+agent does not die overnight.
+
+The third needed care to interpret. A naive measurement reports ~74 bytes per run, which looks
+like a slow leak. Measuring the *rate* in successive blocks shows what it really is: ~114 B/run
+in the first block, ~34 in the second, then **0.0 for the following 30,000 runs**. That is the
+ledger's closed-run FIFO filling to its 4,096-id cap (ADR-010) and then holding — bounded state,
+not a leak.
+
+A ceiling alone would not have caught the difference, since a genuine leak that happens to be
+small passes any per-run ceiling. `test_growth_stops_rather_than_merely_being_slow` asserts the
+rate falls to zero, which is the property that actually matters.
 
 ## Mutation testing
 

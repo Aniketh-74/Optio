@@ -382,6 +382,28 @@ jobs:
             "tests/frameworks/test_real_frameworks.py::${{ matrix.suite }}" \
             "tests/frameworks/test_real_frameworks.py::TestNoFrameworkClaimsAnother"
 
+  soak:
+    name: Long-run memory stability (Section 11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+
+      - name: Memory is bounded by window size, not by run length
+        # Section 11 budgets memory per run and names a soak test as its
+        # verification; there was none. This is the failure no other suite can
+        # see: nothing breaks, it just grows. A few hundred bytes leaked per run
+        # is invisible in a unit test and fatal in a process that stays up for
+        # a week.
+        #
+        # Slower than the other jobs (~50s) because the growth only becomes
+        # measurable over tens of thousands of runs.
+        run: pytest -v -s -m soak --no-cov
+
   behavior:
     name: Detector false-positive rate (Section 6.4)
     runs-on: ubuntu-latest

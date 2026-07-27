@@ -239,3 +239,84 @@ class TestVerdictContract:
 
     def test_repeat_count_is_never_negative(self) -> None:
         assert classify(BehaviorWindow(10)).repeat_count == 0
+
+
+class TestThresholdsFireExactlyAtTheirValue:
+    """Every detector threshold uses ``>=``, so at-the-value must classify.
+
+    Found by mutation testing: `>=` mutated to `>` survived the whole suite,
+    because no test used an exact threshold value. That is an off-by-one with
+    nowhere to show up -- a run sitting precisely on the boundary would be
+    reported healthy, and nothing would ever look wrong.
+
+    These pin both sides of each boundary. Written against the constants rather
+    than literals so that retuning a threshold (a deliberate act) updates the
+    tests, while an accidental comparison flip (not deliberate) fails them.
+    """
+
+    def test_repeat_fires_at_exactly_the_threshold(self) -> None:
+        # REPEAT_THRESHOLD identical calls, padded with distinct ones so the
+        # window is long enough for a verdict but stays below loop dominance.
+        repeats = [sig("same") for _ in range(REPEAT_THRESHOLD)]
+        padding = [sig(f"other{i}") for i in range(REPEAT_THRESHOLD)]
+        verdict = classify(window_of(*repeats, *padding))
+
+        assert verdict.repeat_count == REPEAT_THRESHOLD
+        assert verdict.state == semconv.LOOP_STATE_REPEATING
+
+    def test_repeat_stays_healthy_one_below_the_threshold(self) -> None:
+        repeats = [sig("same") for _ in range(REPEAT_THRESHOLD - 1)]
+        padding = [sig(f"other{i}") for i in range(REPEAT_THRESHOLD + 1)]
+        verdict = classify(window_of(*repeats, *padding))
+
+        assert verdict.repeat_count == REPEAT_THRESHOLD - 1
+        assert verdict.state == semconv.LOOP_STATE_HEALTHY
+
+    def test_retry_storm_fires_at_exactly_the_error_floor_and_rate(self) -> None:
+        # Both conditions sit exactly on their boundary: RETRY_STORM_MIN_ERRORS
+        # errors, and an error rate of exactly RETRY_STORM_ERROR_RATE.
+        errored = [sig(f"call{i}", errored=True) for i in range(RETRY_STORM_MIN_ERRORS)]
+        clean = [sig(f"ok{i}") for i in range(RETRY_STORM_MIN_ERRORS)]
+        verdict = classify(window_of(*errored, *clean))
+
+        assert verdict.state == semconv.LOOP_STATE_RETRY_STORM
+
+    def test_retry_storm_stays_quiet_one_error_below_the_floor(self) -> None:
+        errored = [sig(f"call{i}", errored=True) for i in range(RETRY_STORM_MIN_ERRORS - 1)]
+        clean = [sig(f"ok{i}") for i in range(RETRY_STORM_MIN_ERRORS - 1)]
+        verdict = classify(window_of(*errored, *clean))
+
+        assert verdict.state != semconv.LOOP_STATE_RETRY_STORM
+
+    def test_looping_fires_at_exactly_the_dominance_share(self) -> None:
+        # Two distinct calls holding exactly LOOP_DOMINANCE of the window --
+        # the textbook stuck agent, sitting precisely on the line.
+        total = 10
+        dominant = round(total * LOOP_DOMINANCE)
+        cycle = [sig("a" if i % 2 else "b") for i in range(dominant)]
+        rest = [sig(f"z{i}") for i in range(total - dominant)]
+        window = window_of(*cycle, *rest)
+
+        # Guard the fixture itself: if this stops being exactly the boundary,
+        # the test silently stops testing the boundary.
+        counts: dict[tuple[str, str], int] = {}
+        for step in window:
+            counts[step.call] = counts.get(step.call, 0) + 1
+        share = sum(sorted(counts.values(), reverse=True)[:2]) / len(window)
+        assert share == pytest.approx(LOOP_DOMINANCE), "fixture drifted off the boundary"
+
+    def test_a_verdict_needs_exactly_min_steps(self) -> None:
+        # MIN_STEPS_FOR_VERDICT uses `<`, so at the value a verdict is allowed.
+        repeats = [sig("same") for _ in range(MIN_STEPS_FOR_VERDICT)]
+        verdict = classify(window_of(*repeats))
+
+        assert len(window_of(*repeats)) == MIN_STEPS_FOR_VERDICT
+        assert verdict.state != semconv.LOOP_STATE_HEALTHY
+
+    def test_one_step_below_the_minimum_never_reports_a_pathology(self) -> None:
+        repeats = [sig("same") for _ in range(MIN_STEPS_FOR_VERDICT - 1)]
+        verdict = classify(window_of(*repeats))
+
+        assert verdict.state == semconv.LOOP_STATE_HEALTHY
+        # The count is still reported as evidence, just never as a verdict.
+        assert verdict.repeat_count == MIN_STEPS_FOR_VERDICT - 1
