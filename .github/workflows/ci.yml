@@ -15,6 +15,18 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege for every job. Without this the workflow inherits the
+# repository default, which on many repos is read/write -- meaning a compromised
+# dependency running inside a test could push commits or publish a release.
+# Nothing in CI needs more than the ability to read the code it is testing.
+#
+# The actions below are pinned to commit SHAs rather than tags for the same
+# reason: a tag is a mutable pointer, so `@v4` is a promise the upstream owner
+# can silently rewrite. The comment after each SHA records which release it was,
+# since the SHA alone is unreadable.
+permissions:
+  contents: read
+
 env:
   FORCE_COLOR: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -24,8 +36,8 @@ jobs:
     name: Lint, types, and import boundaries
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -49,12 +61,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Floor and ceiling of the supported range, on both major platforms.
-        python-version: ["3.10", "3.13"]
-        os: [ubuntu-latest, windows-latest]
+        # Every supported Python on Linux, plus the ends of the range on macOS
+        # and Windows. A full 3x5 grid would be 15 jobs to catch bugs that are
+        # almost never version-specific *and* platform-specific at once; the
+        # cases that actually bite are path handling, line endings, and clock
+        # resolution, and those show up at the edges.
+        #
+        # `requires-python = ">=3.10"` is a promise to users, so an untested
+        # version in that range is an unbacked claim -- 3.11 and 3.12 are here
+        # because people run them, not for symmetry.
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          - {os: macos-latest, python-version: "3.10"}
+          - {os: macos-latest, python-version: "3.14"}
+          - {os: windows-latest, python-version: "3.10"}
+          - {os: windows-latest, python-version: "3.14"}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -69,18 +94,124 @@ jobs:
         run: coverage report --fail-under=85
 
       - name: Upload coverage
-        if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
+        if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage
           path: coverage.xml
+
+  floor:
+    name: Oldest supported dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install the declared minimums, not the latest
+        # `opentelemetry-sdk>=1.27.0` is a promise to anyone whose environment
+        # already pins an older OTel -- a common situation, since agentic stacks
+        # tend to hold OTel back. Every other job resolves to the newest
+        # release, so without this the floor is an untested claim and would
+        # break silently the first time the code used a newer API.
+        run: |
+          pip install "opentelemetry-api==1.27.0" "opentelemetry-sdk==1.27.0"
+          pip install --no-deps -e .
+          pip install pytest pytest-cov hypothesis
+          python -c "import opentelemetry.sdk.version as v; print('otel', v.__version__)"
+
+      - name: Suite passes against the floor
+        run: pytest -q --no-cov tests/unit tests/integration tests/contract
+
+  install:
+    name: Installs and works from a built wheel
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build the distributions
+        run: |
+          pip install build twine
+          python -m build
+          twine check dist/*
+
+      - name: Install the wheel the way a user would
+        # Every other job uses `pip install -e .`, which runs from the source
+        # tree and can pass while the *packaged* artifact is broken -- a missing
+        # py.typed, a subpackage left out of the wheel, a data file that only
+        # exists in git. This installs the built artifact into a clean
+        # environment, outside the repo, which is what `pip install optio`
+        # actually does on a stranger's machine.
+        shell: bash
+        run: |
+          python -m venv /tmp/fresh
+          if [ -f /tmp/fresh/bin/python ]; then PY=/tmp/fresh/bin/python; else PY=/tmp/fresh/Scripts/python; fi
+          "$PY" -m pip install --quiet dist/*.whl
+          cd /tmp
+          "$PY" -c "
+          import optio
+          from optio import instrument, meter, RunContext, Config
+          print('version:', optio.__version__)
+          print('semconv:', optio.GENAI_SEMCONV_VERSION)
+          import optio.semconv as s
+          assert len(s.EMITTED_SIGNALS) == 9, s.EMITTED_SIGNALS
+          import importlib.resources as r
+          assert (r.files('optio') / 'py.typed').is_file(), 'py.typed missing from the wheel'
+          print('packaged import OK')
+          "
+
+      - name: A real run produces real signals, from the installed package
+        # Proves the five-minute-first-value path (SC-1) against the artifact,
+        # not the repo: instrument, run, read the signals back off the span.
+        shell: bash
+        run: |
+          if [ -f /tmp/fresh/bin/python ]; then PY=/tmp/fresh/bin/python; else PY=/tmp/fresh/Scripts/python; fi
+          cd /tmp
+          "$PY" -c "
+          from opentelemetry.sdk.trace import TracerProvider
+          from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+          from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+          from optio import meter, semconv
+
+          exporter = InMemorySpanExporter()
+          provider = TracerProvider()
+          provider.add_span_processor(SimpleSpanProcessor(exporter))
+          tracer = provider.get_tracer('agent')
+
+          @meter(budget='\$5.00', provider=provider)
+          def agent():
+              for _ in range(3):
+                  with tracer.start_as_current_span('llm') as span:
+                      span.set_attribute(semconv.GEN_AI_REQUEST_MODEL, 'gpt-4o')
+                      span.set_attribute(semconv.GEN_AI_USAGE_INPUT_TOKENS, 1_000_000)
+                      span.set_attribute(semconv.GEN_AI_USAGE_OUTPUT_TOKENS, 0)
+
+          agent()
+          run_span = next(s for s in exporter.get_finished_spans() if s.name.startswith('optio.run'))
+          attrs = dict(run_span.attributes or {})
+          cost = attrs.get(semconv.RUN_ACTUAL_COST)
+          assert cost is not None, f'no cost signal on the run span: {attrs}'
+          assert abs(cost - 7.50) < 0.01, cost
+          assert attrs.get(semconv.RUN_BUDGET_REMAINING) is not None
+          print(f'installed package emitted actual_cost={cost}')
+          "
 
   contract:
     name: Signal contract (SC-2)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -95,8 +226,8 @@ jobs:
     name: Dependency audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -130,8 +261,8 @@ jobs:
     name: Fail-open proof (SC-4)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -152,8 +283,8 @@ jobs:
     name: Ledger invariant (R-TECH-1)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -171,12 +302,60 @@ jobs:
           pytest -q --cov=optio.lanes.cost.ledger \
                     --cov-report=term-missing --cov-fail-under=100
 
+  frameworks:
+    name: Adapter vs real ${{ matrix.framework }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One job per framework, isolated on purpose: these are large,
+        # opinionated dependency trees that conflict with each other, and a
+        # shared environment would mean a resolver failure in one framework
+        # silently skipping the others. Isolation also means a framework
+        # breaking upstream turns one square red instead of the whole matrix.
+        include:
+          - {framework: langgraph, package: "langgraph", suite: TestLangGraph, python: "3.12"}
+          - {framework: openai-agents, package: "openai-agents", suite: TestOpenAIAgents, python: "3.12"}
+          - {framework: claude-agent-sdk, package: "claude-agent-sdk", suite: TestClaudeAgentSDK, python: "3.12"}
+          # CrewAI pulls a NumPy that has no wheel for the newest CPython and
+          # fails to build from source; 3.12 is the newest it installs on
+          # cleanly. Pinned rather than floated so the failure, when it comes,
+          # is a version bump here and not a mystery.
+          - {framework: crewai, package: "crewai", suite: TestCrewAI, python: "3.12"}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - run: pip install -e ".[dev]"
+
+      - name: Install the real ${{ matrix.framework }}
+        run: pip install "${{ matrix.package }}"
+
+      - name: Record the version under test
+        # Printed so a future failure can be tied to a specific release without
+        # re-running anything (R-TECH-3: adapters break on framework churn).
+        run: pip show "${{ matrix.package }}" | head -2
+
+      - name: The adapter recognises what the framework really builds
+        # OPTIO_REQUIRE_FRAMEWORKS turns "not installed" from a skip into a
+        # failure. Locally these skip so a contributor need not install four
+        # heavy trees; here the whole point is that they ran.
+        env:
+          OPTIO_REQUIRE_FRAMEWORKS: "1"
+        run: |
+          pytest -v -m frameworks \
+            "tests/frameworks/test_real_frameworks.py::${{ matrix.suite }}" \
+            "tests/frameworks/test_real_frameworks.py::TestNoFrameworkClaimsAnother"
+
   behavior:
     name: Detector false-positive rate (Section 6.4)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -195,8 +374,8 @@ jobs:
     name: Policy packs (SC-3)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -230,8 +409,8 @@ jobs:
     name: Standalone demo (ADR-006)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -308,8 +487,8 @@ jobs:
     name: Overhead budget (SC-5)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip

@@ -20,6 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: System :: Monitoring",
     "Typing :: Typed",
 ]
@@ -124,6 +125,19 @@ files = ["src", "tests"]
 module = ["tests.*"]
 disallow_untyped_defs = false
 
+# The real-framework matrix (tests/frameworks/) imports the actual packages.
+# They are optional extras and none of them ship type stubs, so type-checking
+# cannot resolve them in an environment that has not installed all four -- and
+# no single environment does: CI runs one framework per isolated job precisely
+# because their dependency trees conflict.
+#
+# Scoped to these four module names rather than silencing import errors
+# globally: a typo in an `optio` import must still fail, and it would be easy
+# to lose that by reaching for `ignore_missing_imports` at the top level.
+[[tool.mypy.overrides]]
+module = ["langgraph.*", "agents.*", "claude_agent_sdk.*", "crewai.*"]
+ignore_missing_imports = true
+
 # ---------------------------------------------------------------------------
 # Test (§9)
 # ---------------------------------------------------------------------------
@@ -139,6 +153,7 @@ markers = [
     "bench: overhead benchmarks (SC-5)",
     "policy: policy packs evaluate correctly against sample signals (SC-3)",
     "demo: the standalone demo produces the signals it claims (ADR-006)",
+    "frameworks: adapters against the real frameworks they claim (R-TECH-3)",
 ]
 
 [tool.coverage.run]

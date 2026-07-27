@@ -1,0 +1,54 @@
+# Dependency updates (Section 10, R-TECH-3).
+#
+# Two ecosystems, for different reasons:
+#
+# * **github-actions** -- the actions in ci.yml are pinned to commit SHAs so a
+#   moved tag cannot silently change what runs. That safety costs visibility:
+#   a pinned SHA never picks up a security fix on its own. Dependabot rewrites
+#   the pin and the trailing version comment together, which is the only
+#   maintainable way to keep both properties.
+#
+# * **pip** -- the supply-chain surface `pip-audit` gates on. Grouped into one
+#   PR per week rather than one per package: this is a solo-maintained project
+#   (R-OPS-1) and a stream of single-dependency PRs is how dependency updates
+#   stop being reviewed at all.
+#
+# Runtime dependencies are deliberately *not* grouped with dev ones. `optio`
+# has exactly two (opentelemetry-api and -sdk) and they define the wire format
+# every downstream policy is written against (ADR-002), so an upgrade there
+# deserves its own PR and its own read of the semconv changelog.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      # Dev tooling moves fast and breaks nothing users can see; batch it.
+      dev-tooling:
+        dependency-type: development
+        patterns: ["*"]
+    ignore:
+      # Never let a bot raise the floor. `>=1.27.0` is a compatibility promise
+      # to users whose environments pin OTel back, and the `floor` CI job
+      # exists to keep it honest -- an automated bump would quietly retract the
+      # promise while every gate stayed green.
+      - dependency-name: opentelemetry-api
+        update-types: ["version-update:semver-major"]
+      - dependency-name: opentelemetry-sdk
+        update-types: ["version-update:semver-major"]
