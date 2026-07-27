@@ -246,24 +246,58 @@ jobs:
         # a clone, one command, no setup. `--exit-code-from demo` propagates
         # the demo's own verification, so a demo that runs but stops
         # demonstrating anything fails the build rather than printing $0.00.
+        #
+        # `--exit-code-from` is deliberately not used: it implies
+        # `--abort-on-container-exit`, which stops *all* containers the instant
+        # the demo exits -- including the collector, potentially mid-flush and
+        # before it has printed the spans it received. The next step needs
+        # those lines, so the collector is started detached and left running,
+        # and the demo's exit code is read from the container it ran in.
+        #
+        # That exit code is still the gate: it is the demo's own `_verify()`,
+        # so a demo that runs but stops demonstrating anything fails the build.
+        # `docker wait` blocks until the container exits and prints its status,
+        # which is the one way to read it without any implied teardown.
         working-directory: examples/demo
-        run: docker compose up --build --abort-on-container-exit --exit-code-from demo
+        run: |
+          docker compose up --build -d
+          docker compose logs -f demo &
+          status=$(docker wait agentmeter-demo)
+          wait %1 2>/dev/null || true
+          echo "demo exited with status $status"
+          exit "$status"
 
       - name: Collector received the signals
         # The compose run above proves the demo works; this proves the signals
         # travelled a real OTLP pipeline to a real collector rather than only
         # being printed by the process that computed them.
+        #
+        # Polls rather than reading once. The previous step returns when the
+        # *demo* container exits, but the collector is a separate container
+        # with a 1s batch timeout and an asynchronous debug exporter, so a
+        # single immediate read races the flush and reports a false negative.
         working-directory: examples/demo
         run: |
-          docker compose logs collector > collector.log
-          for signal in gen_ai.run.actual_cost gen_ai.run.loop_state; do
-            if ! grep -q "$signal" collector.log; then
-              echo "::error::$signal never reached the collector"
-              cat collector.log
-              exit 1
+          signals="gen_ai.run.actual_cost gen_ai.run.loop_state"
+          for attempt in $(seq 1 30); do
+            docker compose logs --no-color collector > collector.log 2>&1
+            missing=""
+            for signal in $signals; do
+              grep -q "$signal" collector.log || missing="$missing $signal"
+            done
+            if [ -z "$missing" ]; then
+              for signal in $signals; do
+                echo "ok: $signal reached the collector"
+              done
+              exit 0
             fi
-            echo "ok: $signal reached the collector"
+            sleep 1
           done
+
+          echo "::error::never reached the collector:$missing"
+          echo "--- collector log ---"
+          cat collector.log
+          exit 1
 
       - name: Tear down
         if: always()

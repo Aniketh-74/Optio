@@ -37,4 +37,9 @@ service:
       exporters: [debug]
   telemetry:
     logs:
-      level: warn
+      # Must be `info`: the debug exporter writes its span dumps at info level
+      # through the collector's internal logger, so `warn` silences exactly the
+      # output this demo exists to show. CI greps these lines to prove the
+      # signals travelled a real OTLP pipeline, and at `warn` that check can
+      # only ever fail -- the spans arrive and are then thrown away unprinted.
+      level: info
