@@ -35,19 +35,51 @@ this exercise — a leak warning nothing asserted.
 
 ### Running it
 
-`cosmic-ray` rather than `mutmut`, because mutmut does not support Windows.
-
 ```bash
-pip install cosmic-ray
-cosmic-ray init cr-ledger.toml crl.sqlite
-cosmic-ray exec cr-ledger.toml crl.sqlite
-cr-report crl.sqlite
+python scripts/mutate.py --list      # available targets
+python scripts/mutate.py ledger      # run one
 ```
 
-**Run it against a throwaway clone, never your working tree.** cosmic-ray mutates files in
-place and restores them on exit; if it is interrupted it leaves corrupted source behind. That
-happened during this project's first run and left `committed - remaining * estimate` in
-`project.py` — the projection with its sign flipped.
+That is the only supported way to do it, and the reason is worth understanding.
+
+`cosmic-ray` (chosen over `mutmut`, which has no Windows support) mutates source files **in
+place** and restores them with a context manager. That works when a run finishes or raises, and
+does nothing at all when the process is killed — a Ctrl-C at the wrong moment, a terminated
+tool call, a closed lid. The mutated file simply stays on disk.
+
+This is not hypothetical. This project's first mutation run was interrupted and left:
+
+```python
+return snapshot.committed - remaining * estimate  # should be +
+```
+
+Every worst-case cost projection with its sign flipped, sitting in the working tree, one
+`git commit -a` away from being real. It was caught by reading `git status` — luck, not process.
+
+`scripts/mutate.py` removes the failure mode rather than warning about it. It exports `HEAD`
+with `git archive` into a temp directory, builds an isolated venv there, and runs the mutation
+against that copy. **The working tree is never opened for writing**, so no kill signal, crash,
+or full disk can corrupt it. Verified by killing a run mid-execution and confirming the source
+hash was unchanged.
+
+Using `git archive HEAD` also means mutations run against committed code, never against
+half-finished edits — a mutation report about code that exists nowhere else is worse than none.
+
+Two smaller things it handles, both learned the hard way: the generated config uses forward
+slashes and TOML literal strings, because a Windows path in a basic string is an invalid escape
+sequence that cosmic-ray reports as a *failed baseline* — sending you off to debug a test suite
+that is fine. And it separates annotation noise from real survivors in its output, so the
+signal is not buried.
+
+### The backstop
+
+`tests/contract/test_source_is_not_mutated.py` asserts the specific arithmetic and boolean
+expressions that mutation operators target — the ones where a flip yields a plausible wrong
+number rather than an error. It runs in the blocking `contract` gate, so a leftover mutation
+cannot reach `main` even if someone bypasses the script and runs `cosmic-ray` directly.
+
+Verified by re-injecting both real corruptions this project experienced (the projection sign
+flip and an inverted leak warning); the guard fails on each.
 
 ### Results (2026-07-27)
 
