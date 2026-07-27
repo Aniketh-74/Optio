@@ -3,7 +3,7 @@
 Two properties are being defended here:
 
 * **Framework extras are never imported at core import time** (Section 4.4). If
-  ``import agentmeter`` pulled in langgraph, every user would pay for every
+  ``import optio`` pulled in langgraph, every user would pay for every
   adapter and the dependency tree would stop being clean.
 * **Import stays fast** (Section 11: < 500 ms). Slow imports are a silent tax on
   every process that installs us.
@@ -24,7 +24,7 @@ def test_core_import_pulls_in_no_framework_deps():
     # Run in a clean interpreter: an already-imported module in this process
     # would mask the failure.
     code = (
-        "import sys; import agentmeter; "
+        "import sys; import optio; "
         f"leaked=[m for m in {_FRAMEWORK_MODULES!r} if m in sys.modules]; "
         "print(','.join(leaked))"
     )
@@ -35,9 +35,7 @@ def test_core_import_pulls_in_no_framework_deps():
 
 
 def test_import_is_fast():
-    code = (
-        "import time; t=time.perf_counter(); import agentmeter; print((time.perf_counter()-t)*1000)"
-    )
+    code = "import time; t=time.perf_counter(); import optio; print((time.perf_counter()-t)*1000)"
     result = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
@@ -46,22 +44,22 @@ def test_import_is_fast():
 
 
 def test_package_is_typed():
-    import agentmeter
+    import optio
 
-    package_dir = __import__("pathlib").Path(agentmeter.__file__).parent
+    package_dir = __import__("pathlib").Path(optio.__file__).parent
     assert (package_dir / "py.typed").is_file(), "py.typed marker missing; consumers lose types"
 
 
 @pytest.mark.parametrize(
     "module",
     [
-        "agentmeter.semconv",
-        "agentmeter.errors",
-        "agentmeter.config",
-        "agentmeter.api",
-        "agentmeter.runtime.run_context",
-        "agentmeter.lanes.base",
-        "agentmeter.store.base",
+        "optio.semconv",
+        "optio.errors",
+        "optio.config",
+        "optio.api",
+        "optio.runtime.run_context",
+        "optio.lanes.base",
+        "optio.store.base",
     ],
 )
 def test_every_module_imports(module):

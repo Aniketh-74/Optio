@@ -1,6 +1,6 @@
 """Fault injection against the fail-open guard (SC-4, R-TECH-4).
 
-This is a blocking CI gate. It exists to falsify the claim "adding agentmeter
+This is a blocking CI gate. It exists to falsify the claim "adding optio
 cannot break your agent", so the tests are written adversarially: raise the
 nastiest thing available at the guard boundary and assert the caller survives.
 
@@ -19,15 +19,15 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 import pytest
 
-from agentmeter.errors import (
-    AgentMeterConfigError,
-    AgentMeterInternalError,
+from optio.errors import (
     LedgerInvariantError,
+    OptioConfigError,
+    OptioInternalError,
     SignalWriteError,
     StateStoreError,
     UnsupportedFrameworkError,
 )
-from agentmeter.runtime import failopen
+from optio.runtime import failopen
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -75,7 +75,7 @@ class _ExplodingEqError(Exception):
 
 
 ABSORBED_EXCEPTIONS: list[BaseException] = [
-    AgentMeterInternalError("internal"),
+    OptioInternalError("internal"),
     LedgerInvariantError("double reconcile"),
     StateStoreError("redis gone"),
     SignalWriteError("span closed"),
@@ -153,7 +153,7 @@ def test_config_errors_are_not_absorbed() -> None:
     def bad_setup() -> str:
         raise UnsupportedFrameworkError("no adapter for object")
 
-    with pytest.raises(AgentMeterConfigError):
+    with pytest.raises(OptioConfigError):
         failopen.guard(bad_setup, "fallback")
 
     assert failopen.activation_count() == 0
@@ -170,7 +170,7 @@ def test_guarded_decorator_does_not_absorb_config_errors() -> None:
     def bad_setup() -> None:
         raise UnsupportedFrameworkError("no adapter for object")
 
-    with pytest.raises(AgentMeterConfigError):
+    with pytest.raises(OptioConfigError):
         bad_setup()
 
     assert failopen.activation_count() == 0
@@ -249,7 +249,7 @@ def test_repeated_failure_logs_once_per_component(
     def boom() -> str:
         raise ValueError("fails every span")
 
-    with caplog.at_level(logging.WARNING, logger="agentmeter"):
+    with caplog.at_level(logging.WARNING, logger="optio"):
         for _ in range(100):
             failopen.guard(boom, "fallback", component="cost")
 
@@ -266,7 +266,7 @@ def test_each_component_logs_its_own_first_failure(
     def boom() -> str:
         raise ValueError("bug")
 
-    with caplog.at_level(logging.WARNING, logger="agentmeter"):
+    with caplog.at_level(logging.WARNING, logger="optio"):
         failopen.guard(boom, None, component="cost")
         failopen.guard(boom, None, component="behavior")
 
@@ -288,7 +288,7 @@ def test_log_never_contains_exception_payload(
     def boom() -> str:
         raise ValueError(secret)
 
-    with caplog.at_level(logging.WARNING, logger="agentmeter"):
+    with caplog.at_level(logging.WARNING, logger="optio"):
         failopen.guard(boom, None, component="cost")
 
     (record,) = [r for r in caplog.records if r.levelno == logging.WARNING]

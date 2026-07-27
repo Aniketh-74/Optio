@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "Cedar test cases for the agentmeter pack (M4-4).",
+    "Cedar test cases for the optio pack (M4-4).",
     "Consumed by tests/policy/test_policy_packs.py, which runs the real `cedar`",
     "CLI when it is installed and otherwise validates structure. Each case is a",
     "full authorization request plus the decision it must produce.",
@@ -8,7 +8,7 @@
     "The absence cases are the load-bearing ones: they prove an omitted signal",
     "is treated as unknown rather than as zero or as an error. See ADR-004."
   ],
-  "principal": "AgentMeter::Agent::\"agent-1\"",
+  "principal": "Optio::Agent::\"agent-1\"",
   "action": "Action::\"execute_step\"",
   "cases": [
     {

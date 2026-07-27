@@ -19,10 +19,10 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from agentmeter import semconv
-from agentmeter.lanes.base import Signal
-from agentmeter.runtime import failopen
-from agentmeter.runtime.signal_writer import write_signal, write_signals
+from optio import semconv
+from optio.lanes.base import Signal
+from optio.runtime import failopen
+from optio.runtime.signal_writer import write_signal, write_signals
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

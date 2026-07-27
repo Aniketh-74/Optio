@@ -15,11 +15,11 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from agentmeter import semconv
-from agentmeter.config import default_config
-from agentmeter.errors import LedgerInvariantError, StateStoreError
-from agentmeter.lanes.base import Lane, Signal
-from agentmeter.runtime import failopen
+from optio import semconv
+from optio.config import default_config
+from optio.errors import LedgerInvariantError, StateStoreError
+from optio.lanes.base import Lane, Signal
+from optio.runtime import failopen
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -89,7 +89,7 @@ def _run_agent_loop(lane: Lane, steps: int = 10) -> list[str]:
     for i in range(steps):
         # The agent does its real work.
         results.append(f"step-{i}-result")
-        # agentmeter observes, behind the guard.
+        # optio observes, behind the guard.
         failopen.guard_signals(lane.process_span, object(), object(), component=lane.name)
     failopen.guard_signals(lane.on_run_end, object(), component=lane.name)
     return results

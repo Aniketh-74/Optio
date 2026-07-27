@@ -19,10 +19,10 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from agentmeter import RunContext, semconv
-from agentmeter.config import Config
-from agentmeter.lanes.quality.judge import Judge, JudgeRequest, JudgeScores
-from agentmeter.runtime import failopen, installer
+from optio import RunContext, semconv
+from optio.config import Config
+from optio.lanes.quality.judge import Judge, JudgeRequest, JudgeScores
+from optio.runtime import failopen, installer
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -73,7 +73,7 @@ def run_agent(
     installer.install_tap(config, provider)
     tracer = provider.get_tracer("test")
 
-    with tracer.start_as_current_span("agentmeter.run.test"), RunContext(config=config):
+    with tracer.start_as_current_span("optio.run.test"), RunContext(config=config):
         for _ in range(steps):
             with tracer.start_as_current_span("chat") as span:
                 span.set_attribute(semconv.GEN_AI_REQUEST_MODEL, "gpt-4o")
@@ -82,9 +82,9 @@ def run_agent(
 
 
 def signals(exporter: InMemorySpanExporter) -> dict[str, object]:
-    """Return the agentmeter signals on the run span."""
+    """Return the optio signals on the run span."""
     span: ReadableSpan = next(
-        s for s in exporter.get_finished_spans() if s.name.startswith("agentmeter.run")
+        s for s in exporter.get_finished_spans() if s.name.startswith("optio.run")
     )
     return {k: v for k, v in (span.attributes or {}).items() if k in semconv.EMITTED_SIGNALS}
 

@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import pytest
 
-from agentmeter.errors import LedgerInvariantError
-from agentmeter.lanes.cost.ledger import CostLedger
+from optio.errors import LedgerInvariantError
+from optio.lanes.cost.ledger import CostLedger
 
 
 @pytest.fixture

@@ -3,7 +3,7 @@
 One line instruments an agent:
 
 ```python
-from agentmeter import instrument
+from optio import instrument
 
 instrument(agent)  # adapter auto-detected
 instrument(agent, adapter="crewai")  # or named explicitly
@@ -11,10 +11,10 @@ instrument(agent, adapter="crewai")  # or named explicitly
 
 | Framework | Adapter name | Extra | Guide |
 |---|---|---|---|
-| LangGraph | `langgraph` | `agentmeter[langgraph]` | [langgraph.md](langgraph.md) |
-| OpenAI Agents SDK | `openai_agents` | `agentmeter[openai]` | [openai-agents.md](openai-agents.md) |
-| CrewAI | `crewai` | `agentmeter[crewai]` | [crewai.md](crewai.md) |
-| Claude Agent SDK | `claude_agent` | `agentmeter[claude]` | [claude-agent-sdk.md](claude-agent-sdk.md) |
+| LangGraph | `langgraph` | `optio[langgraph]` | [langgraph.md](langgraph.md) |
+| OpenAI Agents SDK | `openai_agents` | `optio[openai]` | [openai-agents.md](openai-agents.md) |
+| CrewAI | `crewai` | `optio[crewai]` | [crewai.md](crewai.md) |
+| Claude Agent SDK | `claude_agent` | `optio[claude]` | [claude-agent-sdk.md](claude-agent-sdk.md) |
 | Anything else | — | — | [Unsupported frameworks](#unsupported-frameworks) |
 
 ## What an adapter does — and does not do
@@ -26,8 +26,8 @@ OpenTelemetry instrumentation packages, OpenInference, or the framework's own ex
 on would put us on the hook for every framework release (R-TECH-3), and the division is what
 keeps a CrewAI upgrade from breaking the cost lane.
 
-**So agentmeter needs two things installed, not one:** the OTel instrumentation that produces
-`gen_ai.*` spans, and agentmeter to read them. Each guide names the instrumentation package it
+**So optio needs two things installed, not one:** the OTel instrumentation that produces
+`gen_ai.*` spans, and optio to read them. Each guide names the instrumentation package it
 expects. If no tracer provider is configured, `instrument()` logs a warning at setup rather than
 failing — you may be wiring things in a different order — but no signals will appear until one is.
 
@@ -37,7 +37,7 @@ Adapters fail **loudly**; the runtime fails **open**.
 
 A missing framework, an unknown adapter name, or a target the adapter does not recognise raises
 at setup, because silently instrumenting nothing would leave you believing you have coverage you
-do not have. Once running, nothing agentmeter does can break or block your agent (ADR-004) — a
+do not have. Once running, nothing optio does can break or block your agent (ADR-004) — a
 lane that fails emits no signal and the run continues.
 
 ## Unsupported frameworks
@@ -45,7 +45,7 @@ lane that fails emits no signal and the run continues.
 No adapter is required. `RunContext` governs any code that emits GenAI spans:
 
 ```python
-from agentmeter import RunContext
+from optio import RunContext
 
 with RunContext(budget="$0.50"):
     ...  # spans emitted in here are governed

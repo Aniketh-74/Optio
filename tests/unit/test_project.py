@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import pytest
 
-from agentmeter.config import BudgetPolicy
-from agentmeter.lanes.cost.ledger import LedgerSnapshot
-from agentmeter.lanes.cost.project import (
+from optio.config import BudgetPolicy
+from optio.lanes.cost.ledger import LedgerSnapshot
+from optio.lanes.cost.project import (
     budget_remaining,
     cost_per_successful_task,
     per_step_estimate,

@@ -20,13 +20,13 @@ from unittest.mock import Mock
 import pytest
 from opentelemetry.trace import StatusCode
 
-from agentmeter import semconv
-from agentmeter.config import Config
-from agentmeter.lanes.base import Signal
-from agentmeter.lanes.quality.judge import JudgeRequest, JudgeScores
-from agentmeter.lanes.quality.lane import QualityLane
-from agentmeter.runtime import failopen
-from agentmeter.runtime.failopen import guard_signals
+from optio import semconv
+from optio.config import Config
+from optio.lanes.base import Signal
+from optio.lanes.quality.judge import JudgeRequest, JudgeScores
+from optio.lanes.quality.lane import QualityLane
+from optio.runtime import failopen
+from optio.runtime.failopen import guard_signals
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

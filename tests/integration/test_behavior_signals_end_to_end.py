@@ -21,9 +21,9 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import Status, StatusCode
 
-from agentmeter import meter, semconv
-from agentmeter.config import default_config
-from agentmeter.runtime import failopen, installer
+from optio import meter, semconv
+from optio.config import default_config
+from optio.runtime import failopen, installer
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -55,7 +55,7 @@ def provider(exporter: InMemorySpanExporter) -> TracerProvider:
 
 
 def _run_span(exporter: InMemorySpanExporter) -> ReadableSpan:
-    return next(s for s in exporter.get_finished_spans() if s.name.startswith("agentmeter.run"))
+    return next(s for s in exporter.get_finished_spans() if s.name.startswith("optio.run"))
 
 
 def _tool_call(tracer: object, tool: str, *, errored: bool = False) -> None:

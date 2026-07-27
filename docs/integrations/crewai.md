@@ -1,13 +1,13 @@
 # CrewAI
 
 ```bash
-pip install "agentmeter[crewai]"
+pip install "optio[crewai]"
 pip install openinference-instrumentation-crewai   # produces the GenAI spans
 ```
 
 ```python
 from crewai import Agent, Crew, Task
-from agentmeter import instrument
+from optio import instrument
 
 crew = Crew(agents=[...], tasks=[...])
 instrument(crew)

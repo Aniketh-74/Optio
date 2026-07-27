@@ -14,10 +14,10 @@ only the cost lane implemented (M2), that looked harmless.
 Adding the behavior lane in M3 broke the import-independence contract:
 
 ```
-agentmeter.lanes.cost is not allowed to import agentmeter.lanes.behavior:
+optio.lanes.cost is not allowed to import optio.lanes.behavior:
 
-- agentmeter.lanes.cost.lane -> agentmeter.lanes.base (l.29, l.42)
-  agentmeter.lanes.base -> agentmeter.lanes.behavior.lane (l.136)
+- optio.lanes.cost.lane -> optio.lanes.base (l.29, l.42)
+  optio.lanes.base -> optio.lanes.behavior.lane (l.136)
 ```
 
 Every lane imports the ABC. Once the ABC's module also imports every concrete
@@ -69,7 +69,7 @@ The same failure modes apply the moment the function is called.
 * `lanes/registry.py` is the single edge that knows the concrete lane set —
   the one place to touch when M5 adds quality.
 * `enabled_lanes` moved; `runtime/span_tap.py` and three tests were updated. No
-  public API changed: `enabled_lanes` was never exported from `agentmeter`.
+  public API changed: `enabled_lanes` was never exported from `optio`.
 * Concrete lanes are still imported *inside* the function, so a lane that fails
   to import cannot take down the library at import time and a disabled lane's
   dependencies are never touched.

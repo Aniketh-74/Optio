@@ -1,7 +1,7 @@
 # Signals — the integration contract
 
 > **This document is authoritative for signal names.** It is mirrored by constants in
-> [`src/agentmeter/semconv.py`](../src/agentmeter/semconv.py) and asserted by the contract
+> [`src/optio/semconv.py`](../src/optio/semconv.py) and asserted by the contract
 > test suite (`tests/contract/`). Downstream OPA / Cedar / AGT policies are written against
 > these exact strings, so treat this file with the care of a public API.
 >
@@ -91,15 +91,15 @@ by review.
 
 ## Self-observability
 
-agentmeter's own health is emitted under a **separate** namespace so it can never be confused
+optio's own health is emitted under a **separate** namespace so it can never be confused
 with — or gated on by — a consumer policy:
 
 | Instrument | Meaning |
 |---|---|
-| `agentmeter.internal.signals_emitted` | Count of signals written. |
-| `agentmeter.internal.lane_errors` | Fail-open activations, by lane. A rising value means a lane bug — the agent is still safe. |
-| `agentmeter.internal.overhead` | Per-step overhead histogram (SC-5 budget: < 5 ms p99). |
-| `agentmeter.internal.sampling_rate` | Effective quality-lane sampling rate. |
+| `optio.internal.signals_emitted` | Count of signals written. |
+| `optio.internal.lane_errors` | Fail-open activations, by lane. A rising value means a lane bug — the agent is still safe. |
+| `optio.internal.overhead` | Per-step overhead histogram (SC-5 budget: < 5 ms p99). |
+| `optio.internal.sampling_rate` | Effective quality-lane sampling rate. |
 
 ---
 

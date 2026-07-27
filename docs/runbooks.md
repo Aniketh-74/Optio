@@ -1,8 +1,8 @@
 # Runbooks
 
-Operational guidance for teams running `agentmeter` in production (§12).
+Operational guidance for teams running `optio` in production (§12).
 
-The theme running through all of these: **`agentmeter` failing never means your
+The theme running through all of these: **`optio` failing never means your
 agent is failing.** The library is wrapped end to end by a fail-open guard
 (ADR-004), so every problem below degrades signals, not agent traffic.
 
@@ -13,17 +13,17 @@ agent is failing.** The library is wrapped end to end by a fail-open guard
 **Symptom.** A WARN like:
 
 ```
-agentmeter: cost failed with LedgerInvariantError; signal dropped, agent
+optio: cost failed with LedgerInvariantError; signal dropped, agent
 unaffected. Further failures from this component are counted but not logged.
 ```
 
-…or a rising `agentmeter.internal.lane_errors` count.
+…or a rising `optio.internal.lane_errors` count.
 
 **What it means.** A lane has a bug. That lane's signals are missing for the
 affected steps.
 
 **Is my agent at risk?** No. The guard absorbed the failure and returned control
-immediately; your agent ran exactly as if `agentmeter` were not installed. This
+immediately; your agent ran exactly as if `optio` were not installed. This
 is the designed behavior, not a degraded mode.
 
 **What to do.**
@@ -46,7 +46,7 @@ incident. The activation counter still records every occurrence.
 
 **Check, in order:**
 
-1. **Is an exporter configured?** `agentmeter` writes to your existing OTel
+1. **Is an exporter configured?** `optio` writes to your existing OTel
    pipeline; it does not stand up its own (SC-1). No exporter means no visible
    signals. Try the console exporter first.
 2. **Semconv version mismatch.** We pin a specific GenAI semconv version
@@ -80,7 +80,7 @@ tell the two apart. Policies must treat absence as unknown; see
 **Symptom.** A WARN like:
 
 ```
-agentmeter: run 4f2a... ended with 3 unreconciled reservation(s); cost is
+optio: run 4f2a... ended with 3 unreconciled reservation(s); cost is
 reported as the reserved worst case for those steps.
 ```
 
@@ -147,7 +147,7 @@ behavior lanes (SC-5).
 ## Redis (or another store) is unreachable
 
 The store fails open like everything else: signals degrade, the agent proceeds.
-Depending on configuration, `agentmeter` either drops the signal or falls back
+Depending on configuration, `optio` either drops the signal or falls back
 to in-memory state. In-memory fallback means per-process state, so cost totals
 for a run spanning multiple processes will be partial rather than wrong-but-
 plausible.

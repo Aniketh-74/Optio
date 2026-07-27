@@ -17,12 +17,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from agentmeter import semconv
-from agentmeter.config import default_config
-from agentmeter.lanes.base import Signal
-from agentmeter.lanes.behavior.lane import BehaviorLane
-from agentmeter.runtime import failopen
-from agentmeter.runtime.failopen import guard_signals
+from optio import semconv
+from optio.config import default_config
+from optio.lanes.base import Signal
+from optio.lanes.behavior.lane import BehaviorLane
+from optio.runtime import failopen
+from optio.runtime.failopen import guard_signals
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -123,9 +123,9 @@ class TestTheAgentSurvives:
     def test_a_lane_that_always_raises_leaves_the_agent_running(self) -> None:
         from opentelemetry.sdk.trace import TracerProvider
 
-        from agentmeter import meter
-        from agentmeter.runtime import installer
-        from agentmeter.runtime.span_tap import AgentMeterSpanTap
+        from optio import meter
+        from optio.runtime import installer
+        from optio.runtime.span_tap import OptioSpanTap
 
         class BrokenBehaviorLane(BehaviorLane):
             def process_span(self, span: object, run: object) -> list[object]:  # type: ignore[override]
@@ -137,7 +137,7 @@ class TestTheAgentSurvives:
         installer.reset_installations()
         provider = TracerProvider()
         provider.add_span_processor(
-            AgentMeterSpanTap(default_config(), lanes=[BrokenBehaviorLane(default_config())])
+            OptioSpanTap(default_config(), lanes=[BrokenBehaviorLane(default_config())])
         )
         tracer = provider.get_tracer("t")
 

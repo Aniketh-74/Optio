@@ -9,14 +9,14 @@ if they actually run.
 The engine-level tests run the packs through the real engines. Cedar goes
 through ``cedarpy``, which ships in the dev extras and so runs everywhere. OPA
 needs the ``opa`` binary, which CI installs and most developers do not have, so
-those two tests skip locally -- and ``AGENTMETER_REQUIRE_POLICY_ENGINES=1``
+those two tests skip locally -- and ``OPTIO_REQUIRE_POLICY_ENGINES=1``
 turns that skip into a failure in CI, because a gate that can pass by skipping
 is not a gate.
 
 Running the real engines earned its keep immediately: it caught two errors in
 the Cedar pack that no amount of structural checking would have found -- the
 schema type is spelled ``decimal`` rather than ``Decimal``, and an action
-declared inside a namespace must be referenced as ``AgentMeter::Action::"..."``.
+declared inside a namespace must be referenced as ``Optio::Action::"..."``.
 Both would have shipped as a pack that simply does not load.
 
 The structural tests then cover what the engines cannot: that every signal name
@@ -39,18 +39,18 @@ from typing import Any
 
 import pytest
 
-from agentmeter import semconv
+from optio import semconv
 
 pytestmark = pytest.mark.policy
 
 POLICIES = Path(__file__).resolve().parents[2] / "policies"
 OPA_DIR = POLICIES / "opa"
 CEDAR_DIR = POLICIES / "cedar"
-AGT_POLICY = POLICIES / "agt" / "agentmeter-policy.yaml"
+AGT_POLICY = POLICIES / "agt" / "optio-policy.yaml"
 
 #: Set in CI. Turns a missing binary from "skip" into "fail", so the SC-3 gate
 #: cannot quietly stop running because a tool install step broke.
-REQUIRE_ENGINES = os.environ.get("AGENTMETER_REQUIRE_POLICY_ENGINES") == "1"
+REQUIRE_ENGINES = os.environ.get("OPTIO_REQUIRE_POLICY_ENGINES") == "1"
 
 #: Signal names that may appear in a pack. Sourced from semconv so a renamed
 #: signal breaks the packs here rather than in a user's policy (Section 16
@@ -117,7 +117,7 @@ def _require(tool: str) -> str:
     if path is None:
         if REQUIRE_ENGINES:
             pytest.fail(
-                f"{tool!r} is not installed but AGENTMETER_REQUIRE_POLICY_ENGINES=1. "
+                f"{tool!r} is not installed but OPTIO_REQUIRE_POLICY_ENGINES=1. "
                 f"The SC-3 gate must not pass by skipping."
             )
         pytest.skip(f"{tool} not installed; engine-level check runs in CI")
@@ -139,7 +139,7 @@ def _require_cedarpy() -> Any:
     except ImportError:  # pragma: no cover - dev extras always provide it
         if REQUIRE_ENGINES:
             pytest.fail(
-                "cedarpy is not installed but AGENTMETER_REQUIRE_POLICY_ENGINES=1. "
+                "cedarpy is not installed but OPTIO_REQUIRE_POLICY_ENGINES=1. "
                 "The SC-3 gate must not pass by skipping."
             )
         pytest.skip("cedarpy not installed; install the dev extras")
@@ -161,8 +161,8 @@ class TestPacksExist:
     """SC-3: at least three engines, shipped and findable."""
 
     def test_three_engines_are_covered(self) -> None:
-        assert (OPA_DIR / "agentmeter.rego").is_file()
-        assert (CEDAR_DIR / "agentmeter.cedar").is_file()
+        assert (OPA_DIR / "optio.rego").is_file()
+        assert (CEDAR_DIR / "optio.cedar").is_file()
         assert AGT_POLICY.is_file()
 
     def test_every_pack_file_is_non_empty(self) -> None:
@@ -185,7 +185,7 @@ class TestSignalNamesAreReal:
         unknown = sorted(referenced - KNOWN_SIGNALS)
 
         assert not unknown, (
-            f"{path.name} references signals agentmeter does not emit: {unknown}. "
+            f"{path.name} references signals optio does not emit: {unknown}. "
             f"A rule on a nonexistent attribute never fires, so this fails "
             f"open silently rather than erroring."
         )
@@ -193,7 +193,7 @@ class TestSignalNamesAreReal:
     def test_the_packs_cover_the_signals_that_exist_today(self) -> None:
         # Cost and behavior ship (M2, M3). A pack that ignored them would not
         # deliver the copy-paste adoption SC-3 is for.
-        rego = (OPA_DIR / "agentmeter.rego").read_text(encoding="utf-8")
+        rego = (OPA_DIR / "optio.rego").read_text(encoding="utf-8")
         for signal in (
             semconv.RUN_PROJECTED_COST,
             semconv.RUN_BUDGET_REMAINING,
@@ -220,16 +220,16 @@ class TestLoopStatesAreReal:
         # docs/behavior.md: gate on `looping` and `retry_storm`; alert on
         # `repeating`, which normal agents produce in bulk (polling, paging,
         # bounded retries). A pack that denied on `repeating` would be the false
-        # positive that gets agentmeter uninstalled -- our error becoming the
+        # positive that gets optio uninstalled -- our error becoming the
         # user's outage, which is the asymmetry ADR-004 exists for.
         expected = {semconv.LOOP_STATE_LOOPING, semconv.LOOP_STATE_RETRY_STORM}
 
-        rego = (OPA_DIR / "agentmeter.rego").read_text(encoding="utf-8")
+        rego = (OPA_DIR / "optio.rego").read_text(encoding="utf-8")
         rego_set = re.search(r"blocking_loop_states\s*:=\s*\{([^}]*)\}", rego)
         assert rego_set is not None, "OPA pack no longer declares blocking_loop_states"
         assert set(re.findall(r'"(\w+)"', rego_set.group(1))) == expected
 
-        cedar = (CEDAR_DIR / "agentmeter.cedar").read_text(encoding="utf-8")
+        cedar = (CEDAR_DIR / "optio.cedar").read_text(encoding="utf-8")
         cedar_list = re.search(r"\[([^\]]*)\]\.contains\(resource\.loop_state\)", cedar)
         assert cedar_list is not None, "Cedar pack no longer gates on loop_state"
         assert set(re.findall(r'"(\w+)"', cedar_list.group(1))) == expected
@@ -241,7 +241,7 @@ class TestLoopStatesAreReal:
     @pytest.mark.parametrize(
         ("path", "marker"),
         [
-            (OPA_DIR / "agentmeter.rego", "warn contains"),
+            (OPA_DIR / "optio.rego", "warn contains"),
             (AGT_POLICY, "effect: warn"),
         ],
         ids=["opa", "agt"],
@@ -257,14 +257,14 @@ class TestLoopStatesAreReal:
 class TestAbsenceIsNeverTreatedAsZero:
     """The failure mode this whole file exists to prevent.
 
-    agentmeter omits a signal it cannot compute rather than emitting zero
+    optio omits a signal it cannot compute rather than emitting zero
     (docs/signals.md). A pack that compares an attribute without first checking
     presence reads a broken cost lane as a free run -- and passes every
     functional test, because the fixtures all have the attribute.
     """
 
     def test_rego_guards_every_comparison(self) -> None:
-        text = (OPA_DIR / "agentmeter.rego").read_text(encoding="utf-8")
+        text = (OPA_DIR / "optio.rego").read_text(encoding="utf-8")
         offenders = [
             line.strip()
             for line in text.splitlines()
@@ -283,7 +283,7 @@ class TestAbsenceIsNeverTreatedAsZero:
         # which also matched them inside comments -- it found nine blocks in a
         # four-rule file and inspected none of the real conditions. It passed,
         # and kept passing when the guard was deleted.
-        conditions = self._when_blocks((CEDAR_DIR / "agentmeter.cedar").read_text(encoding="utf-8"))
+        conditions = self._when_blocks((CEDAR_DIR / "optio.cedar").read_text(encoding="utf-8"))
         assert len(conditions) == 4, (
             f"expected 4 forbid conditions, parsed {len(conditions)}; "
             f"the parser and the pack have drifted apart"
@@ -339,7 +339,7 @@ class TestAbsenceIsNeverTreatedAsZero:
     def test_agt_fails_open_on_signal_outage(self) -> None:
         text = AGT_POLICY.read_text(encoding="utf-8")
         assert "onSignalUnavailable: allow" in text, (
-            "denying when signals are unavailable turns an agentmeter bug into "
+            "denying when signals are unavailable turns an optio bug into "
             "the user's outage, which ADR-004 forbids"
         )
 
@@ -397,7 +397,7 @@ class TestCedarEngine:
     underneath, so these tests run locally too -- which matters, because they
     caught two real errors in the pack that structural checks could not:
     `Decimal` is spelled `decimal` in a schema, and an action declared inside a
-    namespace must be referenced as `AgentMeter::Action::"..."`. Both would have
+    namespace must be referenced as `Optio::Action::"..."`. Both would have
     shipped as a pack that does not load.
     """
 
@@ -417,7 +417,7 @@ class TestCedarEngine:
     @staticmethod
     def _policy_and_schema() -> tuple[str, str]:
         return (
-            (CEDAR_DIR / "agentmeter.cedar").read_text(encoding="utf-8"),
+            (CEDAR_DIR / "optio.cedar").read_text(encoding="utf-8"),
             (CEDAR_DIR / "schema.cedarschema").read_text(encoding="utf-8"),
         )
 
@@ -431,8 +431,8 @@ class TestCedarEngine:
             for key, value in run.items()
         }
         return [
-            {"uid": {"type": "AgentMeter::Run", "id": "run-1"}, "attrs": attrs, "parents": []},
-            {"uid": {"type": "AgentMeter::Agent", "id": "agent-1"}, "attrs": {}, "parents": []},
+            {"uid": {"type": "Optio::Run", "id": "run-1"}, "attrs": attrs, "parents": []},
+            {"uid": {"type": "Optio::Agent", "id": "agent-1"}, "attrs": {}, "parents": []},
         ]
 
     def test_cedar_policy_validates_against_the_schema(self) -> None:
@@ -451,9 +451,9 @@ class TestCedarEngine:
         for case in cases:
             response = cedarpy.is_authorized(
                 {
-                    "principal": 'AgentMeter::Agent::"agent-1"',
-                    "action": 'AgentMeter::Action::"execute_step"',
-                    "resource": 'AgentMeter::Run::"run-1"',
+                    "principal": 'Optio::Agent::"agent-1"',
+                    "action": 'Optio::Action::"execute_step"',
+                    "resource": 'Optio::Run::"run-1"',
                     "context": {},
                 },
                 policy,

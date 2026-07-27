@@ -17,12 +17,12 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from agentmeter import instrument, meter, semconv
-from agentmeter.config import default_config
-from agentmeter.lanes.base import Lane, Signal
-from agentmeter.runtime import failopen, installer
-from agentmeter.runtime.run_context import RunContext, current_run
-from agentmeter.runtime.span_tap import AgentMeterSpanTap
+from optio import instrument, meter, semconv
+from optio.config import default_config
+from optio.lanes.base import Lane, Signal
+from optio.runtime import failopen, installer
+from optio.runtime.run_context import RunContext, current_run
+from optio.runtime.span_tap import OptioSpanTap
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -133,11 +133,11 @@ class TestOneLineInstall:
         assert sum(1 for _ in _taps_on(provider)) == 1
 
 
-def _taps_on(provider: TracerProvider) -> Iterator[AgentMeterSpanTap]:
-    """Yield every agentmeter tap registered on a provider."""
+def _taps_on(provider: TracerProvider) -> Iterator[OptioSpanTap]:
+    """Yield every optio tap registered on a provider."""
     processors = provider._active_span_processor._span_processors
     for processor in processors:
-        if isinstance(processor, AgentMeterSpanTap):
+        if isinstance(processor, OptioSpanTap):
             yield processor
 
 
@@ -146,7 +146,7 @@ class TestSpansReachTheLanes:
         self, provider: TracerProvider, exporter: InMemorySpanExporter
     ) -> None:
         lane = _StubCostLane()
-        tap = AgentMeterSpanTap(default_config(), [lane])
+        tap = OptioSpanTap(default_config(), [lane])
         provider.add_span_processor(tap)
         tracer = provider.get_tracer("langgraph")
         graph = _FakeGraph(tracer, steps=3)
@@ -160,7 +160,7 @@ class TestSpansReachTheLanes:
         self, provider: TracerProvider, exporter: InMemorySpanExporter
     ) -> None:
         lane = _StubCostLane()
-        provider.add_span_processor(AgentMeterSpanTap(default_config(), [lane]))
+        provider.add_span_processor(OptioSpanTap(default_config(), [lane]))
         tracer = provider.get_tracer("langgraph")
         graph = _FakeGraph(tracer, steps=3)
 
@@ -176,7 +176,7 @@ class TestSpansReachTheLanes:
         # run_id is the join key across lanes and the store; if it drifted
         # mid-run, per-run totals would silently split in two.
         lane = _StubCostLane()
-        provider.add_span_processor(AgentMeterSpanTap(default_config(), [lane]))
+        provider.add_span_processor(OptioSpanTap(default_config(), [lane]))
         tracer = provider.get_tracer("langgraph")
         graph = _FakeGraph(tracer, steps=4)
 
@@ -187,7 +187,7 @@ class TestSpansReachTheLanes:
 
     def test_the_agents_own_spans_are_ignored(self, provider: TracerProvider) -> None:
         lane = _StubCostLane()
-        provider.add_span_processor(AgentMeterSpanTap(default_config(), [lane]))
+        provider.add_span_processor(OptioSpanTap(default_config(), [lane]))
         tracer = provider.get_tracer("app")
 
         with (
@@ -233,7 +233,7 @@ class TestMeterDecorator:
         run_agent()
 
         names = [s.name for s in exporter.get_finished_spans()]
-        assert "agentmeter.run.run_agent" in names
+        assert "optio.run.run_agent" in names
 
     def test_budget_is_attached_to_the_run(self, provider: TracerProvider) -> None:
         captured: list[float | None] = []
@@ -249,7 +249,7 @@ class TestMeterDecorator:
         assert captured == [pytest.approx(0.50)]
 
     def test_an_agent_exception_propagates(self, provider: TracerProvider) -> None:
-        # agentmeter observes runs; it must never swallow the user's errors.
+        # optio observes runs; it must never swallow the user's errors.
         @meter(provider=provider)
         def failing_agent() -> None:
             raise ValueError("agent failed")
@@ -271,7 +271,7 @@ class TestFailOpenEndToEnd:
             def process_span(self, span: ReadableSpan, run: object) -> list[Signal]:
                 raise RuntimeError("lane bug")
 
-        provider.add_span_processor(AgentMeterSpanTap(default_config(), [_BrokenLane()]))
+        provider.add_span_processor(OptioSpanTap(default_config(), [_BrokenLane()]))
         tracer = provider.get_tracer("langgraph")
         graph = _FakeGraph(tracer, steps=3)
 

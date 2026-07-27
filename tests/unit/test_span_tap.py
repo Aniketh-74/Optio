@@ -13,12 +13,12 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from agentmeter import semconv
-from agentmeter.config import Config, default_config
-from agentmeter.lanes.base import Lane, Signal
-from agentmeter.runtime import failopen
-from agentmeter.runtime.run_context import RunContext
-from agentmeter.runtime.span_tap import AgentMeterSpanTap, is_genai_span
+from optio import semconv
+from optio.config import Config, default_config
+from optio.lanes.base import Lane, Signal
+from optio.runtime import failopen
+from optio.runtime.run_context import RunContext
+from optio.runtime.span_tap import OptioSpanTap, is_genai_span
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -80,7 +80,7 @@ def exporter() -> InMemorySpanExporter:
     return InMemorySpanExporter()
 
 
-def _provider(exporter: InMemorySpanExporter, tap: AgentMeterSpanTap) -> TracerProvider:
+def _provider(exporter: InMemorySpanExporter, tap: OptioSpanTap) -> TracerProvider:
     """Build a provider with the tap installed ahead of the exporter."""
     provider = TracerProvider()
     provider.add_span_processor(tap)
@@ -159,7 +159,7 @@ class TestSpanClassification:
 class TestDispatch:
     def test_genai_span_reaches_the_lane(self, exporter: InMemorySpanExporter) -> None:
         lane = _RecordingLane()
-        tracer = _provider(exporter, AgentMeterSpanTap(default_config(), [lane])).get_tracer("test")
+        tracer = _provider(exporter, OptioSpanTap(default_config(), [lane])).get_tracer("test")
 
         with (
             RunContext().start(),
@@ -172,7 +172,7 @@ class TestDispatch:
 
     def test_non_genai_spans_never_reach_the_lane(self, exporter: InMemorySpanExporter) -> None:
         lane = _RecordingLane()
-        tracer = _provider(exporter, AgentMeterSpanTap(default_config(), [lane])).get_tracer("test")
+        tracer = _provider(exporter, OptioSpanTap(default_config(), [lane])).get_tracer("test")
 
         with (
             RunContext().start(),
@@ -187,7 +187,7 @@ class TestDispatch:
         # Signals are run-scoped, so a GenAI span with no active run has nowhere
         # to be attributed.
         lane = _RecordingLane()
-        tracer = _provider(exporter, AgentMeterSpanTap(default_config(), [lane])).get_tracer("test")
+        tracer = _provider(exporter, OptioSpanTap(default_config(), [lane])).get_tracer("test")
 
         with tracer.start_as_current_span("llm") as step:
             step.set_attribute(semconv.GEN_AI_SYSTEM, "openai")
@@ -196,7 +196,7 @@ class TestDispatch:
 
     def test_every_lane_receives_the_span(self, exporter: InMemorySpanExporter) -> None:
         first, second = _RecordingLane(), _RecordingLane()
-        tap = AgentMeterSpanTap(default_config(), [first, second])
+        tap = OptioSpanTap(default_config(), [first, second])
         tracer = _provider(exporter, tap).get_tracer("test")
 
         with (
@@ -210,7 +210,7 @@ class TestDispatch:
         assert len(second.spans) == 1
 
     def test_no_lanes_is_a_cheap_no_op(self, exporter: InMemorySpanExporter) -> None:
-        tap = AgentMeterSpanTap(default_config(), [])
+        tap = OptioSpanTap(default_config(), [])
         tracer = _provider(exporter, tap).get_tracer("test")
 
         with (
@@ -230,7 +230,7 @@ class TestSignalsLandOnTheRunSpan:
         self, exporter: InMemorySpanExporter
     ) -> None:
         lane = _RecordingLane()
-        tracer = _provider(exporter, AgentMeterSpanTap(default_config(), [lane])).get_tracer("test")
+        tracer = _provider(exporter, OptioSpanTap(default_config(), [lane])).get_tracer("test")
 
         with (
             RunContext().start(),
@@ -262,7 +262,7 @@ class TestSignalsLandOnTheRunSpan:
 
 class TestFailOpen:
     def test_a_broken_lane_does_not_break_the_agent(self, exporter: InMemorySpanExporter) -> None:
-        tap = AgentMeterSpanTap(default_config(), [_BrokenLane()])
+        tap = OptioSpanTap(default_config(), [_BrokenLane()])
         tracer = _provider(exporter, tap).get_tracer("test")
         agent_completed = False
 
@@ -282,7 +282,7 @@ class TestFailOpen:
     ) -> None:
         # Lane independence (§3.1 rule 11) has to hold at dispatch time too.
         working = _RecordingLane()
-        tap = AgentMeterSpanTap(default_config(), [_BrokenLane(), working])
+        tap = OptioSpanTap(default_config(), [_BrokenLane(), working])
         tracer = _provider(exporter, tap).get_tracer("test")
 
         with (
@@ -300,7 +300,7 @@ class TestFailOpen:
             def attributes(self) -> dict[str, str]:
                 raise RuntimeError("attributes blew up")
 
-        tap = AgentMeterSpanTap(default_config(), [_RecordingLane()])
+        tap = OptioSpanTap(default_config(), [_RecordingLane()])
         tap.on_end(ExplodingSpan())  # type: ignore[arg-type]
 
         assert failopen.activation_count("span_tap") == 1
@@ -309,7 +309,7 @@ class TestFailOpen:
 class TestRunEnd:
     def test_run_end_signals_are_collected(self, exporter: InMemorySpanExporter) -> None:
         lane = _RecordingLane()
-        tap = AgentMeterSpanTap(default_config(), [lane])
+        tap = OptioSpanTap(default_config(), [lane])
         tracer = _provider(exporter, tap).get_tracer("test")
         run = RunContext()
 
@@ -322,7 +322,7 @@ class TestRunEnd:
         assert run_span.attributes[semconv.RUN_SUCCESS] is True
 
     def test_a_broken_lane_at_run_end_is_contained(self) -> None:
-        tap = AgentMeterSpanTap(default_config(), [_BrokenLane()])
+        tap = OptioSpanTap(default_config(), [_BrokenLane()])
         run = RunContext().start()
 
         tap.on_run_end(run)
@@ -332,13 +332,13 @@ class TestRunEnd:
 
 class TestProcessorProtocol:
     def test_shutdown_and_flush_are_safe(self) -> None:
-        tap = AgentMeterSpanTap(default_config(), [])
+        tap = OptioSpanTap(default_config(), [])
         tap.shutdown()
         assert tap.force_flush() is True
 
     def test_on_start_is_a_no_op(self, exporter: InMemorySpanExporter) -> None:
         lane = _RecordingLane()
-        tap = AgentMeterSpanTap(default_config(), [lane])
+        tap = OptioSpanTap(default_config(), [lane])
         tracer = _provider(exporter, tap).get_tracer("test")
 
         # A GenAI span at start time: no usage attributes exist yet, so nothing
@@ -352,11 +352,9 @@ class TestProcessorProtocol:
     def test_lanes_are_resolved_from_config_when_omitted(self) -> None:
         # The point is that the tap asks `enabled_lanes` rather than importing
         # concrete lanes itself (§3.1).
-        tap = AgentMeterSpanTap(default_config())
+        tap = OptioSpanTap(default_config())
         assert [lane.name for lane in tap.lanes] == ["cost", "behavior"]
 
     def test_config_controls_which_lanes_are_wired(self) -> None:
-        assert [lane.name for lane in AgentMeterSpanTap(Config(cost_lane=False)).lanes] == [
-            "behavior"
-        ]
-        assert AgentMeterSpanTap(Config(cost_lane=False, behavior_lane=False)).lanes == []
+        assert [lane.name for lane in OptioSpanTap(Config(cost_lane=False)).lanes] == ["behavior"]
+        assert OptioSpanTap(Config(cost_lane=False, behavior_lane=False)).lanes == []

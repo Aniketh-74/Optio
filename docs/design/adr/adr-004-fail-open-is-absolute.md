@@ -6,7 +6,7 @@
 
 ## Context
 
-`agentmeter` runs **in-process**, inside the user's agent, on the critical path of every step. That placement is what buys the latency budget and framework portability — and it is also what makes the library dangerous. An uncaught exception in a cost calculation does not produce a missing chart; it produces a broken agent in the user's production system.
+`optio` runs **in-process**, inside the user's agent, on the critical path of every step. That placement is what buys the latency budget and framework portability — and it is also what makes the library dangerous. An uncaught exception in a cost calculation does not produce a missing chart; it produces a broken agent in the user's production system.
 
 The asymmetry is severe and worth stating plainly:
 
@@ -22,7 +22,7 @@ This is also an adoption argument, not only a correctness one. The install pitch
 **No internal failure may ever reach user code.**
 
 - Every lane and runtime entry point is wrapped by the guard in `runtime/failopen.py`. On any exception the guard logs once at WARN, drops the signal for that step, and returns control so the agent proceeds unaffected.
-- The guard catches `Exception` broadly, not just our own `AgentMeterInternalError` types. A lane raising a plain `KeyError` must not break the agent either — the guarantee is about the agent's safety, not about our exception hygiene.
+- The guard catches `Exception` broadly, not just our own `OptioInternalError` types. A lane raising a plain `KeyError` must not break the agent either — the guarantee is about the agent's safety, not about our exception hygiene.
 - Detectors bias toward the benign classification on ambiguity. `loop_state` defaults to `healthy`: a fabricated pathology could cause a downstream policy to kill a healthy run, which converts our false positive into the user's outage.
 - Absence is a valid signal state. When a value cannot be computed, the attribute is **omitted** rather than emitted as zero — so consumers can distinguish "unknown" from "zero" (see `docs/signals.md`).
 
@@ -40,11 +40,11 @@ The one deliberate exception is **setup**: configuration errors raise loudly at 
 
 **Good**
 
-- The install pitch is honest: adding `agentmeter` cannot break your agent.
+- The install pitch is honest: adding `optio` cannot break your agent.
 - Lane authors write straightforward code instead of scattering defensive `try/except`, because the boundary handles the pathological case.
 
 **Costs, accepted deliberately**
 
-- **Bugs hide.** A broken lane silently emits nothing. This is mitigated, not eliminated, by `agentmeter.internal.lane_errors` — a rising fail-open activation count is the signal that something is wrong. Users are told in the runbooks: activations spiking means a lane bug, and their agent is still safe.
+- **Bugs hide.** A broken lane silently emits nothing. This is mitigated, not eliminated, by `optio.internal.lane_errors` — a rising fail-open activation count is the signal that something is wrong. Users are told in the runbooks: activations spiking means a lane bug, and their agent is still safe.
 - **Silent wrongness is possible.** A lane that fails *partially* — computing a wrong number rather than raising — is not caught by the guard at all. This is precisely why the ledger gets property tests rather than review (R-TECH-1): fail-open protects against crashes, not against arithmetic that is confidently incorrect.
 - **The guard itself is a single point of failure.** It gets 100% coverage, human review, and the fault-injection suite as a blocking CI gate (R-TECH-4). If exactly one component in this repo must be correct, it is this one.

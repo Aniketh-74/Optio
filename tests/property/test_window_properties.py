@@ -19,9 +19,9 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from agentmeter import semconv
-from agentmeter.lanes.behavior.detectors import MIN_STEPS_FOR_VERDICT, classify
-from agentmeter.lanes.behavior.window import BehaviorWindow, StepSignature, digest_args
+from optio import semconv
+from optio.lanes.behavior.detectors import MIN_STEPS_FOR_VERDICT, classify
+from optio.lanes.behavior.window import BehaviorWindow, StepSignature, digest_args
 
 pytestmark = pytest.mark.property
 

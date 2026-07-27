@@ -1,14 +1,14 @@
 # Policy packs
 
 Copy-paste rules that gate agent runs on **cost** and **behavioral health**, for the three
-engines teams already run. This is SC-3: agentmeter emits signals and never enforces (ADR-001),
+engines teams already run. This is SC-3: optio emits signals and never enforces (ADR-001),
 so these packs are where a decision actually gets made — by your engine, not by us.
 
 | Engine | Pack | Tests |
 |---|---|---|
-| OPA / Rego | [`opa/agentmeter.rego`](opa/agentmeter.rego) | `opa test policies/opa -v` |
-| Cedar | [`cedar/agentmeter.cedar`](cedar/agentmeter.cedar) + [schema](cedar/schema.cedarschema) | [`cedar/tests.json`](cedar/tests.json) |
-| Microsoft AGT | [`agt/agentmeter-policy.yaml`](agt/agentmeter-policy.yaml) | structural, in `tests/policy/` |
+| OPA / Rego | [`opa/optio.rego`](opa/optio.rego) | `opa test policies/opa -v` |
+| Cedar | [`cedar/optio.cedar`](cedar/optio.cedar) + [schema](cedar/schema.cedarschema) | [`cedar/tests.json`](cedar/tests.json) |
+| Microsoft AGT | [`agt/optio-policy.yaml`](agt/optio-policy.yaml) | structural, in `tests/policy/` |
 
 All three are exercised by `pytest -m policy`, which runs in CI.
 
@@ -16,7 +16,7 @@ All three are exercised by `pytest -m policy`, which runs in CI.
 
 **A missing signal means _unknown_, never _zero_.**
 
-agentmeter omits any signal it cannot compute — unknown model price, lane disabled, or a lane
+optio omits any signal it cannot compute — unknown model price, lane disabled, or a lane
 that failed and was caught by the fail-open guard — rather than emitting a wrong number
 ([docs/signals.md](../docs/signals.md#absence-is-meaningful)). So this rule:
 
@@ -56,7 +56,7 @@ non-AGT packs expect the attributes under an `attributes` object:
 ```
 
 Cedar needs one extra step, because Cedar identifiers cannot contain dots. Build an
-`AgentMeter::Run` entity, dropping the `gen_ai.run.` prefix and replacing dots with underscores:
+`Optio::Run` entity, dropping the `gen_ai.run.` prefix and replacing dots with underscores:
 
 | Span attribute | Cedar attribute |
 |---|---|

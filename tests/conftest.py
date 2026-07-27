@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from agentmeter.runtime import run_context
+from optio.runtime import run_context
 
 
 @pytest.fixture(autouse=True)
@@ -27,8 +27,8 @@ def _isolated_run_context():
 
 
 @pytest.fixture(autouse=True)
-def _clean_agentmeter_env(monkeypatch):
-    """Remove ``AGENTMETER_*`` variables so a developer's shell cannot alter results."""
+def _clean_optio_env(monkeypatch):
+    """Remove ``OPTIO_*`` variables so a developer's shell cannot alter results."""
     for key in list(__import__("os").environ):
-        if key.startswith("AGENTMETER_"):
+        if key.startswith("OPTIO_"):
             monkeypatch.delenv(key, raising=False)

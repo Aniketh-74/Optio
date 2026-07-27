@@ -20,15 +20,15 @@ import pytest
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 
-from agentmeter.adapters.claude_agent import ClaudeAgentAdapter
-from agentmeter.adapters.crewai import CrewAIAdapter
-from agentmeter.adapters.langgraph import LangGraphAdapter
-from agentmeter.adapters.openai_agents import OpenAIAgentsAdapter
-from agentmeter.config import default_config
-from agentmeter.errors import AgentMeterConfigError, UnsupportedFrameworkError
-from agentmeter.runtime import installer
-from agentmeter.runtime.adapter_base import Adapter
-from agentmeter.runtime.adapter_registry import (
+from optio.adapters.claude_agent import ClaudeAgentAdapter
+from optio.adapters.crewai import CrewAIAdapter
+from optio.adapters.langgraph import LangGraphAdapter
+from optio.adapters.openai_agents import OpenAIAgentsAdapter
+from optio.config import default_config
+from optio.errors import OptioConfigError, UnsupportedFrameworkError
+from optio.runtime import installer
+from optio.runtime.adapter_base import Adapter
+from optio.runtime.adapter_registry import (
     available_adapters,
     load_adapter,
     resolve_adapter,
@@ -170,7 +170,7 @@ class TestRegistry:
         # thing" are different problems with different fixes for the user, and
         # deleting the distinction because it is momentarily unused would mean
         # rediscovering the need for it in M5.
-        from agentmeter.runtime import adapter_registry
+        from optio.runtime import adapter_registry
 
         monkeypatch.setattr(adapter_registry, "_PLANNED_ADAPTERS", frozenset({"future_sdk"}))
 
@@ -180,7 +180,7 @@ class TestRegistry:
     def test_a_planned_adapter_is_listed_when_resolution_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from agentmeter.runtime import adapter_registry
+        from optio.runtime import adapter_registry
 
         monkeypatch.setattr(adapter_registry, "_PLANNED_ADAPTERS", frozenset({"future_sdk"}))
 
@@ -380,7 +380,7 @@ class TestSetupWarnsWhenNoProviderIsConfigured:
             def get_tracer(self, *args: object, **kwargs: object) -> object:
                 return trace.NoOpTracer()
 
-        with caplog.at_level("WARNING", logger="agentmeter"):
+        with caplog.at_level("WARNING", logger="optio"):
             result = adapter.instrument(target, default_config(), provider=NoOpProvider())  # type: ignore[arg-type]
 
         assert result is target
@@ -395,7 +395,7 @@ class TestIdentityContract:
     ) -> None:
         # `agent = instrument(agent)` would otherwise quietly replace the user's
         # agent with something else.
-        from agentmeter import api
+        from optio import api
 
         class _SwappingAdapter(Adapter):
             name = "swapper"
@@ -413,7 +413,7 @@ class TestIdentityContract:
 
         monkeypatch.setattr(api, "resolve_adapter", lambda _target: _SwappingAdapter())
 
-        with pytest.raises(AgentMeterConfigError, match="different object"):
+        with pytest.raises(OptioConfigError, match="different object"):
             api.instrument(_FakeGraph())
 
 

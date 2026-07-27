@@ -1,12 +1,12 @@
 # OpenAI Agents SDK
 
 ```bash
-pip install "agentmeter[openai]"
+pip install "optio[openai]"
 ```
 
 ```python
 from agents import Agent
-from agentmeter import instrument
+from optio import instrument
 
 agent = Agent(name="researcher", instructions="...", tools=[...])
 instrument(agent)
@@ -15,7 +15,7 @@ instrument(agent)
 ## You need an OTel bridge
 
 **The Agents SDK's built-in tracing is not OpenTelemetry.** It exports to OpenAI's own trace
-backend, and agentmeter cannot read it. Without a bridge you will get no signals and no error —
+backend, and optio cannot read it. Without a bridge you will get no signals and no error —
 `instrument()` succeeds, the tap is installed, and no `gen_ai.*` spans ever arrive.
 
 Install one of these:
@@ -66,7 +66,7 @@ budget. If you need per-agent attribution, wrap each in its own `RunContext`.
 ## Troubleshooting
 
 **No signals, no errors.** Almost always the missing bridge above. Check that `gen_ai.*` spans
-reach your exporter *before* suspecting agentmeter — if the console exporter shows no GenAI
+reach your exporter *before* suspecting optio — if the console exporter shows no GenAI
 spans, there is nothing to tap.
 
 **`UnsupportedFrameworkError: adapter 'openai_agents' cannot instrument ...`.** The object is not

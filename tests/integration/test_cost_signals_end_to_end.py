@@ -14,12 +14,12 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from agentmeter import meter, semconv
-from agentmeter.config import default_config
-from agentmeter.errors import LedgerInvariantError
-from agentmeter.lanes.cost.lane import CostLane
-from agentmeter.runtime import failopen, installer
-from agentmeter.runtime.run_context import current_run
+from optio import meter, semconv
+from optio.config import default_config
+from optio.errors import LedgerInvariantError
+from optio.lanes.cost.lane import CostLane
+from optio.runtime import failopen, installer
+from optio.runtime.run_context import current_run
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -54,8 +54,8 @@ def provider(exporter: InMemorySpanExporter) -> TracerProvider:
 
 
 def _run_span(exporter: InMemorySpanExporter) -> ReadableSpan:
-    """Return the agentmeter run span."""
-    return next(s for s in exporter.get_finished_spans() if s.name.startswith("agentmeter.run"))
+    """Return the optio run span."""
+    return next(s for s in exporter.get_finished_spans() if s.name.startswith("optio.run"))
 
 
 class TestCostReachesTheSpan:
@@ -191,9 +191,7 @@ class TestRunEndFires:
         run_agent(1)
         run_agent(2)
 
-        run_spans = [
-            s for s in exporter.get_finished_spans() if s.name.startswith("agentmeter.run")
-        ]
+        run_spans = [s for s in exporter.get_finished_spans() if s.name.startswith("optio.run")]
         costs = sorted(
             float(s.attributes[semconv.RUN_ACTUAL_COST])  # type: ignore[index,arg-type]
             for s in run_spans

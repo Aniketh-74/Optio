@@ -1,12 +1,12 @@
 # Claude Agent SDK
 
 ```bash
-pip install "agentmeter[claude]"
+pip install "optio[claude]"
 ```
 
 ```python
 from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
-from agentmeter import instrument
+from optio import instrument
 
 client = ClaudeSDKClient(options=ClaudeAgentOptions(...))
 instrument(client)
@@ -22,13 +22,13 @@ async with client:
 This SDK is shaped differently from the others, and it changes what the signals mean.
 
 The agent loop runs in the **Claude Code process**, not yours. The SDK is a client to it. So the
-spans agentmeter taps are the ones *your* OTel instrumentation creates around your SDK calls —
+spans optio taps are the ones *your* OTel instrumentation creates around your SDK calls —
 they are not emitted by the agent loop itself.
 
 Two consequences:
 
 **Cost reflects what the SDK reports back.** Token usage arrives in the response and lands on
-your spans; agentmeter reconciles from that. If a step fails before returning usage, that step's
+your spans; optio reconciles from that. If a step fails before returning usage, that step's
 cost is missing rather than wrong — absence, not a bad number
 ([docs/signals.md](../signals.md#absence-is-meaningful)).
 
@@ -44,7 +44,7 @@ with.
 
 ## Setup
 
-Create spans around your SDK calls and give agentmeter a tracer provider:
+Create spans around your SDK calls and give optio a tracer provider:
 
 ```python
 from opentelemetry import trace
@@ -70,7 +70,7 @@ accepting it would let `instrument(options)` appear to work while instrumenting 
 For the one-shot `query()` function there is no client object to pass, so use `RunContext`:
 
 ```python
-from agentmeter import RunContext
+from optio import RunContext
 from claude_agent_sdk import query
 
 with RunContext(budget="$0.50"):

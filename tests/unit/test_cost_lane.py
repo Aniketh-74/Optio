@@ -17,11 +17,11 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from agentmeter import semconv
-from agentmeter.config import BudgetPolicy, default_config
-from agentmeter.lanes.base import Signal
-from agentmeter.lanes.cost.lane import CostLane
-from agentmeter.lanes.cost.ledger import CostLedger
+from optio import semconv
+from optio.config import BudgetPolicy, default_config
+from optio.lanes.base import Signal
+from optio.lanes.cost.lane import CostLane
+from optio.lanes.cost.ledger import CostLedger
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -415,7 +415,7 @@ class TestMalformedAttributes:
     def test_a_span_with_no_context_still_gets_a_step_id(self) -> None:
         # Defensive: the ledger keys on step id, so a span without a usable
         # context must still produce a distinct one rather than collide.
-        from agentmeter.lanes.cost.lane import _step_id
+        from optio.lanes.cost.lane import _step_id
 
         class _NoContextSpan:
             def get_span_context(self) -> None:

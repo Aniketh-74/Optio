@@ -4,8 +4,8 @@ Scores whether an agent run actually *worked* — the signal permission-based go
 see. **Off by default** (ADR-003); everything below happens only if you turn it on.
 
 ```python
-from agentmeter import instrument
-from agentmeter.config import Config
+from optio import instrument
+from optio.config import Config
 
 instrument(agent, config=Config(quality_lane=True, judge=my_judge))
 ```
@@ -58,11 +58,11 @@ Absent means *unknown*. A policy must not read it as failure — see
 
 ## Writing a judge
 
-A judge is a callable you supply. **agentmeter ships no default and constructs no model client**,
+A judge is a callable you supply. **optio ships no default and constructs no model client**,
 because either would mean spending your money and using your credentials on our initiative (§10).
 
 ```python
-from agentmeter.lanes.quality.judge import JudgeRequest, JudgeScores
+from optio.lanes.quality.judge import JudgeRequest, JudgeScores
 
 
 def my_judge(request: JudgeRequest) -> JudgeScores:
@@ -86,7 +86,7 @@ without it.
 
 ### Content and privacy
 
-`JudgeRequest.content` is empty unless you fill it. agentmeter passes no trace text of its own
+`JudgeRequest.content` is empty unless you fill it. optio passes no trace text of its own
 (§10) — if your judge needs the prompt, close over your own record of it. What the judge sees is
 your data going to your model; we neither log nor retain it.
 
@@ -116,8 +116,8 @@ slow agent.
 
 | Option | Env var | Default |
 |---|---|---|
-| `quality_lane` | `AGENTMETER_QUALITY_LANE` | `False` |
-| `quality_sample_rate` | `AGENTMETER_QUALITY_SAMPLE_RATE` | `0.1` |
+| `quality_lane` | `OPTIO_QUALITY_LANE` | `False` |
+| `quality_sample_rate` | `OPTIO_QUALITY_SAMPLE_RATE` | `0.1` |
 | `judge` | — (code only) | `None` |
 
 `judge` has no environment variable on purpose: it is a callable, and a config path that could

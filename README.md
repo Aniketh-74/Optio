@@ -1,4 +1,4 @@
-# agentmeter
+# optio
 
 **Economic cost and outcome quality signals for agent runs — in the OpenTelemetry GenAI vocabulary.**
 
@@ -16,7 +16,7 @@ Runnable demo: [`examples/demo`](examples/demo/) — one command, no API keys.
 
 Agent governance engines (Microsoft Agent Governance Toolkit, OPA, Cedar) can decide whether an agent action is **allowed** and **safe**. None of them can decide whether an agent run is **affordable** or **good**.
 
-`agentmeter` supplies the missing signals — real-time **cost** and **outcome quality** — emitted as standard `gen_ai.*` span attributes, so the policy engine and observability backend you already run can reason about money and quality, not just permission.
+`optio` supplies the missing signals — real-time **cost** and **outcome quality** — emitted as standard `gen_ai.*` span attributes, so the policy engine and observability backend you already run can reason about money and quality, not just permission.
 
 ## Principles
 
@@ -28,8 +28,8 @@ Agent governance engines (Microsoft Agent Governance Toolkit, OPA, Cedar) can de
 ## Install
 
 ```bash
-pip install agentmeter                # core
-pip install "agentmeter[langgraph]"   # + framework adapter
+pip install optio                # core
+pip install "optio[langgraph]"   # + framework adapter
 ```
 
 Python ≥ 3.10.
@@ -37,7 +37,7 @@ Python ≥ 3.10.
 ## Quickstart
 
 ```python
-from agentmeter import instrument
+from optio import instrument
 
 instrument(agent)  # one line; spans now carry cost + behavior signals
 ```
@@ -45,7 +45,7 @@ instrument(agent)  # one line; spans now carry cost + behavior signals
 Other surfaces:
 
 ```python
-from agentmeter import meter, RunContext, Config
+from optio import meter, RunContext, Config
 
 
 @meter(budget="$0.50")
@@ -60,7 +60,7 @@ Enabling or disabling lanes never changes agent behavior, nothing blocks the age
 
 ## Signals
 
-The emitted attributes are the integration contract. [`docs/signals.md`](docs/signals.md) is authoritative; names are mirrored as constants in `agentmeter.semconv` and asserted by contract tests.
+The emitted attributes are the integration contract. [`docs/signals.md`](docs/signals.md) is authoritative; names are mirrored as constants in `optio.semconv` and asserted by contract tests.
 
 | Signal | Type | Lane |
 |---|---|---|
@@ -111,14 +111,14 @@ rate is trivially achievable by never detecting anything.
 
 ## Configuration
 
-Precedence: `instrument(...)` kwargs > `AGENTMETER_*` env vars > defaults.
+Precedence: `instrument(...)` kwargs > `OPTIO_*` env vars > defaults.
 
 | Option | Env var | Default |
 |---|---|---|
-| `cost_lane` | `AGENTMETER_COST_LANE` | `True` |
-| `behavior_lane` | `AGENTMETER_BEHAVIOR_LANE` | `True` |
-| `quality_lane` | `AGENTMETER_QUALITY_LANE` | `False` (opt-in, ADR-003) |
-| `store_backend` | `AGENTMETER_STORE_BACKEND` | `memory` |
+| `cost_lane` | `OPTIO_COST_LANE` | `True` |
+| `behavior_lane` | `OPTIO_BEHAVIOR_LANE` | `True` |
+| `quality_lane` | `OPTIO_QUALITY_LANE` | `False` (opt-in, ADR-003) |
+| `store_backend` | `OPTIO_STORE_BACKEND` | `memory` |
 
 ## Development
 

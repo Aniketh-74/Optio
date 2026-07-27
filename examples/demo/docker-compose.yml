@@ -13,12 +13,12 @@
 # No API keys and no network egress: the model is scripted (see agent.py). The
 # demo must run on a fresh machine or it is not a demo (SC-1).
 
-name: agentmeter-demo
+name: optio-demo
 
 services:
   collector:
     image: otel/opentelemetry-collector-contrib:0.115.1
-    container_name: agentmeter-demo-collector
+    container_name: optio-demo-collector
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
       - ./otel-collector-config.yaml:/etc/otel/config.yaml:ro
@@ -36,12 +36,12 @@ services:
     build:
       context: ../..
       dockerfile: examples/demo/Dockerfile
-    container_name: agentmeter-demo
+    container_name: optio-demo
     depends_on:
       - collector
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4317
-      OTEL_SERVICE_NAME: agentmeter-demo
+      OTEL_SERVICE_NAME: optio-demo
       # The demo prints its own summary; this keeps the SDK quiet underneath.
       OTEL_LOG_LEVEL: error
       PYTHONUNBUFFERED: "1"

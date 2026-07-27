@@ -16,15 +16,15 @@ from __future__ import annotations
 
 import pytest
 
-from agentmeter import semconv
-from agentmeter.lanes.behavior.detectors import (
+from optio import semconv
+from optio.lanes.behavior.detectors import (
     LOOP_DOMINANCE,
     MIN_STEPS_FOR_VERDICT,
     REPEAT_THRESHOLD,
     RETRY_STORM_MIN_ERRORS,
     classify,
 )
-from agentmeter.lanes.behavior.window import BehaviorWindow, StepSignature
+from optio.lanes.behavior.window import BehaviorWindow, StepSignature
 
 
 def sig(tool: str, args: str = "a", *, errored: bool = False) -> StepSignature:

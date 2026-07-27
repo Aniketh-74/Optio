@@ -30,8 +30,8 @@ from hypothesis.stateful import (
     rule,
 )
 
-from agentmeter.errors import LedgerInvariantError
-from agentmeter.lanes.cost.ledger import CostLedger
+from optio.errors import LedgerInvariantError
+from optio.lanes.cost.ledger import CostLedger
 
 pytestmark = pytest.mark.property
 

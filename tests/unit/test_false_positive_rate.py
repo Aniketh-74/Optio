@@ -25,9 +25,9 @@ from typing import Final
 
 import pytest
 
-from agentmeter import semconv
-from agentmeter.lanes.behavior.detectors import classify
-from agentmeter.lanes.behavior.window import BehaviorWindow, StepSignature
+from optio import semconv
+from optio.lanes.behavior.detectors import classify
+from optio.lanes.behavior.window import BehaviorWindow, StepSignature
 
 #: Deterministic corpus: the published number must be reproducible.
 SEED: Final = 20260727

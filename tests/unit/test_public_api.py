@@ -13,22 +13,22 @@ from types import ModuleType
 
 import pytest
 
-import agentmeter
-from agentmeter import BudgetPolicy, Config, RunContext, current_run, instrument, meter
-from agentmeter.errors import AgentMeterConfigError
+import optio
+from optio import BudgetPolicy, Config, RunContext, current_run, instrument, meter
+from optio.errors import OptioConfigError
 
 
 class TestSurface:
     def test_documented_names_are_importable(self):
         for name in ("instrument", "meter", "RunContext", "Config", "BudgetPolicy"):
-            assert hasattr(agentmeter, name), name
+            assert hasattr(optio, name), name
 
     def test_all_entries_exist(self):
-        for name in agentmeter.__all__:
-            assert hasattr(agentmeter, name), name
+        for name in optio.__all__:
+            assert hasattr(optio, name), name
 
     def test_all_has_no_duplicates(self):
-        assert len(agentmeter.__all__) == len(set(agentmeter.__all__))
+        assert len(optio.__all__) == len(set(optio.__all__))
 
     def test_all_covers_every_public_name(self):
         # A public name missing from __all__ is an undocumented surface that
@@ -36,15 +36,15 @@ class TestSurface:
         ignored = {"annotations"}  # __future__ import, not a public export
         public = {
             name
-            for name, value in vars(agentmeter).items()
+            for name, value in vars(optio).items()
             if not name.startswith("_")
             and name not in ignored
             and not isinstance(value, ModuleType)
         }
-        assert public - set(agentmeter.__all__) == set()
+        assert public - set(optio.__all__) == set()
 
     def test_version_is_exposed(self):
-        assert isinstance(agentmeter.__version__, str)
+        assert isinstance(optio.__version__, str)
 
     def test_instrument_signature_is_locked(self):
         # Additive keyword-only parameters with defaults are compatible; a
@@ -97,7 +97,7 @@ class TestInstrument:
         assert instrument(agent, adapter="langgraph") is agent
 
     def test_unknown_adapter_raises_at_setup(self):
-        with pytest.raises(AgentMeterConfigError, match="unknown adapter"):
+        with pytest.raises(OptioConfigError, match="unknown adapter"):
             instrument(_FakeGraph(), adapter="not_a_framework")
 
     def test_naming_the_wrong_adapter_raises_at_setup(self):
@@ -105,18 +105,18 @@ class TestInstrument:
         # case to test. The mismatch this replaces it with is the one that
         # actually costs a user: an explicit adapter= that does not fit the
         # object, which must fail rather than instrument nothing.
-        with pytest.raises(AgentMeterConfigError, match="cannot instrument"):
+        with pytest.raises(OptioConfigError, match="cannot instrument"):
             instrument(_FakeGraph(), adapter="crewai")
 
     def test_unrecognised_target_raises_at_setup(self):
         # Section 6.1: an unknown framework fails loudly at setup. Silently
         # instrumenting nothing would leave the user believing they have
         # coverage they do not have.
-        with pytest.raises(AgentMeterConfigError, match="no adapter matches"):
+        with pytest.raises(OptioConfigError, match="no adapter matches"):
             instrument(object())
 
     def test_unknown_config_option_raises_at_setup(self):
-        with pytest.raises(AgentMeterConfigError, match="unknown config option"):
+        with pytest.raises(OptioConfigError, match="unknown config option"):
             instrument(_FakeGraph(), definitely_not_an_option=True)
 
     def test_overrides_apply(self):
@@ -153,7 +153,7 @@ class TestMeter:
         def explode() -> None:
             raise ValueError("agent error")
 
-        # agentmeter observes runs; it must never swallow the user's exception.
+        # optio observes runs; it must never swallow the user's exception.
         with pytest.raises(ValueError, match="agent error"):
             explode()
 
@@ -170,7 +170,7 @@ class TestMeter:
         assert current_run() is None
 
     def test_bad_budget_raises_at_decoration_time(self):
-        with pytest.raises(AgentMeterConfigError):
+        with pytest.raises(OptioConfigError):
             meter(budget="not a number")
 
 
@@ -187,11 +187,11 @@ class TestBudgetPolicy:
         assert BudgetPolicy.parse(policy) is policy
 
     def test_rejects_unparseable(self):
-        with pytest.raises(AgentMeterConfigError):
+        with pytest.raises(OptioConfigError):
             BudgetPolicy.parse("free")
 
     def test_rejects_non_positive(self):
-        with pytest.raises(AgentMeterConfigError):
+        with pytest.raises(OptioConfigError):
             BudgetPolicy(limit_usd=0)
 
     def test_is_immutable(self):

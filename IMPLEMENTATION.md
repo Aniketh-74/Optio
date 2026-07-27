@@ -4,7 +4,12 @@
 > Read this before writing any code. Do not make architectural decisions during development —
 > if a decision is missing, add an ADR (§15) and update this document first.
 
-**Working name:** `agentmeter` (placeholder — rename before public release; see OQ-1 in §14).
+**Name:** `optio` (resolved Jul 2026, closing OQ-1). Latin *optio* — the officer chosen to
+observe and assist, never to command; the fit with ADR-001 ("emit signals, never enforce") is
+the reason it was picked. The working name `agentmeter` was retired because the PyPI
+distribution was already taken by an unrelated project. Prose below that predates the rename
+still says "agentmeter"; it is left as written, because this document records decisions as
+they were made and rewriting the record would falsify it.
 **Document version:** 0.1 (design-locked for Milestones 0–3; enterprise phases design-level only)
 **Last validated against market:** July 2026 (see ADR-000)
 
@@ -571,7 +576,7 @@ The OSS core is **published to PyPI**, not deployed as a service.
 | R-SEC-1 | Prompt/completion content leaks via a signal or log | Security | High | Low | Content never emitted/logged by default; judge opt-in + redaction; review every new signal for content-freedom. | per new signal |
 | R-OPS-1 | Solo maintainer bandwidth; project stalls at enterprise phase | Operational | Medium | High | OSS core is the whole committed scope; M6+ explicitly deferred (ADR-007). Don't start what can't be sustained. | quarterly |
 
-**Open questions (OQ):** OQ-1 final public name/trademark check; OQ-2 second-language SDK (TS?) timing; OQ-3 whether to upstream signals as a GenAI semconv proposal (would strengthen R-TECH-2 enormously — high-leverage, investigate post-v0.1).
+**Open questions (OQ):** ~~OQ-1 final public name/trademark check~~ — **resolved Jul 2026: `optio`** (see the header note; PyPI name verified free on both the JSON API and the simple index, and the import package renamed to match); OQ-2 second-language SDK (TS?) timing; OQ-3 whether to upstream signals as a GenAI semconv proposal (would strengthen R-TECH-2 enormously — high-leverage, investigate post-v0.1).
 
 ---
 

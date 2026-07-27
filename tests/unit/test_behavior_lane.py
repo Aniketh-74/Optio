@@ -14,10 +14,10 @@ from unittest.mock import Mock
 import pytest
 from opentelemetry.trace import StatusCode
 
-from agentmeter import semconv
-from agentmeter.config import Config, default_config
-from agentmeter.lanes.base import Signal
-from agentmeter.lanes.behavior.lane import BehaviorLane
+from optio import semconv
+from optio.config import Config, default_config
+from optio.lanes.base import Signal
+from optio.lanes.behavior.lane import BehaviorLane
 
 
 class Run:
@@ -183,19 +183,19 @@ class TestConfiguration:
         assert BehaviorLane(Config(behavior_window_size=7)).window_size == 7
 
     def test_the_lane_is_absent_when_disabled(self) -> None:
-        from agentmeter.lanes.registry import enabled_lanes
+        from optio.lanes.registry import enabled_lanes
 
         names = [lane.name for lane in enabled_lanes(Config(behavior_lane=False))]
         assert "behavior" not in names
 
     def test_the_lane_is_wired_by_default(self) -> None:
-        from agentmeter.lanes.registry import enabled_lanes
+        from optio.lanes.registry import enabled_lanes
 
         names = [lane.name for lane in enabled_lanes(default_config())]
         assert "behavior" in names
 
     def test_an_invalid_window_size_fails_at_setup(self) -> None:
-        from agentmeter.errors import AgentMeterConfigError
+        from optio.errors import OptioConfigError
 
-        with pytest.raises(AgentMeterConfigError):
+        with pytest.raises(OptioConfigError):
             Config(behavior_window_size=0)

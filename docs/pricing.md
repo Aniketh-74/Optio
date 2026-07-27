@@ -1,11 +1,11 @@
 # Pricing
 
-How `agentmeter` turns token counts into dollars, and what to do when it cannot.
+How `optio` turns token counts into dollars, and what to do when it cannot.
 
 ## Source
 
 Prices come from a **static in-memory table** in
-[`lanes/cost/pricing.py`](../src/agentmeter/lanes/cost/pricing.py), populated
+[`lanes/cost/pricing.py`](../src/optio/lanes/cost/pricing.py), populated
 from vendors' published list prices.
 
 The table is deliberate, not a shortcut. Cost is computed on the hot path, so a
@@ -64,7 +64,7 @@ The built-in table will not cover negotiated enterprise rates, self-hosted
 models, or a vendor we have not added. Implement `PricingProvider`:
 
 ```python
-from agentmeter.lanes.cost.pricing import ModelPrice
+from optio.lanes.cost.pricing import ModelPrice
 
 
 class MyPricing:
@@ -84,7 +84,7 @@ exactly as the built-in table does for an unknown id.
 - **Negative or non-numeric token counts.** A framework reporting these has told
   us something we do not understand, and pricing it would invent a number.
 - **Cached, batch, and reasoning-token tiers.** The table carries standard input
-  and output rates only. Where a vendor prices cached input lower, `agentmeter`
+  and output rates only. Where a vendor prices cached input lower, `optio`
   currently over-reports. That bias is the safe direction — over-reporting gates
   a run early rather than letting an over-budget run through — but it is a known
   gap, not a design choice, and a tiered table is the fix.

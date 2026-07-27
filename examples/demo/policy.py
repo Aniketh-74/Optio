@@ -1,4 +1,4 @@
-"""The policy the demo runs against agentmeter's signals.
+"""The policy the demo runs against optio's signals.
 
 This stands in for OPA, Cedar, or AGT. Those are the real targets -- the shipped
 packs in ``policies/`` are the same rules in each engine's own language -- but
@@ -8,7 +8,7 @@ install (ADR-006: the demo has to work on a fresh machine).
 The rules are deliberately the same shape as the shipped packs, including the
 part that is easy to get wrong:
 
-**A missing signal means unknown, never zero.** agentmeter omits a signal it
+**A missing signal means unknown, never zero.** optio omits a signal it
 cannot compute rather than emitting a wrong number, so every rule checks
 presence before comparing. Reading absence as zero would make a broken cost lane
 look like a free run -- and would deny every run for anyone with no budget set.
@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-from agentmeter import semconv
+from optio import semconv
 
 #: Stop a run projected to cost more than this. Generous on purpose: the demo's
 #: point is that the *behavior* signal catches the loop long before spend does,
@@ -72,7 +72,7 @@ def evaluate(signals: dict[str, object]) -> Decision:
     """Decide whether a run may continue, given its current signals.
 
     Args:
-        signals: agentmeter attributes read off the latest span. Signals that
+        signals: optio attributes read off the latest span. Signals that
             were not emitted are simply absent.
 
     Returns:

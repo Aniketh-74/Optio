@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from agentmeter import semconv
+from optio import semconv
 
 DOCS_SIGNALS = Path(__file__).resolve().parents[2] / "docs" / "signals.md"
 
@@ -98,8 +98,8 @@ def test_the_detector_only_produces_documented_states():
     # four states while the detector returned a fifth: the signal writer would
     # reject it and the behavior signal would vanish silently in production
     # while every unit test stayed green.
-    from agentmeter.lanes.behavior.detectors import classify
-    from agentmeter.lanes.behavior.window import BehaviorWindow, StepSignature
+    from optio.lanes.behavior.detectors import classify
+    from optio.lanes.behavior.window import BehaviorWindow, StepSignature
 
     produced = set()
     patterns = [

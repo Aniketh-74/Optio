@@ -15,7 +15,7 @@ WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY src/ ./src/
 
-# The OTLP exporter is a demo-only dependency: agentmeter rides the user's
+# The OTLP exporter is a demo-only dependency: optio rides the user's
 # existing OTel pipeline and does not ship an exporter of its own (SC-1).
 RUN pip install --no-cache-dir . opentelemetry-exporter-otlp-proto-grpc
 

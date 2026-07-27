@@ -14,8 +14,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from agentmeter.config import Config
-from agentmeter.lanes.quality.sampling import SamplingDecision, Tier, decide
+from optio.config import Config
+from optio.lanes.quality.sampling import SamplingDecision, Tier, decide
 
 
 @dataclass

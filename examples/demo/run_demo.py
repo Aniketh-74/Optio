@@ -1,16 +1,16 @@
-"""The agentmeter demo (M4-5, ADR-006).
+"""The optio demo (M4-5, ADR-006).
 
 Runs the misbehaving agent twice and shows what changes when a policy engine
 can see the signals:
 
 * **Ungoverned** -- the agent loops until its step ceiling. Nothing stops it.
-* **Governed** -- a policy reads the signals agentmeter emits and stops the run
+* **Governed** -- a policy reads the signals optio emits and stops the run
   the moment the agent is provably stuck.
 
 The saving between those two numbers is the whole product argument, so the demo
 computes it from real signals rather than asserting it in prose.
 
-**agentmeter does not stop anything.** It emits signals; the policy in
+**optio does not stop anything.** It emits signals; the policy in
 ``policy.py`` decides (ADR-001). That separation is the point of the product and
 the demo is built to make it visible: the same signals, evaluated by rules you
 can edit, are what end the run.
@@ -31,9 +31,9 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from agentmeter import RunContext, semconv
-from agentmeter.config import Config, default_config
-from agentmeter.runtime.installer import install_tap
+from optio import RunContext, semconv
+from optio.config import Config, default_config
+from optio.runtime.installer import install_tap
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -65,7 +65,7 @@ MAX_STEPS: Final = 60
 #: tools already do.
 #:
 #: A 20-step window catches the loop at step 23 for $0.36, which is the case
-#: that actually distinguishes agentmeter -- behavioral evidence firing while
+#: that actually distinguishes optio -- behavioral evidence firing while
 #: the run still looks affordable. Shorter windows detect faster and tolerate
 #: less legitimate repetition; 20 is a reasonable production value, not a number
 #: invented to make the demo work.
@@ -171,16 +171,16 @@ class Outcome:
 
 
 def _signals(spans: list[ReadableSpan]) -> dict[str, object]:
-    """Collect the signals agentmeter wrote onto the run span.
+    """Collect the signals optio wrote onto the run span.
 
     Args:
         spans: Finished spans from the exporter.
 
     Returns:
-        The run span's agentmeter attributes, or ``{}`` if no run span exists.
+        The run span's optio attributes, or ``{}`` if no run span exists.
     """
     for span in spans:
-        if span.name.startswith("agentmeter.demo.run") and span.attributes:
+        if span.name.startswith("optio.demo.run") and span.attributes:
             return {
                 key: value
                 for key, value in span.attributes.items()
@@ -190,7 +190,7 @@ def _signals(spans: list[ReadableSpan]) -> dict[str, object]:
 
 
 def _live_signals(span: Span) -> dict[str, object]:
-    """Read agentmeter's signals off a span that is still open.
+    """Read optio's signals off a span that is still open.
 
     This is what a policy integration does mid-run: the lanes write onto the
     active run span after each step (ADR-009), and the orchestrator reads them
@@ -202,7 +202,7 @@ def _live_signals(span: Span) -> dict[str, object]:
         span: The open run span.
 
     Returns:
-        The agentmeter signals currently on the span.
+        The optio signals currently on the span.
     """
     attributes = getattr(span, "attributes", None) or {}
     return {k: v for k, v in attributes.items() if k in semconv.EMITTED_SIGNALS}
@@ -219,11 +219,11 @@ def run_ungoverned(provider: TracerProvider, exporter: InMemorySpanExporter) -> 
         What the run cost and how it behaved.
     """
     exporter.clear()
-    tracer = provider.get_tracer("agentmeter.demo")
+    tracer = provider.get_tracer("optio.demo")
     model = ScriptedModel(get_stuck=True)
 
     with (
-        tracer.start_as_current_span("agentmeter.demo.run.ungoverned"),
+        tracer.start_as_current_span("optio.demo.run.ungoverned"),
         RunContext(budget=BUDGET, config=_config()),
     ):
         steps = 0
@@ -243,9 +243,9 @@ def run_ungoverned(provider: TracerProvider, exporter: InMemorySpanExporter) -> 
 def run_governed(provider: TracerProvider, exporter: InMemorySpanExporter) -> Outcome:
     """Run the agent with a policy reading the signals after every step.
 
-    This is the loop a real integration has: the agent takes a step, agentmeter
+    This is the loop a real integration has: the agent takes a step, optio
     emits signals onto the span, the policy engine evaluates them, and the
-    orchestrator acts on the decision. agentmeter is not in the deciding.
+    orchestrator acts on the decision. optio is not in the deciding.
 
     Args:
         provider: Tracer provider carrying the span tap.
@@ -255,14 +255,14 @@ def run_governed(provider: TracerProvider, exporter: InMemorySpanExporter) -> Ou
         What the run cost and which rule stopped it.
     """
     exporter.clear()
-    tracer = provider.get_tracer("agentmeter.demo")
+    tracer = provider.get_tracer("optio.demo")
     model = ScriptedModel(get_stuck=True)
 
     steps = 0
     decision = Decision.allow()
 
     with (
-        tracer.start_as_current_span("agentmeter.demo.run.governed") as run_span,
+        tracer.start_as_current_span("optio.demo.run.governed") as run_span,
         RunContext(budget=BUDGET, config=_config()),
     ):
         for index, step in enumerate(model.plan(MAX_STEPS)):
@@ -292,11 +292,11 @@ def run_governed(provider: TracerProvider, exporter: InMemorySpanExporter) -> Ou
 
 def _print_header() -> None:
     print()
-    print(_c("  agentmeter demo", _BOLD))
+    print(_c("  optio demo", _BOLD))
     print(_c("  ---------------", _DIM))
     print()
     print("  An agent gets stuck in a retrieval loop and keeps paying for it.")
-    print("  agentmeter emits the signals; the policy in policy.py decides.")
+    print("  optio emits the signals; the policy in policy.py decides.")
     print()
     print(_c(f"  model {MODEL}   budget {BUDGET}   step ceiling {MAX_STEPS}", _DIM))
     print(_c("  no API keys, no network -- the model is scripted", _DIM))
@@ -334,10 +334,10 @@ def main() -> int:
     _print_header()
 
     ungoverned = run_ungoverned(provider, exporter)
-    _print_outcome("without agentmeter signals", ungoverned, _RED)
+    _print_outcome("without optio signals", ungoverned, _RED)
 
     governed = run_governed(provider, exporter)
-    _print_outcome("with agentmeter signals + policy", governed, _YELLOW)
+    _print_outcome("with optio signals + policy", governed, _YELLOW)
 
     saved = ungoverned.cost - governed.cost
     percent = (saved / ungoverned.cost * 100) if ungoverned.cost else 0.0

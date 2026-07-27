@@ -105,7 +105,7 @@ jobs:
         # Audits the resolved dependency set rather than the environment.
         #
         # `pip-audit --strict` on the environment fails with "Dependency not
-        # found on PyPI: agentmeter (0.1.0.dev0)" -- agentmeter is installed
+        # found on PyPI: optio (0.1.0.dev0)" -- optio is installed
         # editable and unpublished, so it can never be audited, and --strict
         # turns that into a hard failure. `--skip-editable` does not help:
         # --strict counts the deliberate skip as a collection failure too.
@@ -145,7 +145,7 @@ jobs:
         # that must be correct, so partial coverage fails the build rather than
         # relying on anyone remembering the rule.
         run: |
-          pytest -q --cov=agentmeter.runtime.failopen \
+          pytest -q --cov=optio.runtime.failopen \
                     --cov-report=term-missing --cov-fail-under=100
 
   ledger:
@@ -168,7 +168,7 @@ jobs:
         # guard: silent wrongness in the cost total is the product's worst
         # possible bug.
         run: |
-          pytest -q --cov=agentmeter.lanes.cost.ledger \
+          pytest -q --cov=optio.lanes.cost.ledger \
                     --cov-report=term-missing --cov-fail-under=100
 
   behavior:
@@ -223,7 +223,7 @@ jobs:
         # tests skip when opa/cedar are absent, and a gate that can pass by
         # skipping is not a gate.
         env:
-          AGENTMETER_REQUIRE_POLICY_ENGINES: "1"
+          OPTIO_REQUIRE_POLICY_ENGINES: "1"
         run: pytest -v -m policy
 
   demo:
@@ -262,7 +262,7 @@ jobs:
         run: |
           docker compose up --build -d
           docker compose logs -f demo &
-          status=$(docker wait agentmeter-demo)
+          status=$(docker wait optio-demo)
           wait %1 2>/dev/null || true
           echo "demo exited with status $status"
           exit "$status"

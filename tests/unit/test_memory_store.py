@@ -11,9 +11,9 @@ import threading
 
 import pytest
 
-from agentmeter.errors import StateStoreError
-from agentmeter.store.base import StateStore
-from agentmeter.store.memory import InMemoryStateStore
+from optio.errors import StateStoreError
+from optio.store.base import StateStore
+from optio.store.memory import InMemoryStateStore
 
 
 @pytest.fixture

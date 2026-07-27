@@ -1,11 +1,11 @@
 # LangGraph
 
 ```bash
-pip install "agentmeter[langgraph]"
+pip install "optio[langgraph]"
 ```
 
 ```python
-from agentmeter import instrument
+from optio import instrument
 
 graph = builder.compile()
 instrument(graph)

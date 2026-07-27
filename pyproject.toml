@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agentmeter"
-version = "0.1.0.dev0"
+name = "optio"
+version = "0.1.0"
 description = "Economic cost and outcome quality signals for agent runs, in OpenTelemetry GenAI vocabulary."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-authors = [{ name = "agentmeter contributors" }]
+authors = [{ name = "optio contributors" }]
 keywords = ["opentelemetry", "genai", "agents", "observability", "governance", "cost"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -38,11 +38,11 @@ crewai = ["crewai>=0.60.0"]
 claude = ["claude-agent-sdk>=0.1.0"]
 redis = ["redis>=5.0.0"]
 all = [
-    "agentmeter[langgraph]",
-    "agentmeter[openai]",
-    "agentmeter[crewai]",
-    "agentmeter[claude]",
-    "agentmeter[redis]",
+    "optio[langgraph]",
+    "optio[openai]",
+    "optio[crewai]",
+    "optio[claude]",
+    "optio[redis]",
 ]
 dev = [
     "ruff>=0.6.0",
@@ -61,12 +61,14 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/agentmeter/agentmeter"
-Documentation = "https://github.com/agentmeter/agentmeter/blob/main/docs/signals.md"
-Source = "https://github.com/agentmeter/agentmeter"
+Homepage = "https://github.com/Aniketh-74/Agent-Meter"
+Documentation = "https://github.com/Aniketh-74/Agent-Meter/blob/main/docs/signals.md"
+Source = "https://github.com/Aniketh-74/Agent-Meter"
+Issues = "https://github.com/Aniketh-74/Agent-Meter/issues"
+Changelog = "https://github.com/Aniketh-74/Agent-Meter/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/agentmeter"]
+packages = ["src/optio"]
 
 # ---------------------------------------------------------------------------
 # Lint / format (§4.1)
@@ -138,7 +140,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["src/agentmeter"]
+source = ["src/optio"]
 branch = true
 
 [tool.coverage.report]
@@ -153,38 +155,38 @@ exclude_lines = [
 # Import boundaries (§3.1, rule 11)
 # ---------------------------------------------------------------------------
 [tool.importlinter]
-root_package = "agentmeter"
+root_package = "optio"
 
 [[tool.importlinter.contracts]]
 name = "Layered architecture (dependencies point inward)"
 type = "layers"
 layers = [
-    "agentmeter.adapters",
-    "agentmeter.api",
-    "agentmeter.runtime",
-    "agentmeter.lanes",
-    "agentmeter.store",
-    "agentmeter.semconv",
+    "optio.adapters",
+    "optio.api",
+    "optio.runtime",
+    "optio.lanes",
+    "optio.store",
+    "optio.semconv",
 ]
 
 [[tool.importlinter.contracts]]
 name = "Lanes are mutually independent"
 type = "independence"
 modules = [
-    "agentmeter.lanes.cost",
-    "agentmeter.lanes.behavior",
-    "agentmeter.lanes.quality",
+    "optio.lanes.cost",
+    "optio.lanes.behavior",
+    "optio.lanes.quality",
 ]
 
 [[tool.importlinter.contracts]]
 name = "semconv is a leaf (stdlib only)"
 type = "forbidden"
-source_modules = ["agentmeter.semconv"]
+source_modules = ["optio.semconv"]
 forbidden_modules = [
-    "agentmeter.api",
-    "agentmeter.runtime",
-    "agentmeter.lanes",
-    "agentmeter.store",
-    "agentmeter.adapters",
-    "agentmeter.config",
+    "optio.api",
+    "optio.runtime",
+    "optio.lanes",
+    "optio.store",
+    "optio.adapters",
+    "optio.config",
 ]

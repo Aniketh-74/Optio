@@ -14,7 +14,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from agentmeter.runtime import failopen
+from optio.runtime import failopen
 
 pytestmark = pytest.mark.property
 

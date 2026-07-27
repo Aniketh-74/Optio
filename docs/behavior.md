@@ -138,7 +138,7 @@ Section 10 makes content privacy the primary security control, so:
 
 What actually feeds the signature is the *shape* of the call: its non-content
 `gen_ai.*` attributes plus the span name. Volatile attributes are excluded —
-token counts, tool call ids, and agentmeter's own emitted signals — because any
+token counts, tool call ids, and optio's own emitted signals — because any
 of them would make every signature unique and defeat detection entirely.
 
 This is coarser than true argument equality, so it **under-detects rather than

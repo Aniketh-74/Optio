@@ -10,11 +10,11 @@ Once a run's projected cost is known to exceed its budget, the obvious next step
 
 The 2026 governance stack already has an enforcement layer. Microsoft's Agent Governance Toolkit ships the `govern(x, policy=...)` primitive; OPA and Cedar are mature, audited policy engines with existing deployments. What none of them has is a source of *economic* and *quality* evidence to decide on. Enforcement is solved and crowded; the inputs to enforcement are not.
 
-Building enforcement would also put us on a hook we do not want: the moment `agentmeter` can stop a run, every false positive is our outage, and we inherit the entire "was this the right call" surface — approvals, overrides, audit trails, appeals.
+Building enforcement would also put us on a hook we do not want: the moment `optio` can stop a run, every false positive is our outage, and we inherit the entire "was this the right call" surface — approvals, overrides, audit trails, appeals.
 
 ## Decision
 
-**`agentmeter` emits typed evidence and stops there.** The downstream engine reads the attributes and decides.
+**`optio` emits typed evidence and stops there.** The downstream engine reads the attributes and decides.
 
 Concretely, out of scope by construction:
 

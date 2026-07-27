@@ -13,8 +13,8 @@ import threading
 
 import pytest
 
-from agentmeter import Config, RunContext, current_run
-from agentmeter.config import BudgetPolicy
+from optio import Config, RunContext, current_run
+from optio.config import BudgetPolicy
 
 
 class TestIdentity:

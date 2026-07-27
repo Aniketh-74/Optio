@@ -18,8 +18,8 @@ from unittest.mock import Mock
 
 from opentelemetry.trace import StatusCode
 
-from agentmeter import semconv
-from agentmeter.lanes.behavior.window import (
+from optio import semconv
+from optio.lanes.behavior.window import (
     BehaviorWindow,
     StepSignature,
     digest_args,

@@ -19,15 +19,15 @@ from unittest.mock import Mock
 import pytest
 from opentelemetry.trace import StatusCode
 
-from agentmeter import semconv
-from agentmeter.config import Config
-from agentmeter.lanes.quality.judge import Judge, JudgeRequest, JudgeScores
-from agentmeter.lanes.quality.lane import MAX_RETAINED_SPANS, QualityLane
+from optio import semconv
+from optio.config import Config
+from optio.lanes.quality.judge import Judge, JudgeRequest, JudgeScores
+from optio.lanes.quality.lane import MAX_RETAINED_SPANS, QualityLane
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from agentmeter.lanes.base import Signal
+    from optio.lanes.base import Signal
 
 
 @dataclass
@@ -251,19 +251,19 @@ class TestSetupWarnsAboutAMissingJudge:
     def test_enabling_without_a_judge_warns_once(self, caplog: pytest.LogCaptureFixture) -> None:
         # Otherwise a user believes they enabled deep scoring and quietly gets
         # only the heuristic.
-        with caplog.at_level("WARNING", logger="agentmeter"):
+        with caplog.at_level("WARNING", logger="optio"):
             QualityLane(enabled())
 
         assert "no judge was supplied" in caplog.text
 
     def test_supplying_a_judge_does_not_warn(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level("WARNING", logger="agentmeter"):
+        with caplog.at_level("WARNING", logger="optio"):
             QualityLane(enabled(), judge=scoring_judge())
 
         assert "no judge was supplied" not in caplog.text
 
     def test_a_disabled_lane_does_not_warn(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level("WARNING", logger="agentmeter"):
+        with caplog.at_level("WARNING", logger="optio"):
             QualityLane(Config())
 
         assert caplog.text == ""

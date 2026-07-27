@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from agentmeter.lanes.cost.pricing import (
+from optio.lanes.cost.pricing import (
     DEFAULT_PROVIDER,
     PRICING_TABLE_VERSION,
     ModelPrice,

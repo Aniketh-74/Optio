@@ -19,9 +19,9 @@ from __future__ import annotations
 
 import pytest
 
-from agentmeter import semconv
-from agentmeter.errors import LedgerInvariantError
-from agentmeter.lanes.cost.ledger import CostLedger
+from optio import semconv
+from optio.errors import LedgerInvariantError
+from optio.lanes.cost.ledger import CostLedger
 
 
 class TestEvictionReleasesState:
@@ -114,8 +114,8 @@ class TestFinalityOutlivesEviction:
 
 class TestCostLaneReleasesState:
     def test_the_lane_evicts_at_run_end(self) -> None:
-        from agentmeter.config import default_config
-        from agentmeter.lanes.cost.lane import CostLane
+        from optio.config import default_config
+        from optio.lanes.cost.lane import CostLane
 
         class _Run:
             run_id = "lane-run"
@@ -136,8 +136,8 @@ class TestCostLaneReleasesState:
         # call saw an all-zero snapshot and emitted budget_remaining = the FULL
         # budget, overwriting the correct value on the run span. A policy
         # reading it would conclude the run spent nothing.
-        from agentmeter.config import BudgetPolicy, default_config
-        from agentmeter.lanes.cost.lane import CostLane
+        from optio.config import BudgetPolicy, default_config
+        from optio.lanes.cost.lane import CostLane
 
         class _Run:
             run_id = "lane-run"
@@ -158,8 +158,8 @@ class TestCostLaneReleasesState:
         assert lane.on_run_end(run) == []
 
     def test_a_repeat_run_end_on_an_unpriced_run_also_emits_nothing(self) -> None:
-        from agentmeter.config import BudgetPolicy, default_config
-        from agentmeter.lanes.cost.lane import CostLane
+        from optio.config import BudgetPolicy, default_config
+        from optio.lanes.cost.lane import CostLane
 
         class _Run:
             run_id = "unpriced"

@@ -1,6 +1,6 @@
 """A deliberately misbehaving agent (M4-5).
 
-The demo has to show agentmeter catching a real pathology, which means the
+The demo has to show optio catching a real pathology, which means the
 agent has to actually misbehave. This one does two things wrong, on purpose:
 
 1. It gets stuck. After a few productive steps the "model" starts calling the
@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Final
 
 from opentelemetry import trace
 
-from agentmeter import semconv
+from optio import semconv
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -43,7 +43,7 @@ _BASE_INPUT_TOKENS: Final = 800
 _INPUT_GROWTH_PER_STEP: Final = 450
 _OUTPUT_TOKENS: Final = 120
 
-_tracer: Final = trace.get_tracer("agentmeter.demo")
+_tracer: Final = trace.get_tracer("optio.demo")
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +111,7 @@ class ScriptedModel:
 def run_step(step: Step, step_index: int) -> None:
     """Emit one GenAI span for a step.
 
-    The span carries the attributes agentmeter reads (Section 7.2): model,
+    The span carries the attributes optio reads (Section 7.2): model,
     operation, tool name, and token usage. Nothing here writes a signal --
     the span tap observes these and the lanes compute from them.
 

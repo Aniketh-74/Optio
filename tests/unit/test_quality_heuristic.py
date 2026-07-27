@@ -18,8 +18,8 @@ from unittest.mock import Mock
 
 from opentelemetry.trace import StatusCode
 
-from agentmeter import semconv
-from agentmeter.lanes.quality.heuristic import UNKNOWN, HeuristicResult, score
+from optio import semconv
+from optio.lanes.quality.heuristic import UNKNOWN, HeuristicResult, score
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

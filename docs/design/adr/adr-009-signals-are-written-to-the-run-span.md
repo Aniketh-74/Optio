@@ -34,7 +34,7 @@ in code and be absent in the backend.
 - The tap reads finished step spans and feeds them to the lanes.
 - Lane output is written to the currently-active span, which during a step is
   the run span enclosing it.
-- `@meter` opens a run span (`agentmeter.run.<fn>`) so one always exists.
+- `@meter` opens a run span (`optio.run.<fn>`) so one always exists.
 
 This is also the semantically correct home. Every signal in `docs/signals.md` is
 run-scoped — `actual_cost`, `budget_remaining`, `cost_per_successful_task` are
@@ -57,7 +57,7 @@ which is the worst available outcome: it looks like it works.
 
 **Wrap every step span ourselves so we control its lifetime.** Rejected. It
 would mean intercepting span creation rather than observing it, making
-`agentmeter` a participant in the trace rather than a reader of it. That breaks
+`optio` a participant in the trace rather than a reader of it. That breaks
 the portability argument (any framework emitting GenAI spans is observable
 without per-framework work) and puts us on the critical path of span creation,
 where a bug is far more dangerous than in a processor.

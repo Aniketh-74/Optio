@@ -58,7 +58,7 @@ recorded and never read.
 **Silently ignore operations on a closed run.** Rejected. Silence is how the
 original bug hid. A late reconcile means the caller's ordering assumptions are
 wrong, and that deserves a fail-open activation the operator can see rising
-(`agentmeter.internal.lane_errors`) rather than nothing at all.
+(`optio.internal.lane_errors`) rather than nothing at all.
 
 ## Consequences
 

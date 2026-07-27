@@ -1,6 +1,6 @@
-# agentmeter demo
+# optio demo
 
-An agent gets stuck in a retrieval loop and keeps paying for it. agentmeter emits the signals;
+An agent gets stuck in a retrieval loop and keeps paying for it. optio emits the signals;
 a policy reads them and stops the run.
 
 ```bash
@@ -19,12 +19,12 @@ Both take about ten seconds. **No API keys, no network calls** — see [Why the 
 ## What you'll see
 
 ```
-  without agentmeter signals
+  without optio signals
     steps        60
     cost         $2.1833
     loop_state   looping   (repeat_count 20)
 
-  with agentmeter signals + policy
+  with optio signals + policy
     steps        23
     cost         $0.3582
     loop_state   looping   (repeat_count 19)
@@ -40,7 +40,7 @@ signals.
 
 ## The part that matters
 
-**agentmeter did not stop anything.** It emitted `gen_ai.run.loop_state` and the rest; the rules
+**optio did not stop anything.** It emitted `gen_ai.run.loop_state` and the rest; the rules
 in [`policy.py`](policy.py) made the call (ADR-001). Edit those thresholds and re-run — that's the
 intended way to poke at this.
 
@@ -49,7 +49,7 @@ intended way to poke at this.
 
 Note **which** signal caught it. The run was stopped at $0.36 against a $2.00 budget — a
 cost-only tool would have let it run four times longer before noticing. The behavioral evidence
-arrived while the run still looked affordable, and that gap is the thing agentmeter exists for.
+arrived while the run still looked affordable, and that gap is the thing optio exists for.
 
 ## The compose stack
 

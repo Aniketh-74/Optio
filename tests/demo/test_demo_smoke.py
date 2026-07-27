@@ -26,7 +26,7 @@ from types import ModuleType
 
 import pytest
 
-from agentmeter import semconv
+from optio import semconv
 
 pytestmark = pytest.mark.demo
 
@@ -122,7 +122,7 @@ class TestTheDemoRunsOffline:
     def test_the_pricing_model_is_real(self) -> None:
         # The dollar figures are only meaningful if the model is in the pricing
         # table. A typo here would silently produce a $0.00 demo.
-        from agentmeter.lanes.cost.pricing import known_models
+        from optio.lanes.cost.pricing import known_models
 
         agent = _load("agent")
         assert agent.MODEL in known_models()

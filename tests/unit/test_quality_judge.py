@@ -6,7 +6,7 @@ Two guarantees carry the weight, and both are about what the judge must *not* do
 budget of 5 ms per step. It runs off the hot path, and a judge that hangs
 produces a missing signal rather than a stalled run.
 
-**It must never be a credential or spending risk.** agentmeter ships no default
+**It must never be a credential or spending risk.** optio ships no default
 judge and constructs no model client (Section 10), so enabling the quality lane
 without supplying one costs nothing and calls nothing.
 
@@ -22,7 +22,7 @@ import time
 
 import pytest
 
-from agentmeter.lanes.quality.judge import (
+from optio.lanes.quality.judge import (
     Judge,
     JudgeRequest,
     JudgeRunner,
@@ -45,7 +45,7 @@ def _scoring(groundedness: float = 0.9, task_success: float = 0.8) -> Judge:
 
 
 class TestNoJudgeMeansNoSpend:
-    """agentmeter ships no default judge (Section 10)."""
+    """optio ships no default judge (Section 10)."""
 
     def test_a_runner_without_a_judge_is_disabled(self) -> None:
         assert JudgeRunner(None).enabled is False
@@ -132,7 +132,7 @@ class TestAFailingJudgeIsAMissingSignal:
 
         runner = JudgeRunner(raises)
         runner.submit(request())
-        with caplog.at_level("WARNING", logger="agentmeter"):
+        with caplog.at_level("WARNING", logger="optio"):
             runner.collect("run-1", timeout=5.0)
         runner.shutdown()
 
@@ -284,7 +284,7 @@ class TestRequestCarriesNoContentByDefault:
             req.run_id = "other"  # type: ignore[misc]
 
     def test_content_is_the_callers_to_supply(self) -> None:
-        # agentmeter passes none of its own (Section 10); the lane builds an
+        # optio passes none of its own (Section 10); the lane builds an
         # empty mapping and the user closes over their own record if they want
         # the judge to read text.
         assert request().content == {}

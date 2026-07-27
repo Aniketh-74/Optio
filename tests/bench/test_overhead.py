@@ -23,10 +23,10 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from agentmeter import semconv
-from agentmeter.config import BudgetPolicy, default_config
-from agentmeter.runtime.run_context import RunContext
-from agentmeter.runtime.span_tap import AgentMeterSpanTap
+from optio import semconv
+from optio.config import BudgetPolicy, default_config
+from optio.runtime.run_context import RunContext
+from optio.runtime.span_tap import OptioSpanTap
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import ReadableSpan
@@ -69,12 +69,12 @@ def _time_steps(tracer: object, steps: int) -> list[float]:
 
 
 def _build(with_tap: bool) -> tuple[object, InMemorySpanExporter]:
-    """Build a provider, optionally with the agentmeter tap installed."""
+    """Build a provider, optionally with the optio tap installed."""
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     if with_tap:
-        provider.add_span_processor(AgentMeterSpanTap(default_config()))
+        provider.add_span_processor(OptioSpanTap(default_config()))
     return provider.get_tracer("bench"), exporter
 
 
@@ -157,7 +157,7 @@ def test_snapshot_is_flat_when_reservations_close_normally() -> None:
     long the run gets -- confirmed here so a change to the accounting cannot
     quietly turn per-step cost into O(n).
     """
-    from agentmeter.lanes.cost.ledger import CostLedger
+    from optio.lanes.cost.ledger import CostLedger
 
     def snapshot_cost(steps: int) -> float:
         ledger = CostLedger()
@@ -183,7 +183,7 @@ def test_snapshot_with_many_open_reservations_stays_within_budget() -> None:
     quadratic overall. It stays far inside SC-5, but this pins the actual number
     so a regression shows up as a failure rather than as a slow agent.
     """
-    from agentmeter.lanes.cost.ledger import CostLedger
+    from optio.lanes.cost.ledger import CostLedger
 
     ledger = CostLedger()
     for i in range(10_000):
@@ -207,8 +207,8 @@ def test_classification_is_flat_in_run_length() -> None:
     to a user as an agent that mysteriously degrades over hours rather than as
     any test failure.
     """
-    from agentmeter.config import Config
-    from agentmeter.lanes.behavior.lane import BehaviorLane
+    from optio.config import Config
+    from optio.lanes.behavior.lane import BehaviorLane
 
     class _Run:
         run_id = "bench"
@@ -250,12 +250,12 @@ def _span_stub(tool: str) -> ReadableSpan:
 
 def test_disabled_lanes_cost_almost_nothing() -> None:
     """With every lane off, the tap should be close to free."""
-    from agentmeter.config import Config
+    from optio.config import Config
 
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    provider.add_span_processor(AgentMeterSpanTap(Config(cost_lane=False, behavior_lane=False)))
+    provider.add_span_processor(OptioSpanTap(Config(cost_lane=False, behavior_lane=False)))
     tracer = provider.get_tracer("bench")
 
     baseline_tracer, _ = _build(with_tap=False)
@@ -284,7 +284,7 @@ def test_quality_lane_inline_overhead_is_within_budget() -> None:
     against a latency budget -- it runs off the hot path by construction (M5-3),
     and its cost is the user's own model call, not ours.
     """
-    from agentmeter.config import Config
+    from optio.config import Config
 
     quality_config = Config(quality_lane=True, quality_sample_rate=0.0)
 
@@ -292,7 +292,7 @@ def test_quality_lane_inline_overhead_is_within_budget() -> None:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    provider.add_span_processor(AgentMeterSpanTap(quality_config))
+    provider.add_span_processor(OptioSpanTap(quality_config))
     metered_tracer = provider.get_tracer("bench")
 
     _time_steps(baseline_tracer, 200)
@@ -325,9 +325,9 @@ def test_a_slow_judge_does_not_slow_the_run() -> None:
     """
     import time as _time
 
-    from agentmeter.config import Config
-    from agentmeter.lanes.quality.judge import JudgeRequest, JudgeScores
-    from agentmeter.lanes.quality.lane import QualityLane
+    from optio.config import Config
+    from optio.lanes.quality.judge import JudgeRequest, JudgeScores
+    from optio.lanes.quality.lane import QualityLane
 
     judge_seconds = 0.2
 

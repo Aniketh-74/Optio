@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-SRC = Path(__file__).resolve().parents[2] / "src" / "agentmeter"
+SRC = Path(__file__).resolve().parents[2] / "src" / "optio"
 SEMCONV = SRC / "semconv.py"
 
 pytestmark = pytest.mark.contract
@@ -39,6 +39,6 @@ def test_no_module_defines_a_genai_literal_except_semconv():
             if value.startswith("gen_ai.") and " " not in value:
                 offenders.append(f"{path.relative_to(SRC)}: {value!r}")
     assert not offenders, (
-        "signal names must be imported from agentmeter.semconv, not written as literals:\n"
+        "signal names must be imported from optio.semconv, not written as literals:\n"
         + "\n".join(offenders)
     )

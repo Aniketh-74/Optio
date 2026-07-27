@@ -1,6 +1,6 @@
 # OTel Collector config for the demo (M4-5).
 #
-# Minimal on purpose. The demo's job is to show agentmeter's signals arriving in
+# Minimal on purpose. The demo's job is to show optio's signals arriving in
 # a standard pipeline, so this is a stock collector with a debug exporter and no
 # vendor backend -- swapping in Langfuse, Honeycomb, or Grafana is one exporter
 # entry, which is the portability ADR-002 buys by using OTel semconv rather than
