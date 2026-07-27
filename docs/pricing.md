@@ -66,6 +66,7 @@ models, or a vendor we have not added. Implement `PricingProvider`:
 ```python
 from agentmeter.lanes.cost.pricing import ModelPrice
 
+
 class MyPricing:
     def price_for(self, model: str) -> ModelPrice | None:
         if model.startswith("our-finetune-"):
