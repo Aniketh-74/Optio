@@ -47,7 +47,41 @@ pip install optio                # core
 pip install "optio[langgraph]"   # + framework adapter
 ```
 
-Python ≥ 3.10.
+Two runtime dependencies — `opentelemetry-api` and `opentelemetry-sdk`. Nothing else, no
+compiled extensions, no service to run.
+
+## Compatibility
+
+Everything in this table is asserted by a CI job, not by hand.
+
+| | Supported | How it's verified |
+|---|---|---|
+| **Python** | 3.10 – 3.14 | full suite on every version, Linux |
+| **OS** | Linux, macOS, Windows | both ends of the Python range on each |
+| **OpenTelemetry** | ≥ 1.27.0 | a job pinned to *exactly* 1.27.0 — the floor is tested, not just declared |
+| **Install** | wheel + sdist | built, installed into a clean venv outside the repo, then asserted to emit real signals |
+
+**Frameworks.** Each adapter is tested against the real package in its own CI job — a genuine
+`CompiledStateGraph`, `agents.Agent`, `ClaudeSDKClient`, and CrewAI `Crew`, not mocks:
+
+| Framework | Instrument | Notes |
+|---|---|---|
+| LangGraph | the compiled graph | an *uncompiled* `StateGraph` is refused — it has no `invoke()` to meter |
+| OpenAI Agents SDK | the `Agent` | |
+| Claude Agent SDK | the `ClaudeSDKClient` | `ClaudeAgentOptions` is refused — it's config, not a run |
+| CrewAI | the `Crew`, or a single `Agent` | a `Task` is refused |
+| **anything else** | `RunContext` / `@meter` | no adapter needed; see below |
+
+**You don't need an adapter.** Adapters only auto-detect the framework. If yours isn't listed —
+or you're calling an SDK directly — `RunContext` and `@meter` work with any code that emits OTel
+GenAI spans. That's the whole integration surface.
+
+**What optio needs from you:** a configured `TracerProvider` and a framework (or instrumentation
+library) that emits `gen_ai.*` spans. With no OTel SDK configured, optio logs a warning at setup
+and emits nothing — it does not fail, and it does not guess.
+
+**Not supported yet:** distributed/multi-process runs. State is in-process, and
+`store_backend="redis"` is rejected at setup rather than silently ignored (ADR-005).
 
 ## Quickstart
 
