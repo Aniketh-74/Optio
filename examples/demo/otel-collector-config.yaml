@@ -1,0 +1,40 @@
+# OTel Collector config for the demo (M4-5).
+#
+# Minimal on purpose. The demo's job is to show agentmeter's signals arriving in
+# a standard pipeline, so this is a stock collector with a debug exporter and no
+# vendor backend -- swapping in Langfuse, Honeycomb, or Grafana is one exporter
+# entry, which is the portability ADR-002 buys by using OTel semconv rather than
+# a bespoke schema.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+
+exporters:
+  # Prints every span with its attributes. This is where you can watch
+  # `gen_ai.run.actual_cost` and `gen_ai.run.loop_state` land on the run span.
+  debug:
+    verbosity: detailed
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+  telemetry:
+    logs:
+      level: warn

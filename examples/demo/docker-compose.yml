@@ -1,0 +1,50 @@
+# One-command demo (ADR-006, M4-5): `docker compose up`
+#
+# Two services:
+#
+#   collector  -- a real OTel Collector. The demo exports to it over OTLP, so
+#                 the signals travel the same path they would in production
+#                 rather than being printed by the process that computed them.
+#                 Its debug exporter prints each span, so you can see the
+#                 `gen_ai.run.*` attributes arrive rather than taking the
+#                 demo's own summary on trust.
+#   demo       -- the misbehaving agent, run twice (ungoverned vs governed).
+#
+# No API keys and no network egress: the model is scripted (see agent.py). The
+# demo must run on a fresh machine or it is not a demo (SC-1).
+
+name: agentmeter-demo
+
+services:
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    container_name: agentmeter-demo-collector
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "13133:13133" # health_check extension
+    # No healthcheck here: the collector image is distroless and ships neither
+    # curl nor a healthcheck binary, so every `test:` form would fail and hold
+    # the demo at "waiting for healthy" forever. The demo waits for the port
+    # itself instead (see entrypoint.sh), which is a real readiness check rather
+    # than a container-level guess.
+
+  demo:
+    build:
+      context: ../..
+      dockerfile: examples/demo/Dockerfile
+    container_name: agentmeter-demo
+    depends_on:
+      - collector
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4317
+      OTEL_SERVICE_NAME: agentmeter-demo
+      # The demo prints its own summary; this keeps the SDK quiet underneath.
+      OTEL_LOG_LEVEL: error
+      PYTHONUNBUFFERED: "1"
+    # Exit code is the demo's own verification (see run_demo.py `_verify`), so
+    # `docker compose up --exit-code-from demo` is a working smoke test.
+    restart: "no"

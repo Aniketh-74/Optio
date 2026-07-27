@@ -44,8 +44,8 @@ behavior lane useful.
 Both work:
 
 ```python
-instrument(crew)    # usual: the Crew owns kickoff()
-instrument(agent)   # fine for a single-agent flow
+instrument(crew)  # usual: the Crew owns kickoff()
+instrument(agent)  # fine for a single-agent flow
 ```
 
 The tap is installed process-wide either way, so there is no behavioral difference — accepting

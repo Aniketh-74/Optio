@@ -5,8 +5,8 @@ One line instruments an agent:
 ```python
 from agentmeter import instrument
 
-instrument(agent)                       # adapter auto-detected
-instrument(agent, adapter="crewai")     # or named explicitly
+instrument(agent)  # adapter auto-detected
+instrument(agent, adapter="crewai")  # or named explicitly
 ```
 
 | Framework | Adapter name | Extra | Guide |

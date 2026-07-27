@@ -3,10 +3,11 @@
 This is the frozen contract described in Section 8.1. Breaking a signature here
 after M1 requires an ADR (Section 16 rule 12).
 
-**M1 status:** ``instrument()`` resolves an adapter and installs the span tap, so
-GenAI spans now reach the lane dispatch path. No lanes are registered yet -- cost
-lands in M2, behavior in M3, quality in M5 -- so the pipeline runs end to end
-while emitting nothing.
+**Status:** the cost (M2) and behavior (M3) lanes are live, so an instrumented
+agent emits spend, projection, budget headroom, and loop state today. The quality
+lane is M5 and is off by default even once it lands (ADR-003), so its signals are
+absent rather than zero until then -- see ``docs/signals.md`` on why that
+distinction is load-bearing for downstream policies.
 
 Failure discipline (Section 4.2): everything in this module raises *eagerly* on
 bad input, because setup-time is exactly where a misconfiguration should be loud.

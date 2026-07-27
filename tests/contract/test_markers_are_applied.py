@@ -28,6 +28,7 @@ MARKED_DIRECTORIES: dict[str, str] = {
     "integration": "integration",
     "bench": "bench",
     "policy": "policy",
+    "demo": "demo",
 }
 
 

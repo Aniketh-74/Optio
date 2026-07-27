@@ -134,6 +134,7 @@ markers = [
     "integration: real span flow per adapter",
     "bench: overhead benchmarks (SC-5)",
     "policy: policy packs evaluate correctly against sample signals (SC-3)",
+    "demo: the standalone demo produces the signals it claims (ADR-006)",
 ]
 
 [tool.coverage.run]

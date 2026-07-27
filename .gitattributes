@@ -1,0 +1,13 @@
+# Shell scripts and container files must keep LF endings regardless of the
+# checkout platform.
+#
+# This is not cosmetic. `entrypoint.sh` runs inside a Linux container; with CRLF
+# endings the kernel reads the shebang as `/bin/sh\r` and the container dies
+# with "no such file or directory" -- an error that names neither the file nor
+# the real cause. Git on Windows converts by default (core.autocrlf=true), so
+# without this the demo breaks for exactly the people ADR-006 wrote it for:
+# someone cloning fresh on Windows and running `docker compose up`.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf

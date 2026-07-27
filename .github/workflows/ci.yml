@@ -210,6 +210,50 @@ jobs:
           AGENTMETER_REQUIRE_POLICY_ENGINES: "1"
         run: pytest -v -m policy
 
+  demo:
+    name: Standalone demo (ADR-006)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+
+      - name: Demo produces the signals it claims
+        # Runs run_demo.main() in process and asserts on its output.
+        run: pytest -v -m demo
+
+      - name: One command on a fresh machine
+        # The claim ADR-006 actually makes, and the only place it is tested:
+        # a clone, one command, no setup. `--exit-code-from demo` propagates
+        # the demo's own verification, so a demo that runs but stops
+        # demonstrating anything fails the build rather than printing $0.00.
+        working-directory: examples/demo
+        run: docker compose up --build --abort-on-container-exit --exit-code-from demo
+
+      - name: Collector received the signals
+        # The compose run above proves the demo works; this proves the signals
+        # travelled a real OTLP pipeline to a real collector rather than only
+        # being printed by the process that computed them.
+        working-directory: examples/demo
+        run: |
+          docker compose logs collector > collector.log
+          for signal in gen_ai.run.actual_cost gen_ai.run.loop_state; do
+            if ! grep -q "$signal" collector.log; then
+              echo "::error::$signal never reached the collector"
+              cat collector.log
+              exit 1
+            fi
+            echo "ok: $signal reached the collector"
+          done
+
+      - name: Tear down
+        if: always()
+        working-directory: examples/demo
+        run: docker compose down -v
+
   benchmark:
     name: Overhead budget (SC-5)
     runs-on: ubuntu-latest
