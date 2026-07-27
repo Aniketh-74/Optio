@@ -99,7 +99,21 @@ with — or gated on by — a consumer policy:
 | `optio.internal.signals_emitted` | Count of signals written. |
 | `optio.internal.lane_errors` | Fail-open activations, by lane. A rising value means a lane bug — the agent is still safe. |
 | `optio.internal.overhead` | Per-step overhead histogram (SC-5 budget: < 5 ms p99). |
-| `optio.internal.sampling_rate` | Effective quality-lane sampling rate. |
+| `optio.internal.sampling_rate` | Configured quality-lane sampling rate. Only registered when the quality lane is on. |
+
+These are OTel **metrics**, not span attributes — a deliberate second layer of separation on top
+of the namespace, so a policy written against span attributes cannot reach them even by mistake.
+A rule like "deny if `lane_errors > 0`" would turn a bug in this library into an outage in your
+agent, which is the inversion [ADR-004](design/adr/) exists to prevent.
+
+They require a configured **metrics** SDK (`MeterProvider`), which is separate from the tracer
+provider the signals themselves ride on. With no metrics SDK, recording is a no-op and costs
+nothing — measured overhead is unchanged either way.
+
+If the metrics pipeline itself fails, self-observability **disables itself for the process** and
+the signals keep flowing. Monitoring that can break the thing it monitors is worse than no
+monitoring; the failure is logged once at DEBUG, with the exception type only and never its
+message, since an exporter error can carry endpoint headers and headers carry credentials.
 
 ---
 

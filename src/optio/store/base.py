@@ -1,10 +1,21 @@
 """The StateStore contract.
 
-Per-run state (ledger entries, behavior window, quality results) lives behind
-this ABC so the in-memory default and the optional Redis backend are
+.. note::
+
+   **This abstraction is not yet on the runtime path.** As of 0.1.0 per-run
+   state lives in :class:`~optio.runtime.run_context.RunContext` and in each
+   lane's own structures; nothing constructs a ``StateStore``. The ABC is kept
+   because it is the seam ADR-005's distributed path attaches to, and because
+   defining the contract before there are two implementations is what stops the
+   second one from being shaped by the first. Treat it as a design fixture, not
+   as configuration you can switch today -- ``store_backend='redis'`` is
+   rejected at construction rather than silently ignored.
+
+Per-run state (ledger entries, behavior window, quality results) is intended to
+live behind this ABC so the in-memory default and a future Redis backend are
 interchangeable (ADR-005). In-memory is the default because zero new
-infrastructure is what makes five-minute first value possible (SC-1); Redis
-exists for multi-process and distributed runs.
+infrastructure is what makes five-minute first value possible (SC-1); Redis is
+for multi-process and distributed runs.
 
 Store failures are lane failures: a backend that is slow or unreachable must
 degrade to a dropped signal, never to a blocked agent (ADR-004). Implementations

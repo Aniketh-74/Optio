@@ -2,7 +2,20 @@
 
 **Economic cost and outcome quality signals for agent runs — in the OpenTelemetry GenAI vocabulary.**
 
-> Status: **pre-alpha.** All three lanes work end to end; every signal in the contract is implemented. See [IMPLEMENTATION.md](IMPLEMENTATION.md) for the full design and milestone plan.
+> **Status: alpha (0.1.0).** All three lanes work end to end and every signal in the contract is
+> implemented, on 99% coverage with 100% on the ledger and the fail-open guard. What "alpha"
+> means here, concretely:
+>
+> - **The adapters have not been tested against the real frameworks.** Matching logic is covered;
+>   no adapter has been run against an actual LangGraph, CrewAI, OpenAI Agents SDK, or Claude
+>   Agent SDK release ([R-TECH-3](IMPLEMENTATION.md)).
+> - **State is in-process only.** `store_backend="redis"` is rejected at setup rather than
+>   silently ignored ([ADR-005](docs/design/adr/)).
+> - **The signal names may still move.** They are pinned to OTel GenAI semconv 1.37.0, which is
+>   itself marked Development-stability upstream ([ADR-002](docs/design/adr/)).
+>
+> The fail-open guarantee is not provisional: it is a blocking CI gate on every commit.
+> See [IMPLEMENTATION.md](IMPLEMENTATION.md) for the full design and milestone plan.
 
 | Lane | Signals | Status |
 |---|---|---|
@@ -23,7 +36,9 @@ Agent governance engines (Microsoft Agent Governance Toolkit, OPA, Cedar) can de
 - **Signals, not decisions.** We emit typed evidence. Enforcement belongs to the engine you already run. (ADR-001)
 - **Fail-open, always.** A monitoring layer that can break production is worse than none. (ADR-004)
 - **Standard-native.** Everything is OTel GenAI semconv; we never invent a schema where a standard exists. (ADR-002)
-- **Zero new infrastructure.** In-memory by default; Redis only if you need distributed runs. (ADR-005)
+- **Zero new infrastructure.** Per-run state is in-process; nothing to deploy. A distributed
+  backend is designed but not built, and `store_backend="redis"` is rejected at setup rather than
+  accepted and ignored. (ADR-005)
 
 ## Install
 

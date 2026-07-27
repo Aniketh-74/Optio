@@ -31,6 +31,7 @@ Three further rules govern this module:
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Final
 
 from opentelemetry import trace
@@ -38,6 +39,7 @@ from opentelemetry.sdk.trace import SpanProcessor
 
 from optio import semconv
 from optio.lanes.registry import enabled_lanes
+from optio.runtime import selfobs
 from optio.runtime.failopen import guard, guard_signals
 from optio.runtime.run_context import current_run
 from optio.runtime.signal_writer import write_signals
@@ -131,7 +133,12 @@ class OptioSpanTap(SpanProcessor):
         Args:
             span: The span that just ended.
         """
+        # perf_counter around the whole guarded dispatch: the number SC-5
+        # budgets is what the agent actually pays, which includes the guard
+        # itself, not just the lane bodies.
+        started = time.perf_counter()
         guard(self._dispatch, None, span, component="span_tap")
+        selfobs.record_overhead(time.perf_counter() - started)
 
     def _dispatch(self, span: ReadableSpan) -> None:
         """Route one span to the lanes and write whatever they produce.
@@ -152,6 +159,7 @@ class OptioSpanTap(SpanProcessor):
             signals = guard_signals(lane.process_span, span, run, component=lane.name)
             if signals:
                 write_signals(target, signals)
+                selfobs.record_signals_emitted(len(signals), lane.name)
 
     def _signal_target(self) -> Span | None:
         """Return the span signals should be written to.
@@ -185,6 +193,7 @@ class OptioSpanTap(SpanProcessor):
             signals = guard_signals(lane.on_run_end, run, component=lane.name)
             if signals:
                 write_signals(target, signals)
+                selfobs.record_signals_emitted(len(signals), lane.name)
 
     def shutdown(self) -> None:
         """Release resources. Nothing to release; lanes hold no handles."""

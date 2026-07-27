@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Final
 
 from opentelemetry import trace
 
+from optio.runtime import selfobs
 from optio.runtime.run_context import (
     register_run_end_observer,
     unregister_run_end_observer,
@@ -76,6 +77,14 @@ def install_tap(config: Config, provider: TracerProvider | None = None) -> Optio
         # Run end is driven by RunContext, not by the OTel SDK, so the tap has
         # to be told about it separately from being added as a processor.
         register_run_end_observer(tap.on_run_end)
+        # Publish the sample rate once, here rather than per run: it is
+        # configuration, and a quality score read months later is only
+        # interpretable if the fraction it was drawn from is recorded alongside
+        # it (Section 12). Registered only when the quality lane is on, so a
+        # user who never enabled it does not get a gauge reading 0.1 for a
+        # judge that never runs.
+        if config.quality_lane:
+            selfobs.record_sampling_rate(config.quality_sample_rate)
         _installed[key] = tap
         return tap
 

@@ -36,6 +36,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Final, TypeVar
 
 from optio.errors import OptioConfigError
+from optio.runtime import selfobs
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -84,6 +85,12 @@ def _record(component: str, exc: BaseException) -> None:
         exc_type = type(exc).__name__
         key = (component, exc_type)
         _activations[key] = _activations.get(key, 0) + 1
+
+        # Publish to the metric as well as the in-process counter. The counter
+        # is only readable by a test; an operator needs this on their dashboard,
+        # because a lane that fails on every span is invisible by construction
+        # -- the agent keeps working, which is the whole point of the guard.
+        selfobs.record_lane_error(component)
 
         if component not in _logged_components:
             _logged_components.add(component)

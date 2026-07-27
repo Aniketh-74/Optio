@@ -36,13 +36,15 @@ langgraph = ["langgraph>=0.2.0", "langchain-core>=0.3.0"]
 openai = ["openai-agents>=0.0.1"]
 crewai = ["crewai>=0.60.0"]
 claude = ["claude-agent-sdk>=0.1.0"]
-redis = ["redis>=5.0.0"]
+# No `redis` extra: the Redis state backend of ADR-005 is designed but not
+# implemented, and `store_backend='redis'` is rejected at construction. An
+# extra that installs a driver for an unreachable backend advertises a feature
+# that does not exist. It returns with the backend.
 all = [
     "optio[langgraph]",
     "optio[openai]",
     "optio[crewai]",
     "optio[claude]",
-    "optio[redis]",
 ]
 dev = [
     "ruff>=0.6.0",

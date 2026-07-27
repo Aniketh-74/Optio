@@ -40,6 +40,12 @@ silent. A lane failing once per span would otherwise flood your logs at exactly
 the moment your agent is under stress — turning our bug into your second
 incident. The activation counter still records every occurrence.
 
+**Seeing the count.** `optio.internal.lane_errors` is an OTel **metric**, so it
+needs a configured `MeterProvider` — a tracer provider alone is not enough. With
+no metrics SDK the counter still increments in-process but has nowhere to go,
+and after the first WARN a repeatedly-failing lane becomes genuinely silent.
+Wiring up metrics is what makes that case visible, and it is the reason to do it.
+
 ---
 
 ## Signals are not appearing
@@ -137,20 +143,33 @@ behavior lanes (SC-5).
 
 1. **Disable the quality lane** if you enabled it. It is opt-in precisely
    because LLM-judge scoring is the expensive path (ADR-003).
-2. **Check the store backend.** The in-memory default is O(1) and local. A Redis
-   backend adds a network hop per operation; if Redis is slow or distant, that
-   cost lands on your step latency.
+2. **Check your window size.** `behavior_window_size` bounds per-run memory, and
+   a very large value makes each step's signature comparison more expensive.
 3. **Report it.** Overhead above budget is a bug on our side.
 
 ---
 
-## Redis (or another store) is unreachable
+## `store_backend='redis'` is rejected at startup
 
-The store fails open like everything else: signals degrade, the agent proceeds.
-Depending on configuration, `optio` either drops the signal or falls back
-to in-memory state. In-memory fallback means per-process state, so cost totals
-for a run spanning multiple processes will be partial rather than wrong-but-
-plausible.
+Expected, as of 0.1.0. Only the in-memory backend exists; per-run state lives in
+the process that runs the agent.
+
+This is deliberately a hard failure rather than a fallback. Nothing on the
+runtime path reads `store_backend`, so accepting `redis` would have meant a
+distributed deployment running in-process while believing state was shared —
+producing cost totals that are quietly too low, in the one place (multi-process
+runs) where nobody would think to check. A wrong number that looks right is the
+failure mode this project treats as its worst (R-TECH-1), so the setting refuses
+at setup instead.
+
+Note that setup-time failure does not violate fail-open (ADR-004): fail-open
+governs the runtime path, where optio must never break a running agent.
+Configuration that cannot do what it claims is a setup error, and §4.2 says
+setup fails loudly.
+
+**What to do:** use the default `store_backend="memory"`. If you need per-run
+state shared across processes, that path is designed (ADR-005) but unbuilt —
+open an issue so it can be prioritised against real demand.
 
 ---
 

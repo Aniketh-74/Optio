@@ -66,8 +66,12 @@ class Config:
         behavior_lane: Emit loop/repeat/retry-storm signals.
         quality_lane: Emit outcome-quality signals. **Off by default** (ADR-003);
             enabling it opts into the sampled, tiered evaluator path.
-        store_backend: Where per-run state lives. ``memory`` needs no infra.
-        redis_url: Connection string used when ``store_backend`` is ``redis``.
+        store_backend: Where per-run state lives. Only ``memory`` is
+            implemented; ``redis`` is a designed-but-unbuilt path (ADR-005) and
+            is **rejected at construction** rather than silently ignored.
+        redis_url: Connection string for the unimplemented Redis backend. Kept
+            so the field does not have to be re-added (and so a config carrying
+            it stays loadable), but setting ``store_backend='redis'`` fails.
         quality_sample_rate: Fraction of runs routed to the async LLM-judge when
             the quality lane is on. Must be within ``[0.0, 1.0]``.
         run_ttl_seconds: Eviction TTL for run state orphaned by a missing run-end.
@@ -109,12 +113,30 @@ class Config:
             raise OptioConfigError(
                 f"behavior_window_size must be positive, got {self.behavior_window_size}"
             )
-        if self.store_backend not in ("memory", "redis"):
+        if self.store_backend not in get_args(StoreBackend):
             raise OptioConfigError(
-                f"store_backend must be 'memory' or 'redis', got {self.store_backend!r}"
+                f"store_backend must be one of {get_args(StoreBackend)}, got {self.store_backend!r}"
             )
-        if self.store_backend == "redis" and not self.redis_url:
-            raise OptioConfigError("store_backend='redis' requires redis_url")
+        if self.store_backend == "redis":
+            # Rejected rather than accepted-and-ignored. The Redis path of
+            # ADR-005 is designed but not implemented: no lane reads
+            # `store_backend`, and per-run state lives in RunContext, so a run
+            # configured for Redis would silently stay in-process. For a
+            # distributed deployment that is a wrong cost total (R-TECH-1)
+            # discovered in production, which is precisely the class of silent
+            # wrongness this project treats as its worst failure.
+            #
+            # Setup-time failure is the correct behaviour here (Section 4.2):
+            # fail-open governs the *runtime* path, not configuration that
+            # cannot do what it says.
+            raise OptioConfigError(
+                "store_backend='redis' is not implemented in this release. "
+                "Per-run state is in-process only, so a Redis setting would be "
+                "accepted and then ignored -- and in a multi-process deployment "
+                "that means silently wrong cost totals. Use the default "
+                "store_backend='memory'. Track the distributed path at "
+                "https://github.com/Aniketh-74/Agent-Meter/issues"
+            )
 
     @classmethod
     def from_env(cls) -> Config:

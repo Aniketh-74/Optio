@@ -50,13 +50,31 @@ class TestValidation:
         with pytest.raises(OptioConfigError, match="store_backend"):
             Config(store_backend="postgres")  # type: ignore[arg-type]
 
-    def test_redis_backend_requires_a_url(self):
-        with pytest.raises(OptioConfigError, match="redis_url"):
+    def test_redis_backend_is_rejected_rather_than_silently_ignored(self):
+        # The regression this guards: `redis` used to be accepted, and nothing
+        # on the runtime path reads `store_backend`, so a distributed
+        # deployment would have run in-process while believing it was shared --
+        # wrong cost totals discovered in production (R-TECH-1). Until the
+        # backend exists, refusing at setup is the only honest answer.
+        with pytest.raises(OptioConfigError, match="not implemented"):
+            Config(store_backend="redis", redis_url="redis://localhost:6379")
+
+    def test_redis_is_rejected_even_with_no_url(self):
+        with pytest.raises(OptioConfigError, match="not implemented"):
             Config(store_backend="redis")
 
-    def test_redis_backend_with_url_is_valid(self):
-        config = Config(store_backend="redis", redis_url="redis://localhost:6379")
-        assert config.store_backend == "redis"
+    def test_redis_from_the_environment_is_rejected_too(self, monkeypatch):
+        # The env path builds the same Config, but it is a separate entry point
+        # and a reader should not have to infer that it shares the check.
+        monkeypatch.setenv("OPTIO_STORE_BACKEND", "redis")
+        monkeypatch.setenv("OPTIO_REDIS_URL", "redis://localhost:6379")
+        with pytest.raises(OptioConfigError, match="not implemented"):
+            Config.from_env()
+
+    def test_the_rejection_names_the_working_alternative(self):
+        # An error that only says "no" makes the user go read the source.
+        with pytest.raises(OptioConfigError, match="store_backend='memory'"):
+            Config(store_backend="redis")
 
 
 class TestEnvironment:
