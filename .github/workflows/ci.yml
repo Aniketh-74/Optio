@@ -102,7 +102,23 @@ jobs:
           cache: pip
       - run: pip install -e ".[dev]"
       - name: pip-audit
-        run: pip-audit --strict --desc
+        # Audits the resolved dependency set rather than the environment.
+        #
+        # `pip-audit --strict` on the environment fails with "Dependency not
+        # found on PyPI: agentmeter (0.1.0.dev0)" -- agentmeter is installed
+        # editable and unpublished, so it can never be audited, and --strict
+        # turns that into a hard failure. `--skip-editable` does not help:
+        # --strict counts the deliberate skip as a collection failure too.
+        #
+        # Freezing the non-editable set keeps --strict fully in force for every
+        # third-party package (the actual supply-chain surface, Section 10)
+        # while leaving out the one distribution that cannot be looked up.
+        # Weakening --strict instead would have made the gate stop reporting
+        # collection failures for real dependencies.
+        run: |
+          pip freeze --exclude-editable > requirements-audit.txt
+          wc -l < requirements-audit.txt
+          pip-audit --strict --desc -r requirements-audit.txt
 
   # ---------------------------------------------------------------------------
   # Gates below activate as their milestones land. They are declared now, and
