@@ -21,8 +21,8 @@ All names live under the `gen_ai.` namespace. Monetary values are USD doubles.
 | Signal | Type | Lane | Cardinality | Meaning |
 |---|---|---|---|---|
 | `gen_ai.run.actual_cost` | double | cost | per run span | Cumulative **reconciled** cost — actual token spend, not estimate. |
-| `gen_ai.run.projected_cost` | double | cost | per step + run span | Worst-case projected total cost for the run. Emitted **before** the step's tokens burn, which is what makes pre-spend gating possible. |
-| `gen_ai.run.budget_remaining` | double | cost | per step + run span | `budget − reserved`. Absent when no budget policy was supplied. |
+| `gen_ai.run.projected_cost` | double | cost | per step + run span | Worst-case projected total cost for the run. Emitted **before** the step's tokens burn, which is what makes pre-spend gating possible. Absent without a `max_steps` ceiling, or when no step could be priced. |
+| `gen_ai.run.budget_remaining` | double | cost | per step + run span | `budget − committed`. Absent when no budget policy was supplied, **or when the run took steps and none of them could be priced** — see below. |
 | `gen_ai.run.cost_per_successful_task` | double | cost × quality | per run span | `actual_cost / success`. Requires a success signal; absent when the quality lane is off and no heuristic success is available. |
 | `gen_ai.run.loop_state` | string (enum) | behavior | per step + run span | One of `healthy`, `repeating`, `looping`, `retry_storm`. |
 | `gen_ai.run.repeat_count` | int | behavior | per step + run span | Highest repeated-signature count within the current window. |
@@ -50,6 +50,41 @@ unknown model price, quality lane off, run not sampled, or a lane failing and be
 the fail-open guard. Policies must therefore treat a missing attribute as *unknown*, not as
 *zero*. Defaulting a missing `projected_cost` to `0` would silently allow the exact runs the
 signal exists to catch.
+
+#### The unknown-model case
+
+Worth stating on its own, because it is the one you will actually hit. The pricing table is
+static and hand-maintained ([pricing.md](pricing.md)), so once a provider ships a model newer
+than your installed version of optio, **every step in the run is unpriceable**.
+
+When that happens, the entire cost triple is absent:
+
+| | Emitted? |
+|---|---|
+| `actual_cost` | absent — the spend is unknown |
+| `budget_remaining` | absent — **not** the full budget |
+| `projected_cost` | absent — no per-step evidence to extrapolate from |
+
+`budget_remaining` is the dangerous one. `budget − 0` is arithmetically correct and
+semantically a lie: it reports the whole budget as available for a run that has been spending
+money the whole time, so `budget_remaining < 0.50 → deny` never fires. Absence is the only
+honest answer.
+
+Two neighbouring cases are **not** suppressed, because their evidence is real:
+
+- **Steps in flight on a known model.** Nothing reconciled yet, but the reservations are money
+  already claimed, so the figure is reported.
+- **A genuinely free model.** A price of `0.0` was *observed*. Suppressing it would make free
+  models indistinguishable from unpriceable ones — exactly the distinction this rule exists to
+  preserve.
+
+A run mixing priced and unpriced steps still reports: partial evidence is evidence, and the
+undercount surfaces separately as an unreconciled-reservation warning at run end.
+
+**What to do about it:** supply your own prices via the pricing override
+([pricing.md](pricing.md)) rather than waiting for a release. A policy that must not fail open
+on unknown cost should gate on the *absence* explicitly — for example, in Rego,
+`not input.attributes["gen_ai.run.budget_remaining"]` alongside your threshold rule.
 
 ---
 

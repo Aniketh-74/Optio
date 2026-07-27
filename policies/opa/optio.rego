@@ -110,3 +110,19 @@ warn contains msg if {
 	not signal("gen_ai.run.loop_state")
 	msg := "behavior lane emitted no signal; loop detection is not covering this run"
 }
+
+# Cost signals absent while the behavior lane reported means optio saw the run
+# but could not price a single step of it -- almost always a model newer than
+# the installed pricing table.
+#
+# This is the case that most deserves a warning. The two cost rules above test
+# presence before comparing, correctly, so an unpriceable run passes both: the
+# budget gate is not merely uninformed, it is *inert*, and nothing else says so.
+# Still not a denial, because absence means unknown and denying on unknown would
+# make a stale pricing table an outage.
+warn contains msg if {
+	signal("gen_ai.run.loop_state")
+	not signal("gen_ai.run.actual_cost")
+	not signal("gen_ai.run.budget_remaining")
+	msg := "no step in this run could be priced; cost gating is not in force (check the pricing table)"
+}

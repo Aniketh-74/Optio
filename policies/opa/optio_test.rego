@@ -55,9 +55,15 @@ test_retry_storm_is_denied if {
 test_repeating_warns_but_does_not_deny if {
 	# Healthy agents repeat: polling, paging, bounded retries. Denying on this
 	# is the false positive that gets a monitoring layer uninstalled.
+	#
+	# Cost signals are included so this case tests repetition alone. Without
+	# them the input is also an unpriceable run, which earns its own separate
+	# warning -- correct, but it would make this test's subject ambiguous.
 	input_doc := {"attributes": {
 		"gen_ai.run.loop_state": "repeating",
 		"gen_ai.run.repeat_count": 5,
+		"gen_ai.run.actual_cost": 0.02,
+		"gen_ai.run.budget_remaining": 4.98,
 	}}
 	optio.allow with input as input_doc
 	count(optio.warn) == 1 with input as input_doc
@@ -111,6 +117,30 @@ test_cost_without_behavior_warns_about_the_coverage_gap if {
 	input_doc := {"attributes": {"gen_ai.run.actual_cost": 0.02}}
 	optio.allow with input as input_doc
 	count(optio.warn) == 1 with input as input_doc
+}
+
+test_an_unpriceable_run_warns_that_cost_gating_is_inert if {
+	# A run optio observed (behavior lane reported) but could not price: the
+	# usual shape once a provider ships a model newer than the pricing table.
+	# The cost rules test presence before comparing, so this passes them both
+	# -- correctly, but silently. The warning is the only thing that tells an
+	# operator their budget gate is not actually in force.
+	input_doc := {"attributes": {
+		"gen_ai.run.loop_state": "healthy",
+		"gen_ai.run.repeat_count": 1,
+	}}
+	optio.allow with input as input_doc
+	count(optio.warn) == 1 with input as input_doc
+}
+
+test_a_priced_run_does_not_warn_about_pricing if {
+	# The guard against a warning that fires on every healthy run.
+	input_doc := {"attributes": {
+		"gen_ai.run.loop_state": "healthy",
+		"gen_ai.run.actual_cost": 0.02,
+		"gen_ai.run.budget_remaining": 4.98,
+	}}
+	count(optio.warn) == 0 with input as input_doc
 }
 
 # --- combinations ------------------------------------------------------------

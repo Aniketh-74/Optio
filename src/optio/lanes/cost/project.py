@@ -58,6 +58,14 @@ def per_step_estimate(snapshot: LedgerSnapshot) -> float | None:
         return snapshot.actual / snapshot.reconciled_steps
 
     if snapshot.open_steps > 0:
+        if snapshot.reserved <= 0.0:
+            # Open steps reserved at zero are the cost lane's marker for a step
+            # it could not price (see CostLane.process_span). Dividing gives
+            # 0.0, which would be published as a confident "this run costs
+            # nothing per step" for a run making real, billable calls. The
+            # arithmetic is right and the meaning is wrong: absence of a price
+            # is not a price of zero (docs/signals.md).
+            return None
         return snapshot.reserved / snapshot.open_steps
 
     return None
@@ -116,18 +124,67 @@ def budget_remaining(snapshot: LedgerSnapshot, budget: BudgetPolicy | None) -> f
     Can go negative, and is reported that way. Clamping at zero would erase the
     single most actionable fact: by how much the run went over.
 
+    Absent, too, when the run has taken steps but none of them could be priced.
+    ``budget - 0`` is arithmetically correct there and semantically a lie: it
+    reports the full budget as available for a run that has been spending money
+    the whole time, and a rule like ``budget_remaining < 0.50 -> deny`` would
+    never fire. Since the pricing table is static and hand-maintained, "a model
+    we have never heard of" is the *ordinary* state for any deployed version of
+    this library rather than an edge case, which is what makes the wrong answer
+    dangerous rather than merely imprecise (R-TECH-1).
+
     Args:
         snapshot: Current ledger state for the run.
         budget: The run's budget policy.
 
     Returns:
-        Remaining budget in USD, or ``None`` when no budget was supplied. Absent
-        rather than infinite, because "no budget" is not "unlimited money" --
-        it means nobody told us the limit.
+        Remaining budget in USD, or ``None`` when no budget was supplied or the
+        run's spend is unknown. Absent rather than infinite, because "no budget"
+        is not "unlimited money" -- it means nobody told us the limit.
     """
     if budget is None:
         return None
+    if not _has_cost_evidence(snapshot):
+        return None
     return budget.limit_usd - snapshot.committed
+
+
+def _has_cost_evidence(snapshot: LedgerSnapshot) -> bool:
+    """Whether the ledger knows enough to talk about this run's spend.
+
+    Four states have to be told apart, and only the third is a problem:
+
+    * **Nothing happened yet.** No steps at all. ``committed == 0`` is the
+      truth and the full budget really is available.
+    * **Steps in flight on a known model.** Nothing reconciled, but the
+      reservations are real money already claimed. Reportable.
+    * **Steps happened, none could be priced.** ``committed == 0`` because the
+      cost is *unknown*, not because it is zero. Reporting a number here
+      fabricates evidence.
+    * **A genuinely free model.** Reconciled at 0.0. That is a measured price,
+      not a missing one, and must stay reportable -- suppressing it would make
+      free models indistinguishable from unpriceable ones and lose the very
+      distinction this function exists to preserve.
+
+    The test is therefore "did anything get priced", not "did anything get
+    reconciled": reconciliation count alone would suppress a run with real
+    reservations still in flight.
+
+    Args:
+        snapshot: Current ledger state for the run.
+
+    Returns:
+        ``True`` when a cost figure would mean something.
+    """
+    if snapshot.reconciled_steps > 0:
+        # Includes the free-model case: 0.0 reconciled is a price we observed.
+        return True
+    if snapshot.reserved > 0.0:
+        # In flight on a priced model: worst case is known and already claimed.
+        return True
+    # Nothing reconciled and nothing reserved. Honest only if nothing was
+    # attempted; otherwise every step so far was unpriceable.
+    return snapshot.open_steps == 0
 
 
 def cost_per_successful_task(snapshot: LedgerSnapshot, successes: int) -> float | None:

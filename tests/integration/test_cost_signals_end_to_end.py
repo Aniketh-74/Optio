@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from optio import meter, semconv
-from optio.config import default_config
+from optio.config import BudgetPolicy, default_config
 from optio.errors import LedgerInvariantError
 from optio.lanes.cost.lane import CostLane
 from optio.runtime import failopen, installer
@@ -96,6 +96,66 @@ class TestCostReachesTheSpan:
 
         attributes = _run_span(exporter).attributes
         assert attributes is not None
+        assert attributes[semconv.RUN_BUDGET_REMAINING] == pytest.approx(7.50)
+
+    def test_an_unknown_model_reports_no_cost_rather_than_a_free_run(
+        self, provider: TracerProvider, exporter: InMemorySpanExporter
+    ) -> None:
+        # Regression, end to end. The pricing table is static and
+        # hand-maintained, so this is the ordinary state of a deployed version
+        # once a new model ships -- not a rare edge case.
+        #
+        # Previously the run span carried budget_remaining = 10.0: the full
+        # budget, for a run that made three million-token calls. A policy
+        # reading "deny if budget_remaining < 0.50" would never fire, and the
+        # runaway agent this library exists to catch would run unchecked.
+        tracer = provider.get_tracer("agent")
+
+        @meter(budget=BudgetPolicy(limit_usd=10.0, max_steps=100), provider=provider)
+        def run_agent() -> None:
+            for _ in range(3):
+                with tracer.start_as_current_span("llm") as span:
+                    span.set_attribute(semconv.GEN_AI_REQUEST_MODEL, "a-model-from-the-future")
+                    span.set_attribute(semconv.GEN_AI_USAGE_INPUT_TOKENS, 1_000_000)
+                    span.set_attribute(semconv.GEN_AI_USAGE_OUTPUT_TOKENS, 1_000_000)
+
+        run_agent()
+
+        attributes = _run_span(exporter).attributes
+        assert attributes is not None
+        for name in (
+            semconv.RUN_ACTUAL_COST,
+            semconv.RUN_BUDGET_REMAINING,
+            semconv.RUN_PROJECTED_COST,
+        ):
+            assert name not in attributes, (
+                f"{name} was emitted for a run whose every step was unpriceable; "
+                "an unknown cost must be absent, never zero or a full budget"
+            )
+
+    def test_a_known_model_in_the_same_run_still_reports(
+        self, provider: TracerProvider, exporter: InMemorySpanExporter
+    ) -> None:
+        # The other half of the guard: partial evidence must not be suppressed
+        # along with the fabricated case. One priceable step is enough.
+        tracer = provider.get_tracer("agent")
+
+        @meter(budget="$10.00", provider=provider)
+        def run_agent() -> None:
+            with tracer.start_as_current_span("llm") as span:
+                span.set_attribute(semconv.GEN_AI_REQUEST_MODEL, "gpt-4o")
+                span.set_attribute(semconv.GEN_AI_USAGE_INPUT_TOKENS, 1_000_000)
+                span.set_attribute(semconv.GEN_AI_USAGE_OUTPUT_TOKENS, 0)
+            with tracer.start_as_current_span("llm") as span:
+                span.set_attribute(semconv.GEN_AI_REQUEST_MODEL, "a-model-from-the-future")
+                span.set_attribute(semconv.GEN_AI_USAGE_INPUT_TOKENS, 1_000_000)
+                span.set_attribute(semconv.GEN_AI_USAGE_OUTPUT_TOKENS, 0)
+
+        run_agent()
+
+        attributes = _run_span(exporter).attributes
+        assert attributes is not None
+        assert attributes[semconv.RUN_ACTUAL_COST] == pytest.approx(2.50)
         assert attributes[semconv.RUN_BUDGET_REMAINING] == pytest.approx(7.50)
 
     def test_only_declared_signal_names_are_emitted(
