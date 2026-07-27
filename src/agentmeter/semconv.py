@@ -53,6 +53,13 @@ GEN_AI_USAGE_OUTPUT_TOKENS: Final = "gen_ai.usage.output_tokens"
 GEN_AI_TOOL_NAME: Final = "gen_ai.tool.name"
 GEN_AI_TOOL_CALL_ID: Final = "gen_ai.tool.call.id"
 
+#: Why the model stopped generating. Plural and array-valued upstream (one entry
+#: per choice), so readers must handle both a bare string and a sequence -- some
+#: instrumentations flatten it. Consumed by the quality lane's inline heuristic
+#: (M5-2) to catch truncated generations, which read as complete text but are
+#: failed tasks.
+GEN_AI_RESPONSE_FINISH_REASONS: Final = "gen_ai.response.finish_reasons"
+
 
 # ---------------------------------------------------------------------------
 # Signals agentmeter emits -- the integration contract (Section 7.2)

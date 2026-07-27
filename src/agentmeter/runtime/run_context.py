@@ -98,6 +98,13 @@ class RunContext:
         budget: Optional spend limit, emitted as a signal, never enforced.
         config: Configuration governing which lanes are active.
         sampled: Whether this run is selected for the expensive quality path.
+        successes: Successful tasks recorded for this run, or ``None`` when the
+            run was never scored. Written by the quality lane (M5) and read by
+            the cost lane as the denominator of ``cost_per_successful_task``.
+            ``None`` rather than ``0`` is the whole point: an unscored run has an
+            *unknown* success count, and treating it as zero would make the
+            headline unit-economics number infinite for every run of the default
+            configuration.
     """
 
     __slots__ = (
@@ -109,6 +116,7 @@ class RunContext:
         "run_id",
         "sampled",
         "started_at",
+        "successes",
     )
 
     def __init__(
@@ -136,6 +144,7 @@ class RunContext:
         self.config: Config = config or default_config()
         self.started_at: float | None = None
         self.ended_at: float | None = None
+        self.successes: int | None = None
         self._ended: bool = False
         self._token: Token[RunContext | None] | None = None
         self.sampled: bool = self._decide_sampling()

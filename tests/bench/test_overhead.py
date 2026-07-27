@@ -268,3 +268,101 @@ def test_disabled_lanes_cost_almost_nothing() -> None:
 
     print(f"\ndisabled-lane p99 overhead {overhead * 1e6:.1f}us")
     assert overhead < BUDGET_P99_SECONDS
+
+
+#: Section 11's separate budget for the quality lane running its inline
+#: heuristic. Looser than SC-5 because this lane is opt-in: a user who turns it
+#: on has accepted some cost, whereas cost+behavior are on by default.
+QUALITY_BUDGET_P99_SECONDS = 0.010
+
+
+def test_quality_lane_inline_overhead_is_within_budget() -> None:
+    """The heuristic tier stays within Section 11's 10 ms p99 budget.
+
+    Measured with the lane *on* and no judge supplied, which is the inline path:
+    every run scored, no model call. The judge tier is deliberately not measured
+    against a latency budget -- it runs off the hot path by construction (M5-3),
+    and its cost is the user's own model call, not ours.
+    """
+    from agentmeter.config import Config
+
+    quality_config = Config(quality_lane=True, quality_sample_rate=0.0)
+
+    baseline_tracer, _ = _build(with_tap=False)
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    provider.add_span_processor(AgentMeterSpanTap(quality_config))
+    metered_tracer = provider.get_tracer("bench")
+
+    _time_steps(baseline_tracer, 200)
+    with RunContext(config=quality_config):
+        _time_steps(metered_tracer, 200)
+
+    baseline = _time_steps(baseline_tracer, SAMPLES)
+    with RunContext(config=quality_config):
+        metered = _time_steps(metered_tracer, SAMPLES)
+
+    mean = statistics.mean(metered) - statistics.mean(baseline)
+    p99 = _percentile(metered, 0.99) - _percentile(baseline, 0.99)
+
+    print(
+        f"\nquality lane (inline) -- mean {mean * 1e6:.1f}us  "
+        f"p99 {p99 * 1e6:.1f}us  (budget 10ms p99)"
+    )
+    assert p99 < QUALITY_BUDGET_P99_SECONDS, (
+        f"quality lane p99 {p99 * 1e3:.2f}ms exceeds the 10ms budget"
+    )
+
+
+def test_a_slow_judge_does_not_slow_the_run() -> None:
+    """A judge taking 200 ms must not add 200 ms to the run (M5-3).
+
+    The guarantee that makes the judge tier usable at all: it is dispatched to a
+    worker and the run does not wait. If this regressed, every sampled run would
+    pay full model latency at run end -- and the failure would look like "the
+    agent got slower", far from its cause.
+    """
+    import time as _time
+
+    from agentmeter.config import Config
+    from agentmeter.lanes.quality.judge import JudgeRequest, JudgeScores
+    from agentmeter.lanes.quality.lane import QualityLane
+
+    judge_seconds = 0.2
+
+    def slow_judge(_request: JudgeRequest) -> JudgeScores:
+        _time.sleep(judge_seconds)
+        return JudgeScores(task_success=1.0)
+
+    class Run:
+        run_id = "bench-run"
+        budget = None
+        sampled = True
+        successes = None
+
+    config = Config(quality_lane=True, quality_sample_rate=1.0, judge=slow_judge)
+    lane = QualityLane(config, judge=slow_judge)
+
+    from unittest.mock import Mock
+
+    from opentelemetry.trace import StatusCode
+
+    span = Mock()
+    span.name = "step"
+    span.attributes = {semconv.GEN_AI_USAGE_OUTPUT_TOKENS: 20}
+    span.status = Mock(status_code=StatusCode.OK)
+
+    run = Run()
+    lane.process_span(cast("ReadableSpan", span), run)
+
+    start = _time.perf_counter()
+    lane.on_run_end(run)
+    elapsed = _time.perf_counter() - start
+    lane.shutdown()
+
+    print(f"\nrun end with a {judge_seconds * 1e3:.0f}ms judge: {elapsed * 1e3:.2f}ms")
+    assert elapsed < judge_seconds / 2, (
+        f"run end took {elapsed * 1e3:.1f}ms against a {judge_seconds * 1e3:.0f}ms "
+        f"judge -- the judge is blocking the run"
+    )

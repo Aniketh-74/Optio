@@ -59,7 +59,11 @@ Read off framework-emitted spans as lane inputs:
 
 `gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`,
 `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.tool.name`,
-`gen_ai.tool.call.id`.
+`gen_ai.tool.call.id`, `gen_ai.response.finish_reasons`.
+
+`gen_ai.response.finish_reasons` is array-valued upstream (one entry per choice), but several
+instrumentations flatten it to a bare string; both forms are read. The quality lane uses it to
+catch truncated generations, which read as complete text but are failed tasks.
 
 ---
 
@@ -114,11 +118,17 @@ signal must be reviewed for content-freedom before it is added to this table (R-
 |---|---|---|
 | Cost | M2 | **Implemented.** `actual_cost`, `projected_cost`, `budget_remaining` emit today. |
 | Behavior | M3 | **Implemented.** `loop_state`, `repeat_count` emit today. |
-| Quality | M5 | Not implemented — names frozen here; off by default. |
+| Quality | M5 | **Implemented, off by default** (ADR-003). Emits only when enabled. |
 
-`cost_per_successful_task` needs a success signal, so it stays absent until the quality lane
-lands (M5) — see *Absence is meaningful* above. A policy may reference it now; it will simply
-never match, which is the correct behavior for an unknown value rather than a wrong one.
+Every signal in this document is now implemented. Names were contract-frozen in M0 so policy
+packs and adapters could be written ahead of the code; **no name has changed since**.
 
-Names were contract-frozen ahead of implementation so policy packs and adapters could be written
-against a stable surface. No name has changed since.
+Two caveats that matter more than the status column:
+
+`cost_per_successful_task` requires the quality lane, because its denominator is a success count.
+With the lane off it is absent — correct for an unknown value, and the reason a policy must never
+read absence as zero.
+
+`gen_ai.run.success` is absent on most scored runs too. The inline heuristic reports failure on
+evidence and abstains otherwise; it never claims success, because a fluent wrong answer is
+indistinguishable from a fluent right one without reading it. See [`quality.md`](quality.md).

@@ -12,8 +12,9 @@ first value needs zero new infrastructure -- SC-1).
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import Final, Literal, cast, get_args
+from typing import Any, Final, Literal, cast, get_args
 
 from agentmeter.errors import AgentMeterConfigError
 
@@ -72,6 +73,12 @@ class Config:
         run_ttl_seconds: Eviction TTL for run state orphaned by a missing run-end.
         behavior_window_size: Maximum step signatures retained per run. Bounds
             memory under long runs (Section 11).
+        judge: The user's outcome evaluator, used only when ``quality_lane`` is
+            on and a run is sampled. **Not settable from the environment**, and
+            deliberately so: agentmeter ships no default judge and constructs no
+            model client, because either would mean spending the user's money
+            and using their credentials on our initiative (Section 10, ADR-003).
+            Left ``None``, the quality lane runs its inline heuristic only.
 
     Raises:
         AgentMeterConfigError: If any value is out of range. Raised at
@@ -86,6 +93,9 @@ class Config:
     quality_sample_rate: float = 0.1
     run_ttl_seconds: float = DEFAULT_RUN_TTL_SECONDS
     behavior_window_size: int = 50
+    # Typed as a callable rather than importing the Judge protocol: config sits
+    # below lanes in the layering (Section 3.1), so it must not import one.
+    judge: Callable[[Any], Any] | None = None
 
     def __post_init__(self) -> None:
         """Validate at construction so bad config fails at setup, not at runtime."""

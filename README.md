@@ -2,15 +2,17 @@
 
 **Economic cost and outcome quality signals for agent runs — in the OpenTelemetry GenAI vocabulary.**
 
-> Status: **pre-alpha.** The cost and behavior lanes work end to end; the quality lane (M5) is not built yet. See [IMPLEMENTATION.md](IMPLEMENTATION.md) for the full design and milestone plan.
+> Status: **pre-alpha.** All three lanes work end to end; every signal in the contract is implemented. See [IMPLEMENTATION.md](IMPLEMENTATION.md) for the full design and milestone plan.
 
 | Lane | Signals | Status |
 |---|---|---|
 | **Cost** | spend, worst-case projection, budget headroom | Working |
 | **Behavior** | loop / repetition / retry-storm state | Working |
-| **Quality** | groundedness, task success | Not built (M5, opt-in by design) |
+| **Quality** | groundedness, task success, cost-per-successful-task | Working — **off by default** (opt-in, [ADR-003](docs/design/adr/)) |
 
 Adapters: LangGraph, OpenAI Agents SDK, CrewAI, Claude Agent SDK.
+Policy packs: [OPA/Rego, Cedar, Microsoft AGT](policies/).
+Runnable demo: [`examples/demo`](examples/demo/) — one command, no API keys.
 
 Agent governance engines (Microsoft Agent Governance Toolkit, OPA, Cedar) can decide whether an agent action is **allowed** and **safe**. None of them can decide whether an agent run is **affordable** or **good**.
 
