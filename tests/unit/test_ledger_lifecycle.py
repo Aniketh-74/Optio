@@ -171,3 +171,54 @@ class TestCostLaneReleasesState:
 
         lane.on_run_end(run)
         assert lane.on_run_end(run) == []
+
+
+class TestTheLeakWarningReachesTheOperator:
+    """The warning is the only thing distinguishing an estimate from a measurement.
+
+    ``leaked_steps`` as a number is covered by the property suite. The WARNING
+    is separate and was asserted nowhere -- mutation testing found it by
+    inverting ``if leaked:`` and watching every test still pass.
+
+    It matters more than a log line usually would. When a run ends with open
+    reservations, the reported cost is the *reserved worst case* for those
+    steps rather than measured spend, and this warning is the only place that
+    is said. Silently reporting an estimate as though it were a measurement is
+    the silent-wrongness failure R-TECH-1 treats as the worst possible bug.
+    """
+
+    def test_an_unreconciled_reservation_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        ledger = CostLedger()
+        ledger.reserve("run-leak", "step-0", 0.75)  # never reconciled
+
+        with caplog.at_level("WARNING", logger="optio"):
+            snapshot = ledger.close_run("run-leak")
+
+        assert snapshot.leaked_steps == 1
+        assert "unreconciled" in caplog.text
+        assert "run-leak" in caplog.text
+
+    def test_a_clean_run_stays_silent(self, caplog: pytest.LogCaptureFixture) -> None:
+        # The other half: a warning on every healthy run would be noise, and
+        # noise is how a real warning gets filtered out.
+        ledger = CostLedger()
+        ledger.reserve("run-clean", "step-0", 0.75)
+        ledger.reconcile("run-clean", "step-0", 0.50)
+
+        with caplog.at_level("WARNING", logger="optio"):
+            snapshot = ledger.close_run("run-clean")
+
+        assert snapshot.leaked_steps == 0
+        assert "unreconciled" not in caplog.text
+
+    def test_the_warning_counts_every_leaked_step(self, caplog: pytest.LogCaptureFixture) -> None:
+        ledger = CostLedger()
+        for i in range(3):
+            ledger.reserve("run-many", f"step-{i}", 1.0)
+        ledger.reconcile("run-many", "step-0", 1.0)
+
+        with caplog.at_level("WARNING", logger="optio"):
+            snapshot = ledger.close_run("run-many")
+
+        assert snapshot.leaked_steps == 2
+        assert "2 unreconciled" in caplog.text
