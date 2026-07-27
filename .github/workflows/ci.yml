@@ -145,6 +145,38 @@ jobs:
           python -m build
           twine check dist/*
 
+      - name: The sdist ships what was chosen, not what was lying around
+        # Hatchling's default sweep picks up whatever is in the working
+        # directory; it was shipping `.import_linter_cache/` until the sdist
+        # manifest was made explicit. A stray cache in a published artifact is
+        # at best noise and at worst a leak of local paths.
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob, sys, tarfile
+          names = [n.split("/", 1)[-1] for n in tarfile.open(glob.glob("dist/*.tar.gz")[0]).getnames()]
+          stray = [n for n in names if "cache" in n.lower() or n.endswith(".pyc") or ".github" in n]
+          if stray:
+              sys.exit(f"::error::sdist contains build artefacts: {stray[:10]}")
+          for required in ("src/optio/__init__.py", "tests", "LICENSE", "README.md"):
+              if not any(n.startswith(required) for n in names):
+                  sys.exit(f"::error::sdist is missing {required}")
+          print(f"sdist clean: {len(names)} files")
+          PY
+
+      - name: A downstream packager can rebuild and verify from the sdist
+        # Debian, conda-forge and internal mirrors build from the sdist, not
+        # from git. If its tests cannot run, nobody downstream can vouch for
+        # what they are shipping -- which is the whole reason tests are in it.
+        shell: bash
+        run: |
+          mkdir -p /tmp/sdist && tar -xzf dist/*.tar.gz -C /tmp/sdist
+          cd /tmp/sdist/optio-*
+          python -m venv .venv
+          if [ -f .venv/bin/python ]; then PY=.venv/bin/python; else PY=.venv/Scripts/python; fi
+          "$PY" -m pip install --quiet ".[dev]"
+          "$PY" -m pytest -q --no-cov -p no:cacheprovider
+
       - name: Install the wheel the way a user would
         # Every other job uses `pip install -e .`, which runs from the source
         # tree and can pass while the *packaged* artifact is broken -- a missing

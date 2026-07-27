@@ -181,6 +181,32 @@ its own benchmark: an accidental change to O(total steps) would make long runs
 quadratic and would show up to a user as an agent that mysteriously degrades over
 hours, rather than as any test failure.
 
+### If you raise `behavior_window_size`
+
+O(window) is a real slope, not a formality, and the setting is yours to change.
+Measured end to end on a full instrumented step:
+
+| `behavior_window_size` | p99 per step | share of the 5 ms budget |
+|---|---|---|
+| 50 (default) | 177 µs | 3.5% |
+| 200 | 240 µs | 4.8% |
+| 1,000 | 564 µs | 11.3% |
+| 5,000 | 1,178 µs | 23.6% |
+
+Every value stays inside SC-5, so there is no cliff to fall off — but a 100×
+window costs roughly 7× the overhead, and `classify` alone goes from 17 µs to
+1.1 ms. Profiling confirms it is the hot path's largest single component at any
+window size.
+
+The default is 50 because detection quality does not improve much beyond it: a
+loop that is invisible in 50 steps is usually not a loop. Raise it if you are
+hunting long-period cycles, and know what you are paying for.
+
+Deliberately **not** optimised. An incremental counter would make this O(1) per
+step, and at 0.33% of the budget that would be optimising something nobody is
+waiting on while adding state that has to stay consistent with the deque —
+exactly the trade §16 rule 10 forbids without a benchmark demanding it.
+
 ---
 
 ## Using these signals in a policy

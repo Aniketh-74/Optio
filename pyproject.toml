@@ -73,6 +73,39 @@ Changelog = "https://github.com/Aniketh-74/Agent-Meter/blob/main/CHANGELOG.md"
 [tool.hatch.build.targets.wheel]
 packages = ["src/optio"]
 
+# The sdist ships tests, docs, policy packs and the demo. That is deliberate:
+# a downstream packager (Debian, conda-forge, an internal mirror) rebuilds from
+# the sdist and needs to be able to run the suite to verify what they are
+# shipping. A source distribution that cannot be tested is one nobody can
+# vouch for.
+#
+# Listed explicitly rather than relying on the default sweep, which picks up
+# whatever happens to be in the working directory -- it was shipping
+# `.import_linter_cache/` until this was added. An sdist should contain what
+# the maintainer chose, not what their last command left behind.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/docs",
+    "/policies",
+    "/examples",
+    "/pyproject.toml",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+    "/RELEASING.md",
+    "/IMPLEMENTATION.md",
+    "/LICENSE",
+    "/.gitattributes",
+]
+exclude = [
+    "**/__pycache__",
+    "**/*.pyc",
+    "**/.pytest_cache",
+]
+
 # ---------------------------------------------------------------------------
 # Lint / format (§4.1)
 # ---------------------------------------------------------------------------
