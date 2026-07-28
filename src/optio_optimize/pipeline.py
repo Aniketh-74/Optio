@@ -28,9 +28,12 @@ from typing import TYPE_CHECKING
 
 from optio_optimize.savings import SavingsReport, StageSaving
 from optio_optimize.stages.base import StageContext, StageResult
+from optio_optimize.telemetry import record_span
 from optio_optimize.tokens import count_request, default_counter
 
 if TYPE_CHECKING:
+    from opentelemetry.trace import TracerProvider
+
     from optio_optimize.config import OptimizeConfig
     from optio_optimize.stages.base import Stage
     from optio_optimize.types import LLMRequest, LLMResponse
@@ -51,18 +54,28 @@ class Pipeline:
         report: Cumulative savings across every request this pipeline has run.
     """
 
-    __slots__ = ("_counter", "config", "report", "stages")
+    __slots__ = ("_counter", "_tracer_provider", "config", "report", "stages")
 
-    def __init__(self, config: OptimizeConfig, stages: list[Stage]) -> None:
+    def __init__(
+        self,
+        config: OptimizeConfig,
+        stages: list[Stage],
+        *,
+        tracer_provider: TracerProvider | None = None,
+    ) -> None:
         """Build a pipeline.
 
         Args:
             config: Validated configuration.
             stages: Stages to run, in order.
+            tracer_provider: Provider for `emit_spans`' tracer (ADR-014).
+                Defaults to OTel's global provider; overridable for tests and
+                multi-provider setups, matching ``optio.api.meter``.
         """
         self.config = config
         self.stages = [s for s in stages if s.name not in config.disabled_stages]
         self._counter = default_counter()
+        self._tracer_provider = tracer_provider
         self.report = SavingsReport(exact=self._counter.is_exact)
 
         lossy = [s.name for s in self.stages if s.lossy]
@@ -112,6 +125,7 @@ class Pipeline:
         short_circuit: LLMResponse | None = None
         saved_input = 0
         saved_output = 0
+        fired: list[str] = []
 
         for stage in self.stages:
             if time.perf_counter() >= deadline:
@@ -129,6 +143,11 @@ class Pipeline:
             saved_input += result.saved_input_tokens
             saved_output += result.saved_output_tokens
             current = result.request
+            if result.note:
+                # A non-empty note is how a stage says "I did something" --
+                # the same signal PrefixCacheStage's zero-token-saving marker
+                # relies on to show up in reports at all.
+                fired.append(stage.name)
             if result.short_circuited:
                 short_circuit = result.response
                 break
@@ -136,11 +155,33 @@ class Pipeline:
         totals = (saved_input, saved_output)
         if short_circuit is not None:
             self._finish(totals, current, short_circuit, short_circuited=True)
+            if self.config.emit_spans:
+                record_span(
+                    current,
+                    short_circuit,
+                    stages=fired,
+                    saved_input_tokens=saved_input,
+                    saved_output_tokens=saved_output,
+                    short_circuited=True,
+                    run_id=run_id,
+                    tracer_provider=self._tracer_provider,
+                )
             return short_circuit
 
         response = call(current)
         self._run_after(current, response, ctx)
         self._finish(totals, current, response, short_circuited=False)
+        if self.config.emit_spans:
+            record_span(
+                current,
+                response,
+                stages=fired,
+                saved_input_tokens=saved_input,
+                saved_output_tokens=saved_output,
+                short_circuited=False,
+                run_id=run_id,
+                tracer_provider=self._tracer_provider,
+            )
         return response
 
     def _run_before(

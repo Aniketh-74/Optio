@@ -15,6 +15,8 @@ from optio_optimize.pipeline import Pipeline
 from optio_optimize.stages import build_stages
 
 if TYPE_CHECKING:
+    from opentelemetry.trace import TracerProvider
+
     from optio_optimize.pipeline import ProviderCall
     from optio_optimize.savings import SavingsReport
     from optio_optimize.stages.base import Stage
@@ -35,6 +37,7 @@ class Optimizer:
         config: OptimizeConfig | None = None,
         *,
         stages: list[Stage] | None = None,
+        tracer_provider: TracerProvider | None = None,
         **overrides: Any,
     ) -> None:
         """Build an optimizer.
@@ -45,6 +48,10 @@ class Optimizer:
             stages: Explicit stage list, bypassing the registry. For tests and
                 for users who need an order the registry does not produce;
                 ordering then becomes their responsibility.
+            tracer_provider: Provider ``emit_spans`` draws its tracer from
+                (ADR-014). Defaults to OTel's global provider; only needed to
+                target a non-global one, e.g. in tests. Has no effect unless
+                ``emit_spans=True``.
             **overrides: Individual config fields, e.g. ``semantic_cache=True``.
 
         Raises:
@@ -63,6 +70,7 @@ class Optimizer:
         self._pipeline = Pipeline(
             self.config,
             stages if stages is not None else build_stages(self.config),
+            tracer_provider=tracer_provider,
         )
 
     def call(

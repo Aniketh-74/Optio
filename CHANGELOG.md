@@ -23,6 +23,27 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **`optio_optimize` now emits spans `optio` already knows how to price (ADR-014).**
+  `Optimizer(emit_spans=True)` (default off) makes `Optimizer.call()` emit one
+  standard OTel GenAI span per request, using the exact attribute names
+  `optio`'s cost and behavior lanes already read off any span. `optio` needed
+  zero code changes — its span tap was already built to observe spans from a
+  source it knows nothing about, the same mechanism every framework adapter
+  uses. `optio_optimize` imports nothing from `optio` to do this, verified by
+  `lint-imports` (4/4 contracts kept, including "optio never imports the
+  optimizer"). A cache hit's already-zeroed token counts flow straight
+  through, so `optio`'s reserve/reconcile ledger prices it at $0 with no
+  special-casing on either side — confirmed by a real (non-mocked)
+  `TracerProvider` + `CostLane` in `tests/optimize/test_telemetry.py`, not
+  asserted by hand. `run_id`, threaded through every `StageContext` since
+  0.1.0 and read by nothing, now does something: written as `gen_ai.run.id`
+  when given, though correlation to `optio`'s pricing never depended on it —
+  that happens through OTel's ambient context, same as every other span
+  source. Fail-open: a broken exporter degrades to no span, never an
+  exception. Scope is the raw `Optimizer.call()` path only; a framework
+  adapter with its own GenAI instrumentation risks double-counting, called
+  out as unsolved in ADR-014's Consequences rather than solved implicitly.
+  See `docs/design/adr/adr-014-optimize-emits-spans-optio-already-knows-how-to-read.md`.
 - **`optio_optimize` Phase 2: `trim_history`, `deduplicate`, `prune_retrieval`.**
   Three bounded-risk stages (`Fidelity.SHAPED`, on by default) that drop context
   rather than invent it: `trim_history` keeps the system prompt plus the most

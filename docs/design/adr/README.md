@@ -19,6 +19,8 @@ Summaries live in [IMPLEMENTATION.md §15](../../../IMPLEMENTATION.md); full rec
 | [010](adr-010-a-closed-run-is-final.md) | A closed run is final | Accepted |
 | [011](adr-011-lane-wiring-lives-outside-the-lane-abc.md) | Lane wiring lives outside the lane ABC | Accepted |
 | [012](adr-012-the-public-api-is-the-top-level-package-only.md) | The public API is the top-level package only | Accepted |
+| [013](adr-013-optimization-lives-in-a-separate-package.md) | Optimization lives in a separate package (`optio_optimize`) | Accepted |
+| [014](adr-014-optimize-emits-spans-optio-already-knows-how-to-read.md) | `optio_optimize` integrates by emitting spans, not by calling `optio` | Accepted |
 
 ADRs 000, 001, and 004 were expanded first because M0 code already depended on them: they
 determine what the library is allowed to do, and what it must never do.

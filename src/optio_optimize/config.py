@@ -73,6 +73,14 @@ class OptimizeConfig:
         cheap_model: Model the routing stage may downgrade to.
         disabled_stages: Stage names to skip regardless of other settings. The
             escape hatch for "this one misbehaves on my workload".
+        emit_spans: Emit one OTel GenAI span per request/response cycle
+            (ADR-014), so a live ``optio`` install prices and classifies
+            optimizer activity through its existing span tap -- no call into
+            ``optio`` required, and none made; this package still imports
+            nothing from it. Off by default: a new, previously-absent side
+            effect for every existing caller, even though a span with no
+            configured exporter costs close to nothing. Failures here are
+            swallowed, never raised -- see :mod:`optio_optimize.telemetry`.
     """
 
     enabled: bool = True
@@ -100,6 +108,7 @@ class OptimizeConfig:
     context_limit: int | None = None
     cheap_model: str | None = None
     disabled_stages: frozenset[str] = frozenset()
+    emit_spans: bool = False
 
     def __post_init__(self) -> None:
         """Validate at construction (§4.2: setup fails loudly).
