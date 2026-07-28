@@ -23,6 +23,42 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **`route_models` has live evidence for the first time, and it found a real regression.** This
+  stage had *zero* live data: it was excluded even from the old `--aggressive` flag, and the A/B
+  harness could not have measured it anyway (`ABResult` prices a whole arm at one flat rate, and
+  a routed request is never expected to be output-identical, so the suite's identity check does
+  not apply). New `--route-models-audit` asks **both** models the same twelve short questions and
+  grades against **known answers rather than a judge** -- a judge is itself a model, and using one
+  to decide whether a weaker model is good enough puts the capability question inside the thing
+  being measured. Live `gpt-4o` vs `gpt-4o-mini` (16.7x cheaper input), 2026-07-29, $0.0013 across
+  24 calls, reproduced identically three times: easy probes 100%/100%, hard probes 100%/**88%**,
+  **regression rate 8.3% (1/12)**. The single failure is the exact shape the risk model predicts
+  -- *"What is 17 times 24, minus 89?"*, eight words, inside the 500-token ceiling, no tools, no
+  schema, so the stage routes it: `gpt-4o` answers 319, `gpt-4o-mini` answers **329**. Nothing
+  distinguishes that from a correct answer without knowing the answer. All five decline guards
+  (tools, `response_format`, already-cheap, over-ceiling, and routable-is-routed) are re-checked
+  live on every audit run rather than trusted from the eval gate.
+- **The first probe set was too easy, which is part of the result.** It used four famous
+  reasoning traps -- the strawberry letter count, 9.11 vs 9.9, bat-and-ball, transitive ordering
+  -- and `gpt-4o-mini` answered **all four correctly** every run. They are in everyone's training
+  data by now, so passing them says nothing about a *novel* short-but-hard request. Four ordinary
+  multi-step problems with no memorable phrasing were added, and one of those produced the only
+  regression. A probe set of only-easy or only-famous-hard requests would have cleared this stage
+  at 0% and proved nothing, which is the failure ADR-015 named for this stage specifically. The
+  honest reading of 8.3% is "not zero", not "8.3%": twelve probes on one model pair, all
+  single-turn and answer-checkable by construction, is a floor on the risk, not a measurement.
+- **Two bugs in the audit itself, both of which produced clean-looking wrong numbers.** First,
+  the grader's normalization kept every `.` so decimals would survive, which left `"Tokyo."`
+  failing a word-boundary check for `"tokyo"`: three correct live answers scored wrong and one was
+  reported as a `route_models` REGRESSION that never happened -- a plausible 12.5% regression rate
+  that was entirely this bug. Periods are now dropped unless flanked by digits, with tests.
+  Second, `run_routing_audit` originally took one provider and varied `request.model`, but
+  `OpenAIProvider.__call__` sends `self.model` and ignores `request.model` (deliberately -- it is
+  what keeps its pricing honest). Both "arms" would have hit the same model and reported a
+  perfectly clean, entirely meaningless 0% regression rate. It now takes two providers and raises
+  if they serve the same model. New `--model` flag, since `available_live_provider()` defaults to
+  the cheap model and so had nothing to route *down* from. 22 tests.
+
 - **The `compress_prompt` anomaly, chased across six workloads and explained.** The one prior
   live data point -- cost -71.5%, output tokens *+71.4%*, 10/10 diverged, on `rag_queries` under
   the bundled `--aggressive` flag -- reproduces exactly with the stage isolated, so it is real

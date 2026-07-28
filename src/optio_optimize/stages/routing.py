@@ -45,9 +45,27 @@ class RouteModelsStage(Stage):
     here can check it -- "short and simple" is a proxy for "easy", not proof
     of it. The ADR-013 eval gate (``eval.cases.DecisionBoundaryCase``) can
     only confirm this stage routes exactly what its own rule above says it
-    should; confirming the *answers* stay acceptable needs a live A/B run
-    with a judge (``bench/harness.py``), and turning this stage on at all is
-    the caller's judgment call to make, not this docstring's to settle.
+    should; confirming the *answers* stay acceptable needs a live comparison
+    of the two models, and turning this stage on at all is the caller's
+    judgment call to make, not this docstring's to settle.
+
+    **What one live measurement found (2026-07-29, ADR-015).** Twelve short
+    prompts with known answers, asked of ``gpt-4o`` and ``gpt-4o-mini``
+    (16.7x cheaper), graded against ground truth rather than a judge: the
+    cheap model matched on every lookup and on 7 of 8 short-but-hard probes.
+    The one it missed is the whole risk in one line -- *"What is 17 times 24,
+    minus 89?"*, eight words, well inside :data:`MAX_ROUTABLE_TOKENS`, no
+    tools, no schema, so this stage routes it. ``gpt-4o`` answers 319;
+    ``gpt-4o-mini`` answers 329. Reproduced identically three times.
+
+    That is a *floor* on the risk, not a measurement of it: twelve probes,
+    one model pair, all single-turn and all answer-checkable by construction,
+    which excludes exactly the open-ended requests where a weaker model
+    degrades in ways no string comparison would catch. Note also that four
+    famous reasoning traps (bat-and-ball, the strawberry letter count) were
+    tried first and the cheap model passed all of them -- a probe set can be
+    "hard" and still prove nothing if the hard parts are memorized. See
+    ``docs/optimize-benchmarks.md``.
     """
 
     fidelity = Fidelity.ALTERED

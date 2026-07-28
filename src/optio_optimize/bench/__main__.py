@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from optio_optimize.bench.adversarial import format_audit_report, run_semantic_cache_audit
@@ -18,6 +19,7 @@ from optio_optimize.bench.providers import (
     SpendGuard,
     available_live_provider,
 )
+from optio_optimize.bench.routing import format_routing_report, run_routing_audit
 from optio_optimize.bench.workloads import WORKLOADS
 from optio_optimize.config import CHEAP_COUNTERPART, DEFAULT_SEMANTIC_THRESHOLD, OptimizeConfig
 from optio_optimize.types import LLMRequest, Message
@@ -73,6 +75,16 @@ def main(argv: list[str] | None = None) -> int:
             "together and produced a confounded result neither stage's evidence could "
             "actually be attributed to. Pass it more than once to test a deliberate "
             "combination; the default (omitted) is none of the four."
+        ),
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "model the live provider should serve. Defaults to the provider's own "
+            "cheap default (gpt-4o-mini / claude-haiku-4), which keeps ordinary runs "
+            "inexpensive but makes it the *requested* model -- so a --route-models-audit "
+            "has nothing cheaper to route to unless this names something above it."
         ),
     )
     parser.add_argument(
@@ -162,6 +174,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--route-models-audit",
+        action="store_true",
+        help=(
+            "run the ADR-015 routing audit instead of the workload suite: eight short "
+            "prompts with known answers, half of them deliberately short-but-hard, "
+            "asked of both the requested model and --cheap-model, graded against "
+            "ground truth rather than a judge. Also re-checks every decline guard "
+            "live. Ignores --workload/--stage."
+        ),
+    )
+    parser.add_argument(
         "--semantic-threshold",
         type=float,
         default=DEFAULT_SEMANTIC_THRESHOLD,
@@ -184,11 +207,22 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+        if args.model:
+            at_model = _same_provider_at(provider, args.model, guard)
+            if at_model is None:
+                print(
+                    f"cannot serve {args.model!r} through {provider.label}.",
+                    file=sys.stderr,
+                )
+                return 2
+            provider = at_model
         print(f"LIVE run against {provider.label}, spend cap ${args.cap:.2f}")
         if not args.semantic_cache_audit:
             print("Both arms call the real API, so this bills roughly twice one pass.\n")
     else:
         provider = SimulatedProvider(latency_ms=args.provider_latency)
+        if args.model:
+            provider = replace(provider, model=args.model)
         print("Simulated run: token, cost, cache, memory and overhead figures are real.")
         if args.provider_latency > 0:
             print(f"Provider delay modelled at {args.provider_latency:.0f} ms per call.")
@@ -209,6 +243,36 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(format_audit_report(report)))
         if guard is not None:
             print(f"spent ${guard.spent_usd:.4f} across {guard.calls} live calls")
+        return 0
+
+    if args.route_models_audit:
+        cheap_model = _resolve_cheap_model(args.cheap_model, provider.model)
+        if cheap_model is None:
+            print(
+                f"--route-models-audit needs a cheaper model to compare against, and "
+                f"{provider.model!r} has no entry in CHEAP_COUNTERPART. Pass "
+                f"--cheap-model explicitly.",
+                file=sys.stderr,
+            )
+            return 2
+        cheap_provider = _same_provider_at(provider, cheap_model, guard)
+        if cheap_provider is None:
+            print(
+                f"cannot build a second provider for {cheap_model!r} alongside {provider.label}.",
+                file=sys.stderr,
+            )
+            return 2
+        if not args.live:
+            print(
+                "note: --route-models-audit without --live grades SimulatedProvider's "
+                "hashed content, which is wrong for every probe by construction. It "
+                "exercises the plumbing and the decline guards; the accuracy numbers "
+                "are meaningless.\n"
+            )
+        routing_report = run_routing_audit(provider, cheap_provider)
+        print("\n".join(format_routing_report(routing_report)))
+        if guard is not None:
+            print(f"\nspent ${guard.spent_usd:.4f} across {guard.calls} live calls")
         return 0
 
     selected = [WORKLOADS[n] for n in (args.workload or sorted(WORKLOADS))]
@@ -388,6 +452,35 @@ def _resolve_cheap_model(explicit: str | None, provider_model: str) -> str | Non
         ``"gpt-4o-mini"``, which is already the cheap end of its own family.
     """
     return explicit if explicit is not None else CHEAP_COUNTERPART.get(provider_model)
+
+
+def _same_provider_at(
+    provider: BenchProvider, model: str, guard: SpendGuard | None
+) -> BenchProvider | None:
+    """A second provider of the same kind, serving ``model``.
+
+    ``route_models``'s audit needs two models answering the same question, and
+    a provider's model is fixed at construction rather than read off each
+    request -- ``OpenAIProvider.__call__`` sends ``self.model`` and ignores
+    ``request.model``, which is what keeps its cost accounting honest. So
+    comparing two models means two providers, sharing one ``SpendGuard`` so
+    the cap still covers the whole run.
+
+    Args:
+        provider: The provider to mirror.
+        model: Model the new provider should serve.
+        guard: Spend guard to share, for live providers.
+
+    Returns:
+        A provider of the same class serving ``model``, or ``None`` if that
+        class cannot be rebuilt.
+    """
+    if isinstance(provider, SimulatedProvider):
+        return replace(provider, model=model)
+    try:
+        return type(provider)(model=model, guard=guard)  # type: ignore[call-arg]
+    except (TypeError, RuntimeError):
+        return None
 
 
 def _build_live_judge(provider: BenchProvider) -> Judge:

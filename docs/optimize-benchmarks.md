@@ -491,6 +491,65 @@ OpenAI's server-side prefix cache warming between runs; `BenchProvider.reset()`
 already documents that a live provider cannot honour a cache reset, and this is
 that limit showing up in a price.
 
+## `route_models`: the first live evidence it has ever had (ADR-015)
+
+This stage had **zero** live data before this. It was excluded even from the
+old `--aggressive` flag, because the bench CLI had no cheaper model to route
+to — and the A/B harness could not have measured it anyway: `ABResult` prices a
+whole arm at one flat rate, so a run where *some* requests were downgraded
+reports a blended figure reflecting neither model, and a routed request is
+never expected to be output-identical, so the identity check the rest of this
+suite leans on does not apply at all.
+
+So the instrument is different: `--route-models-audit` asks **both** models the
+same twelve short questions and grades them against **known answers**, not a
+judge. That is deliberate — a judge is itself a model, and using one to decide
+whether a weaker model is good enough puts the capability question inside the
+thing being measured.
+
+Live, `gpt-4o` vs `gpt-4o-mini` (16.7× cheaper input), 2026-07-29, $0.0013
+across 24 calls, reproduced identically three times:
+
+| probe category | `gpt-4o` | `gpt-4o-mini` |
+|---|---|---|
+| easy (4 lookups) | 100% | 100% |
+| hard (8 short-but-hard) | 100% | **88%** |
+
+**Regression rate: 8.3% (1 of 12).** The single failure is the one that
+matters, because it is the exact shape the risk model predicts:
+
+> **"What is 17 times 24, minus 89?"** — eight words, comfortably inside the
+> 500-token routing ceiling, no tools, no `response_format`. `gpt-4o` answers
+> `319`. `gpt-4o-mini` answers `329`. Fluent, confident, and wrong by ten.
+
+Nothing about that response is distinguishable from a correct one without
+knowing the answer. No cost or latency dashboard can see it, and the
+`ALTERED` tier exists precisely because no identity check can either.
+
+**The first probe set was too easy, and saying so is part of the result.** It
+used four famous reasoning traps — the strawberry letter count, 9.11 vs 9.9,
+bat-and-ball, transitive ordering — and `gpt-4o-mini` answered **all four
+correctly**, in every run. Those are in everyone's training data by now;
+passing them says nothing about a *novel* short-but-hard request. Four
+ordinary multi-step problems with no memorable phrasing were added, and one of
+those four is what produced the only regression. A probe set of only-easy
+requests — or only-famous hard ones — would have cleared this stage at 0%
+regression and proved nothing, which is the failure ADR-015 explicitly warned
+about for this stage.
+
+**All five decline guards hold live**, checked against real request shapes on
+every audit run rather than trusted from the eval gate: tools attached,
+`response_format` set, already-cheap, over the token ceiling, and — the one
+that would silently disable the stage if it broke — a routable request
+actually being routed.
+
+**What this does not say.** Twelve probes on one model pair is a small sample,
+and 1/12 is one event: the honest reading of 8.3% is "not zero", not "8.3%".
+The probes are also all single-turn and answer-checkable by construction,
+which excludes the open-ended requests where a weaker model more plausibly
+degrades in ways no string match would catch. This is a floor on the risk, not
+a measurement of it.
+
 ## Overhead
 
 Our own cost per request, measured with the provider's time excluded:
