@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
+import pytest
 from opentelemetry.trace import StatusCode
 
 from optio import semconv
@@ -189,6 +190,54 @@ class TestArgumentDigestIsStable:
 
         assert digest_args(deep)
 
+    def test_a_self_referential_structure_terminates(self) -> None:
+        """A structure containing itself must not recurse forever.
+
+        Frameworks build these more often than one would expect, usually via a
+        shared context object that ends up inside its own tool arguments. Without
+        the depth guard this is an unbounded recursion on the hot path -- the
+        fail-open guard would catch the RecursionError, but the behavior signal
+        would vanish for every step of that shape.
+        """
+        cyclic: dict[str, object] = {"k": "v"}
+        cyclic["self"] = cyclic
+        assert digest_args(cyclic)
+
+        looping: list[object] = []
+        looping.append(looping)
+        assert digest_args(looping)
+
+    @pytest.mark.parametrize("depth", [1, 3, 6])
+    def test_structures_differing_within_the_depth_limit_are_distinguishable(
+        self, depth: int
+    ) -> None:
+        """Nesting up to the limit still fingerprints the leaf.
+
+        This is the half of the depth guard that stops it truncating too
+        eagerly. If it did, two genuinely different calls would share a
+        signature and be counted as a repeat -- fabricating a loop, which
+        ADR-004 makes the most damaging direction to fail in.
+        """
+        assert digest_args(_nested(depth, "AAA")) != digest_args(_nested(depth, "BBB"))
+
+    @pytest.mark.parametrize("depth", [7, 9, 40])
+    def test_structures_differing_below_the_depth_limit_collapse(self, depth: int) -> None:
+        """Past the limit the tail is discarded, so deep differences vanish.
+
+        The cost of bounded recursion, asserted rather than left implicit: two
+        calls differing only very deep inside their arguments look identical.
+        That under-detects (they may be counted as a repeat when they are not
+        quite one), which is the safe direction.
+
+        Paired with the test above, this pins the boundary exactly. Both are
+        needed: a guard that never truncates passes the first alone, and one
+        that truncates immediately passes the second alone. Mutating the
+        recursion counter or the limit itself moves the boundary and fails one
+        of the two -- which is how the surviving mutants in this function were
+        found.
+        """
+        assert digest_args(_nested(depth, "AAA")) == digest_args(_nested(depth, "BBB"))
+
     def test_a_broken_repr_does_not_propagate(self) -> None:
         class ExplodingReprError:
             def __repr__(self) -> str:
@@ -225,3 +274,11 @@ class TestContentIsNeverRetained:
         text = repr(window)
         assert "sensitive" not in text
         assert "tool" not in text
+
+
+def _nested(depth: int, leaf: str) -> object:
+    """Wrap ``leaf`` in ``depth`` levels of single-key mappings."""
+    value: object = leaf
+    for _ in range(depth):
+        value = {"n": value}
+    return value
