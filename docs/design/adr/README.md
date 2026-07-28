@@ -21,6 +21,7 @@ Summaries live in [IMPLEMENTATION.md §15](../../../IMPLEMENTATION.md); full rec
 | [012](adr-012-the-public-api-is-the-top-level-package-only.md) | The public API is the top-level package only | Accepted |
 | [013](adr-013-optimization-lives-in-a-separate-package.md) | Optimization lives in a separate package (`optio_optimize`) | Accepted |
 | [014](adr-014-optimize-emits-spans-optio-already-knows-how-to-read.md) | `optio_optimize` integrates by emitting spans, not by calling `optio` | Accepted |
+| [015](adr-015-evidence-bar-for-promoting-an-altered-tier-stage.md) | Evidence bar for promoting an `ALTERED`-tier stage out of "experimental" | Accepted — evidence gathering in progress |
 
 ADRs 000, 001, and 004 were expanded first because M0 code already depended on them: they
 determine what the library is allowed to do, and what it must never do.
@@ -45,6 +46,13 @@ an architectural rule. Adding a second lane made the lane-independence contract
 (§3.1) fail, and the fix was to move the wiring rather than relax the boundary.
 Written down because the alternative, a one-line lint exemption, would have been
 invisible in review and is how such a contract gets dismantled.
+
+ADR-015 is a different shape from the rest: it records a decision about how a future decision
+will be made, not an architecture change on its own. Written before any evidence-gathering code
+existed, specifically so that a later result — `compress_prompt` already produced one alarming
+number (output tokens +71.4%) before this document existed — cannot quietly move the bar to fit
+itself. It is expected to gain a per-stage addendum as each `ALTERED` stage's live evidence
+comes in, the same pattern ADR-005 used for its Redis addendum.
 
 ## Format
 
