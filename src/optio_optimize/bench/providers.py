@@ -362,13 +362,27 @@ class OpenAIProvider:
         # Our Message is provider-neutral by design (ADR-013), so it has to be
         # cast to each SDK's own TypedDict at the boundary. The cast is checked
         # by the round trip: a wrong role or key fails the live call loudly.
-        messages = cast(
-            "list[ChatCompletionMessageParam]",
-            [{"role": m.role, "content": m.content} for m in request.messages],
-        )
+        #
+        # tool_calls / tool_call_id are pulled out of `extra` explicitly rather
+        # than forwarded wholesale: OpenAI rejects a "tool" message with no
+        # preceding tool_calls, so dropping these silently (the first version
+        # of this method did) makes every tool-calling workload fail 400,
+        # regardless of what any stage did to the request. Found live, running
+        # tool_calling_chat -- the same class of surprise as fan_out's missing
+        # "json" literal.
+        messages: list[dict[str, Any]] = []
+        for m in request.messages:
+            entry: dict[str, Any] = {"role": m.role, "content": m.content}
+            if m.name:
+                entry["name"] = m.name
+            if "tool_calls" in m.extra:
+                entry["tool_calls"] = m.extra["tool_calls"]
+            if "tool_call_id" in m.extra:
+                entry["tool_call_id"] = m.extra["tool_call_id"]
+            messages.append(entry)
         completion = self._client.chat.completions.create(
             model=self.model,
-            messages=messages,
+            messages=cast("list[ChatCompletionMessageParam]", messages),
             # `None` rather than the SDK's omit sentinel: the sentinel's name
             # and type have changed across releases (NotGiven, then Omit), and
             # every version documents None as "unset" for these fields. Pinning

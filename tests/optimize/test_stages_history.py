@@ -109,6 +109,93 @@ class TestItDeclinesWhenThereIsNothingToTrim:
         assert result.request.messages == request.messages
 
 
+class TestItNeverOrphansAToolResult:
+    """A ``tool`` message with no preceding tool_calls assistant message is an
+    invalid request on every major provider -- the same class of defect that
+    made ``fan_out`` fail all 12 live calls over a missing ``"json"`` literal.
+    """
+
+    def test_a_cut_landing_on_a_tool_message_is_pushed_back_to_the_assistant(self) -> None:
+        stage = TrimHistoryStage()
+        # Naive cut (5 messages, keep 3) lands exactly on the tool result,
+        # which would orphan it from the assistant message before it.
+        messages = (
+            Message(role="system", content="sys"),
+            Message(role="user", content="user0"),
+            Message(role="assistant", content="calling fetch_record(0)"),
+            Message(role="tool", content="record 0: ok", name="fetch_record"),
+            Message(role="user", content="user1"),
+            Message(role="assistant", content="answer1"),
+        )
+        request = LLMRequest(model="gpt-4o", messages=messages, temperature=0.0)
+        ctx = _ctx(recent_turns=3)
+
+        result = stage.before(request, ctx)
+
+        kept = result.request.messages
+        assert kept[1].role == "assistant"
+        assert kept[1].content == "calling fetch_record(0)"
+        assert kept[2].role == "tool"
+        # Only the leading user turn -- entirely before the tool exchange --
+        # was safe to drop.
+        assert [m.content for m in messages if m not in kept] == ["user0"]
+
+    def test_parallel_tool_results_all_move_together(self) -> None:
+        stage = TrimHistoryStage()
+        messages = (
+            Message(role="system", content="sys"),
+            Message(role="user", content="user0"),
+            Message(role="assistant", content="calling two tools"),
+            Message(role="tool", content="result a", name="tool_a"),
+            Message(role="tool", content="result b", name="tool_b"),
+            Message(role="user", content="user1"),
+        )
+        request = LLMRequest(model="gpt-4o", messages=messages, temperature=0.0)
+        ctx = _ctx(recent_turns=2)  # naive cut would land inside the pair of tool results
+
+        result = stage.before(request, ctx)
+
+        kept = result.request.messages
+        assert kept[1].content == "calling two tools"
+        assert [m.content for m in kept if m.role == "tool"] == ["result a", "result b"]
+
+    def test_no_safe_cut_point_means_no_trim(self) -> None:
+        """The whole history is one tool exchange: trimming nothing is correct."""
+        stage = TrimHistoryStage()
+        messages = (
+            Message(role="system", content="sys"),
+            Message(role="assistant", content="calling two tools"),
+            Message(role="tool", content="result a"),
+            Message(role="tool", content="result b"),
+        )
+        request = LLMRequest(model="gpt-4o", messages=messages, temperature=0.0)
+        ctx = _ctx(recent_turns=1)
+
+        result = stage.before(request, ctx)
+
+        assert result.request.messages == request.messages
+        assert result.saved_input_tokens == 0
+
+    def test_a_cut_landing_on_a_safe_boundary_does_not_over_extend(self) -> None:
+        """When the naive cut is already safe, nothing extra is kept."""
+        stage = TrimHistoryStage()
+        messages = (
+            Message(role="system", content="sys"),
+            Message(role="user", content="user0"),
+            Message(role="assistant", content="calling fetch_record(0)"),
+            Message(role="tool", content="record 0: ok"),
+            Message(role="assistant", content="final answer 0"),
+            Message(role="user", content="user1"),
+        )
+        request = LLMRequest(model="gpt-4o", messages=messages, temperature=0.0)
+        ctx = _ctx(recent_turns=2)  # naive cut lands on "user1"'s predecessor, a safe boundary
+
+        result = stage.before(request, ctx)
+
+        kept = result.request.messages
+        assert len(kept) == 1 + 2  # system + exactly the requested window, no extension needed
+
+
 class TestItIntegratesWithThePipeline:
     def test_repeated_calls_keep_the_prompt_bounded(self) -> None:
         """The shape multi_turn_chat exercises: history that grows every step."""

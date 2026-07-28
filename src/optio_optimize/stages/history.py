@@ -62,6 +62,18 @@ class TrimHistoryStage(Stage):
     now confirmed a second time. Simulated figures in this package should be
     read as a reason to run ``--live`` on your own traffic, never as the
     number to ship.
+
+    **Never starts the kept window on an orphaned tool result.** A ``tool``
+    role message is, by every major provider's protocol, always the direct
+    response to a ``tool_calls`` entry on the *immediately preceding*
+    assistant message. If a naive suffix cut landed between them -- entirely
+    possible once a window boundary lands inside a run of parallel tool
+    calls -- the trimmed request would carry a tool result with no matching
+    call, which providers reject the same way they reject ``fan_out``'s
+    missing ``"json"`` literal (``docs/optimize-benchmarks.md``). This stage
+    walks the cut point backward past any leading run of ``tool`` messages so
+    the assistant message that issued them, and every one of its results,
+    survive together or not at all.
     """
 
     fidelity = Fidelity.SHAPED
@@ -86,7 +98,20 @@ class TrimHistoryStage(Stage):
         if len(history) <= keep:
             return self.declines(request)
 
-        dropped, kept = history[:-keep], history[-keep:]
+        cut = len(history) - keep
+
+        # Never cut between a tool_calls assistant message and its results:
+        # walk the boundary back past any leading run of "tool" messages so
+        # the assistant that issued them stays paired with all of them.
+        while cut > 0 and history[cut].role == "tool":
+            cut -= 1
+        if cut == 0:
+            # Extending all the way back to the start of history means no cut
+            # point is safe -- the whole thing is one tool exchange. Trimming
+            # nothing is correct here, not a bug.
+            return self.declines(request)
+
+        dropped, kept = history[:cut], history[cut:]
         saved = sum(count_message(m, ctx.counter, request.model) for m in dropped)
         return StageResult(
             request=request.with_messages(messages[:boundary] + kept),

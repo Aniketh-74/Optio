@@ -111,6 +111,47 @@ on their one live test each; that is encouraging but is one workload's worth of
 evidence, not a guarantee for every prompt shape -- measure your own traffic
 before leaning on it.
 
+## `trim_history` and real tool calls
+
+None of the workloads above use a `"tool"`-role message. `multi_turn_chat`
+grows through plain user/assistant text, and `tool_loop` only *talks about*
+calling a tool -- so neither could have exercised the one place `trim_history`
+could actually corrupt a request: every provider requires a `tool` message to
+immediately follow the assistant message whose `tool_calls` produced it, and a
+naive suffix cut can land between them.
+
+`tool_calling_chat` (10 turns, 20 requests) exists to test exactly that.
+`TrimHistoryStage` now walks its cut point backward past any leading run of
+`tool` messages so the assistant that issued them, and every one of its
+results, survive together or not at all -- see the stage's docstring for the
+mechanism. Live against `gpt-4o-mini`:
+
+| | provider calls | errors | cost |
+|---|---|---|---|
+| baseline | 20/20 succeeded | 0 | $0.00283 |
+| optimized (`trim_history` on) | 20/20 succeeded | 0 | $0.00264 (−6.8%) |
+
+Zero errors on either arm is the actual finding here, not the 6.8%. A single
+orphaned tool result would have surfaced as a 400 on every call after the
+window first slid past a tool exchange -- which is what happened on the
+*first* attempt at this measurement, and not because of a trimming bug:
+
+**A second, adjacent defect, found by the same live run.** The first live
+attempt at this workload failed all but one call on *both* arms, trim_history
+enabled or not, with `messages with role 'tool' must be a response to a
+preceeding message with 'tool_calls'`. The cause was `OpenAIProvider`
+(`bench/providers.py`), which built its request as
+`{"role": m.role, "content": m.content}` and silently dropped everything else
+-- including `tool_calls` on the assistant message and `tool_call_id` on the
+tool message, both of which `Message.extra` was carrying correctly. No stage
+did anything wrong; the live adapter just never sent the structure that makes
+a tool message valid in the first place, so *every* tool-calling workload was
+unrunnable live regardless of what `optio_optimize` did to it. Fixed by
+pulling `tool_calls` / `tool_call_id` out of `extra` explicitly when building
+the OpenAI payload. The same class of surprise as `fan_out`'s missing
+`"json"` literal: a benchmark that never sent a real tool call could not have
+caught it, and now does.
+
 ## What the numbers mean per stage
 
 `exact_cache` is where the measured savings come from. It avoids the call

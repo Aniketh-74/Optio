@@ -155,6 +155,59 @@ def _tool_loop(steps: int = 20, distinct: int = 4, model: str = "gpt-4o") -> lis
     return requests
 
 
+def _tool_calling_chat(turns: int = 10, model: str = "gpt-4o") -> list[LLMRequest]:
+    """A growing conversation where the agent actually issues tool calls.
+
+    The only workload in this suite that uses ``role="tool"`` messages.
+    ``tool_loop`` talks *about* calling tools in plain text; this one produces
+    the real assistant-tool_calls / tool-result message pairs a live
+    function-calling agent sends -- ``tool_calls`` and ``tool_call_id`` live in
+    ``Message.extra`` in OpenAI's own shape, since the request model carries
+    provider-specific fields through untouched rather than normalizing them.
+    It exists specifically to prove ``trim_history`` never cuts a window that
+    separates a tool_calls assistant message from its result -- no other
+    workload here could have caught that defect, because none of them have a
+    "tool" role message to orphan.
+    """
+    requests: list[LLMRequest] = []
+    history: list[Message] = [_msg("system", _SYSTEM_PROMPT)]
+    for turn in range(turns):
+        history.append(_msg("user", f"Look up record {turn} and summarise it."))
+        requests.append(LLMRequest(model=model, messages=tuple(history), temperature=0.0))
+
+        call_id = f"call_{turn}"
+        history.append(
+            Message(
+                role="assistant",
+                content="",
+                extra={
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": "fetch_record",
+                                "arguments": f'{{"record_id": {turn}}}',
+                            },
+                        }
+                    ]
+                },
+            )
+        )
+        history.append(
+            Message(
+                role="tool",
+                content=f"record {turn}: status=ok, total={turn * 7}",
+                name="fetch_record",
+                extra={"tool_call_id": call_id},
+            )
+        )
+        requests.append(LLMRequest(model=model, messages=tuple(history), temperature=0.0))
+
+        history.append(_msg("assistant", f"Record {turn} looks fine, total is {turn * 7}."))
+    return requests
+
+
 def _retry_storm(attempts: int = 15, model: str = "gpt-4o") -> list[LLMRequest]:
     """The same request repeated after transient failures.
 
@@ -249,6 +302,14 @@ WORKLOADS: dict[str, Workload] = {
         build=_tool_loop,
         expectation="high exact-cache hit rate: 16 of 20 calls avoidable",
         tags=("exact_cache",),
+    ),
+    "tool_calling_chat": Workload(
+        name="tool_calling_chat",
+        description="10-turn agent conversation with real tool_calls / tool-result messages",
+        build=_tool_calling_chat,
+        expectation="every request must stay provider-valid: trim_history must never "
+        "orphan a tool result from its assistant tool_calls message",
+        tags=("trim_history", "tool_safety"),
     ),
     "retry_storm": Workload(
         name="retry_storm",

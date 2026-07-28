@@ -49,6 +49,24 @@ be promoted to the top level deliberately.
   above, now confirmed a second time: simulated figures in this package are a
   hypothesis, not a result, until `--live` checks them. See
   `docs/optimize-benchmarks.md` and `TrimHistoryStage`'s docstring.
+- **`trim_history` no longer risks orphaning a tool result.** A naive suffix
+  cut could land between an assistant's `tool_calls` message and its `tool`
+  result, which every major provider rejects. The stage now walks the cut
+  point backward past any leading run of `tool` messages so the assistant
+  that issued them survives with all of them, or the trim is skipped. Added
+  `tool_calling_chat`, the first workload in this suite to use `role="tool"`
+  messages at all -- no existing workload could have caught this, because none
+  of them had a tool result to orphan. Live against `gpt-4o-mini`: 20/20 calls
+  succeeded on both arms, zero errors, cost down 6.8%.
+- **Fixed a second defect the same live run found**: `OpenAIProvider`
+  (`bench/providers.py`) built its request from only `{role, content}`,
+  silently dropping `tool_calls` and `tool_call_id` even when `Message.extra`
+  carried them correctly — so *any* tool-calling workload failed live with
+  `messages with role 'tool' must be a response to a preceeding message with
+  'tool_calls'`, regardless of what any stage did. Not a trimming bug; the
+  live adapter never sent the structure that makes a tool message valid.
+  Fixed by pulling both fields out of `extra` explicitly when building the
+  OpenAI payload.
 
 ### Changed
 
