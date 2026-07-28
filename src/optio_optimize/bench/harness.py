@@ -57,6 +57,7 @@ def run_arm(
         cache counters can be read afterwards.
     """
     optimizer = Optimizer(config)
+    provider.reset()
     result = ArmResult(name=name, live=provider.is_live)
 
     provider_seconds = 0.0

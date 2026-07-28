@@ -20,7 +20,7 @@ import hashlib
 import os
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from optio_optimize.config import PRICING
 from optio_optimize.tokens import TokenCounter, count_request, default_counter
@@ -28,6 +28,12 @@ from optio_optimize.types import LLMResponse
 
 if TYPE_CHECKING:
     from optio_optimize.types import LLMRequest
+
+#: Prefix length below which automatic caching does not engage. Measured
+#: against OpenAI: a 1401-token prompt reported 1024 cached on the first
+#: repeat and 1280 thereafter, so the floor is real and the granularity is
+#: coarse.
+_AUTO_CACHE_FLOOR_TOKENS = 1024
 
 #: Default ceiling for a live run. Deliberately small: the suite should be
 #: cheap enough to run often, and a benchmark nobody runs proves nothing.
@@ -54,12 +60,34 @@ class BenchProvider(Protocol):
         ...
 
     @property
+    def model(self) -> str:
+        """The model actually served. Costs must be priced against this.
+
+        Not the model the caller asked for: a benchmark that calls
+        ``gpt-4o-mini`` and prices it as ``gpt-4o`` overstates spend by about
+        17x, which is the difference between "this optimization is worth it"
+        and "this optimization is essential".
+        """
+        ...
+
+    @property
     def label(self) -> str:
         """Identifier for reports."""
         ...
 
     def __call__(self, request: LLMRequest) -> LLMResponse:
         """Answer one request."""
+        ...
+
+    def reset(self) -> None:
+        """Clear any per-run state before an A/B arm begins.
+
+        Both arms share one provider, so cache state left by the first leaks
+        into the second and credits this library with hits the baseline
+        actually earned. A live provider cannot honour this -- its cache is
+        server-side -- which is a real limit on live A/B accuracy and is
+        stated in the report rather than papered over.
+        """
         ...
 
 
@@ -131,6 +159,7 @@ class SimulatedProvider:
     output_tokens: int = 120
     latency_ms: float = 0.0
     model: str = "gpt-4o"
+    prefix_cache_style: str = "automatic"
     _seen_prefixes: set[str] = field(default_factory=set)
 
     @property
@@ -147,6 +176,10 @@ class SimulatedProvider:
     def label(self) -> str:
         """Identifier for reports."""
         return f"simulated({self.model})"
+
+    def reset(self) -> None:
+        """Forget every cached prefix, so each arm starts cold."""
+        self._seen_prefixes.clear()
 
     def __call__(self, request: LLMRequest) -> LLMResponse:
         """Answer a request, billing for its real size."""
@@ -174,19 +207,33 @@ class SimulatedProvider:
         )
 
     def _prefix_cache_hit(self, request: LLMRequest, counter: TokenCounter) -> int:
-        """Model provider-side prefix caching for a marked request.
+        """Model provider-side prefix caching.
 
-        Without this the simulator makes the prefix stage look worthless: it
-        marks a boundary, the stub ignores it, and the report shows zero
-        benefit from what is usually the largest lossless saving available.
-        That is a defect in the *measurement*, not in the stage.
+        Vendors do this two incompatible ways, and conflating them produced the
+        worst measurement error in this project's history:
 
-        The model follows the documented vendor behaviour: a marked prefix is
-        billed at a discount on every call after the first that carries the
-        same prefix. Approximate, and clearly a model rather than a
-        measurement -- which is exactly why the metrics layer refuses to report
-        latency or output length from this provider and why ``--live`` exists.
+        ``automatic`` (OpenAI, and the default here)
+            The provider caches any prompt prefix over ~1024 tokens with no
+            cooperation from the caller. Measured live: 1280 of 1401 tokens
+            served from cache on the *second* identical call, with no marker
+            sent. **Both A/B arms get this**, so the incremental value of our
+            prefix stage on such a provider is zero.
+
+        ``explicit`` (Anthropic)
+            Nothing is cached unless the request carries a ``cache_control``
+            breakpoint. Our marker is what puts it there, so the stage is the
+            difference between a 90% discount and none.
+
+        The first version modelled only the explicit style, and therefore
+        credited our library with a discount OpenAI grants unconditionally --
+        reporting a 36.3% saving on ``multi_turn_chat`` that the live run showed
+        to be **-1.8%**. Attributing a provider feature to your own library is
+        the single easiest way to publish a benchmark that collapses on contact
+        with reality, and it took a real API call to catch.
         """
+        if self.prefix_cache_style == "automatic":
+            return self._automatic_prefix_hit(request, counter)
+
         boundary = 0
         for index, message in enumerate(request.messages):
             if message.cacheable:
@@ -212,6 +259,34 @@ class SimulatedProvider:
         if not best:
             return 0  # First call writes the cache; it does not read it.
         return counter.count_text(best, request.model)
+
+    def _automatic_prefix_hit(self, request: LLMRequest, counter: TokenCounter) -> int:
+        """Model OpenAI-style caching, which needs no marker at all.
+
+        Applies to every request regardless of what our stages did, which is the
+        whole point: it lands on the baseline arm too, so the A/B difference
+        reflects only what this library contributed.
+        """
+        # Longest previously-seen prefix of the full message text. No marker is
+        # consulted -- the provider does not need one.
+        full = "|".join(m.content for m in request.messages)
+        best = max(
+            (seen for seen in self._seen_prefixes if full.startswith(seen)),
+            key=len,
+            default="",
+        )
+        # Vendors cache at a coarse granularity; the observed floor is 1024
+        # tokens and increments of 128 above it. Below the floor, nothing.
+        for boundary in range(len(request.messages), 0, -1):
+            candidate = "|".join(m.content for m in request.messages[:boundary])
+            if counter.count_text(candidate, request.model) >= _AUTO_CACHE_FLOOR_TOKENS:
+                self._seen_prefixes.add(candidate)
+                break
+
+        if not best:
+            return 0
+        cached = counter.count_text(best, request.model)
+        return cached if cached >= _AUTO_CACHE_FLOOR_TOKENS else 0
 
 
 class OpenAIProvider:
@@ -258,6 +333,14 @@ class OpenAIProvider:
         """A real network round trip always does."""
         return True
 
+    def reset(self) -> None:
+        """No-op: the provider's cache lives on their servers, not ours.
+
+        This is why a live A/B slightly favours whichever arm runs second, and
+        why the baseline is run first -- so the bias works against the result
+        this library wants, not for it.
+        """
+
     @property
     def label(self) -> str:
         """Identifier for reports."""
@@ -268,18 +351,33 @@ class OpenAIProvider:
         estimated = _estimate_cost(request, self.model)
         self.guard.check(estimated)
 
-        payload: dict[str, object] = {
-            "model": self.model,
-            "messages": [{"role": m.role, "content": m.content} for m in request.messages],
-        }
-        if request.max_tokens is not None:
-            payload["max_completion_tokens"] = request.max_tokens
-        if request.temperature is not None:
-            payload["temperature"] = request.temperature
-        if request.response_format is not None:
-            payload["response_format"] = request.response_format
+        # Built as explicit keyword arguments rather than an unpacked dict. The
+        # SDK's `create` is heavily overloaded, and `**dict[str, object]` type-
+        # checks only while the package is absent -- so the dict version passed
+        # in CI, where openai is not installed, and failed the moment anyone ran
+        # a live benchmark locally. NOT_GIVEN is the SDK's own "omit this field"
+        # sentinel, which is not the same as passing None.
+        from openai.types.chat import ChatCompletionMessageParam
 
-        completion = self._client.chat.completions.create(**payload)
+        # Our Message is provider-neutral by design (ADR-013), so it has to be
+        # cast to each SDK's own TypedDict at the boundary. The cast is checked
+        # by the round trip: a wrong role or key fails the live call loudly.
+        messages = cast(
+            "list[ChatCompletionMessageParam]",
+            [{"role": m.role, "content": m.content} for m in request.messages],
+        )
+        completion = self._client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            # `None` rather than the SDK's omit sentinel: the sentinel's name
+            # and type have changed across releases (NotGiven, then Omit), and
+            # every version documents None as "unset" for these fields. Pinning
+            # to the sentinel would make this adapter break on SDK upgrades for
+            # no benefit.
+            max_completion_tokens=request.max_tokens,
+            temperature=request.temperature,
+            response_format=cast("Any", request.response_format),
+        )
         usage = completion.usage
         cached = 0
         if usage is not None and getattr(usage, "prompt_tokens_details", None) is not None:
@@ -335,6 +433,14 @@ class AnthropicProvider:
     def models_latency(self) -> bool:
         """A real network round trip always does."""
         return True
+
+    def reset(self) -> None:
+        """No-op: the provider's cache lives on their servers, not ours.
+
+        This is why a live A/B slightly favours whichever arm runs second, and
+        why the baseline is run first -- so the bias works against the result
+        this library wants, not for it.
+        """
 
     @property
     def label(self) -> str:

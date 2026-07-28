@@ -127,7 +127,9 @@ def main(argv: list[str] | None = None) -> int:
     for workload in selected:
         print(f"# {workload.description}")
         print(f"# expected: {workload.expectation}\n")
-        result = compare(workload, provider, config, model="gpt-4o")
+        # Priced against what the provider actually served, never against a
+        # hardcoded name -- see BenchProvider.model.
+        result = compare(workload, provider, config, model=provider.model)
         print("\n".join(format_result(result)))
         print()
         if strict and result.quality.divergent:

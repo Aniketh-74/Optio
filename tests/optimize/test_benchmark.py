@@ -113,29 +113,42 @@ class TestSavingsAreRealAndAttributed:
         assert result.optimized.provider_calls == 1
         assert result.true_cache_hit_rate == pytest.approx(14 / 15, abs=0.01)
 
-    def test_cost_falls_at_least_as_fast_as_tokens(self) -> None:
-        """Prefix caching lowers price without lowering count.
+    def test_avoiding_calls_always_lowers_cost(self) -> None:
+        """Fewer calls must cost less, on any provider.
 
-        Cost reduction below token reduction would mean the optimized arm
-        somehow paid more per token, which no stage can cause.
+        Deliberately *not* "cost falls at least as fast as tokens", which was
+        the first version of this test and is false under automatic prefix
+        caching: there the baseline's prompt tokens are already discounted, so
+        a call the cache avoids was a cheap call, and cost falls more slowly
+        than count. Both behaviours are correct; only the weaker claim holds
+        across providers.
         """
-        for name in ("retry_storm", "tool_loop", "fan_out"):
-            result = compare(WORKLOADS[name], SimulatedProvider(), IDENTICAL_ONLY, model="gpt-4o")
-            tokens = result.total_token_reduction
-            cost = result.cost_reduction
-            assert tokens is not None and cost is not None
-            assert cost >= tokens - 0.001, f"{name}: cost fell slower than tokens"
+        for style in ("automatic", "explicit"):
+            for name in ("retry_storm", "tool_loop", "fan_out"):
+                result = compare(
+                    WORKLOADS[name],
+                    SimulatedProvider(prefix_cache_style=style),
+                    IDENTICAL_ONLY,
+                    model="gpt-4o",
+                )
+                tokens = result.total_token_reduction
+                cost = result.cost_reduction
+                assert tokens is not None and cost is not None
+                assert tokens > 0.5, f"{name}/{style}: expected substantial token savings"
+                assert cost > 0.5, f"{name}/{style}: tokens fell {tokens:.1%} but cost {cost:.1%}"
 
-    def test_prefix_caching_pays_where_no_tokens_are_saved(self) -> None:
-        """The multi-turn case: identical token count, materially lower bill.
+    def test_explicit_caching_beats_tokens_alone(self) -> None:
+        """Where the marker is required, cost falls faster than count.
 
-        Worth its own test because it is the result most easily lost. An earlier
-        simulator exact-matched marked prefixes, so a growing conversation never
-        hit, and this workload reported zero benefit from the largest lossless
-        saving the library offers.
+        The mechanism worth having a test for: no tokens are avoided at all,
+        and the bill still drops by roughly a third, because the same tokens are
+        billed at the cached rate.
         """
         result = compare(
-            WORKLOADS["multi_turn_chat"], SimulatedProvider(), IDENTICAL_ONLY, model="gpt-4o"
+            WORKLOADS["multi_turn_chat"],
+            SimulatedProvider(prefix_cache_style="explicit"),
+            IDENTICAL_ONLY,
+            model="gpt-4o",
         )
 
         assert result.total_token_reduction == pytest.approx(0.0, abs=0.01)
@@ -178,3 +191,61 @@ class TestTheSpendGuardStopsBeforeSpending:
     def test_a_non_positive_cap_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):
             SpendGuard(cap_usd=0.0)
+
+
+class TestPrefixCachingIsCreditedToTheRightParty:
+    """The library must not claim a discount the provider grants for free.
+
+    The single worst measurement error this project made: the simulator modelled
+    only Anthropic-style explicit caching, so ``multi_turn_chat`` reported a
+    36.3% saving from our prefix marker. A live OpenAI run measured **-1.8%** --
+    OpenAI caches any prefix over ~1024 tokens automatically, so the baseline arm
+    was already getting the discount and the marker added nothing.
+
+    Attributing a provider feature to your own library is how a benchmark
+    collapses on first contact with reality. These tests pin the distinction.
+    """
+
+    def test_automatic_caching_gives_our_marker_no_credit(self) -> None:
+        result = compare(
+            WORKLOADS["multi_turn_chat"],
+            SimulatedProvider(prefix_cache_style="automatic"),
+            IDENTICAL_ONLY,
+            model="gpt-4o",
+        )
+
+        cost = result.cost_reduction
+        assert cost is not None
+        assert cost < 0.05, (
+            f"claimed {cost:.1%} on a provider that caches automatically; the "
+            "baseline arm gets the same discount, so our contribution is ~0"
+        )
+
+    def test_explicit_caching_is_where_the_marker_pays(self) -> None:
+        result = compare(
+            WORKLOADS["multi_turn_chat"],
+            SimulatedProvider(prefix_cache_style="explicit"),
+            IDENTICAL_ONLY,
+            model="gpt-4o",
+        )
+
+        cost = result.cost_reduction
+        assert cost is not None
+        assert cost > 0.20, (
+            f"only {cost:.1%} on a provider that caches nothing without a marker; "
+            "this is the case the stage exists for"
+        )
+
+    def test_arms_start_from_a_cold_cache(self) -> None:
+        """Cache state must not leak from the baseline into the optimized arm.
+
+        Both arms share one provider. Without a reset the baseline warms the
+        prefix cache and the optimized arm inherits the hits, which shows up as
+        a saving this library did not cause.
+        """
+        provider = SimulatedProvider(prefix_cache_style="automatic")
+        result = compare(WORKLOADS["rag_queries"], provider, IDENTICAL_ONLY, model="gpt-4o")
+
+        assert result.baseline.cached_input_tokens == result.optimized.cached_input_tokens, (
+            "arms saw different provider-cache state, so the comparison is biased"
+        )

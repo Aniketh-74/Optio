@@ -137,6 +137,24 @@ class PrefixCacheStage(Stage):
     sent. The saving is a lower *price* per token, which the report captures
     through ``cached_input_tokens`` on the response rather than as an avoided
     count. Claiming avoided tokens here would inflate every report.
+
+    **Its value depends entirely on the provider, and on OpenAI it is zero.**
+    Vendors split into two camps:
+
+    * *Automatic* (OpenAI): any prompt prefix over ~1024 tokens is cached with
+      no cooperation from the caller. Measured live: 1280 of 1401 tokens served
+      from cache on a repeat call with no marker sent. This stage changes
+      nothing there -- it costs nothing either, but a user should not expect a
+      discount they were already getting.
+    * *Explicit* (Anthropic): nothing is cached without a ``cache_control``
+      breakpoint. The marker this stage places is the difference between a ~90%
+      input discount and none, worth roughly 30% of total spend on a long
+      conversation.
+
+    Worth stating plainly because the benchmark got it wrong first: modelling
+    only the explicit style credited this library with a 36.3% saving on
+    ``multi_turn_chat`` that OpenAI grants unconditionally. The live run
+    measured -1.8%.
     """
 
     # A marker changes what the provider *bills*, never what it generates.

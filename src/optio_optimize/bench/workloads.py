@@ -181,7 +181,17 @@ def _fan_out(branches: int = 12, model: str = "gpt-4o") -> list[LLMRequest]:
                 model=model,
                 messages=(
                     _msg("system", _SYSTEM_PROMPT),
-                    _msg("user", f"Classify item {branch % 4} into one of: revenue, cost, risk."),
+                    # "json" must appear literally in the messages or OpenAI
+                    # rejects response_format=json_object with a 400. Found by
+                    # the live benchmark, which failed all 12 calls here; the
+                    # simulator had accepted the request happily. Real callers
+                    # hit this on their first request, so the workload should
+                    # look like one that works.
+                    _msg(
+                        "user",
+                        f"Classify item {branch % 4} as revenue, cost or risk. "
+                        'Reply as json: {"label": "..."}',
+                    ),
                 ),
                 temperature=0.0,
                 response_format={"type": "json_object"},
