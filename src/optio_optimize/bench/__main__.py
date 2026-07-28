@@ -10,6 +10,7 @@ import argparse
 import sys
 from typing import TYPE_CHECKING
 
+from optio_optimize.bench.adversarial import format_audit_report, run_semantic_cache_audit
 from optio_optimize.bench.harness import compare, format_result
 from optio_optimize.bench.providers import (
     DEFAULT_SPEND_CAP_USD,
@@ -101,9 +102,16 @@ def main(argv: list[str] | None = None) -> int:
             "stages really are identical."
         ),
     )
+    parser.add_argument(
+        "--semantic-cache-audit",
+        action="store_true",
+        help=(
+            "run the ADR-015 adversarial audit instead of the workload suite: eight "
+            "near-duplicate-but-different-answer prompt pairs, measuring semantic_cache's "
+            "live false-positive rate directly. Ignores --workload/--stage."
+        ),
+    )
     args = parser.parse_args(argv)
-
-    selected = [WORKLOADS[n] for n in (args.workload or sorted(WORKLOADS))]
 
     guard = SpendGuard(args.cap) if args.live else None
     if args.live:
@@ -116,7 +124,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         print(f"LIVE run against {provider.label}, spend cap ${args.cap:.2f}")
-        print("Both arms call the real API, so this bills roughly twice one pass.\n")
+        if not args.semantic_cache_audit:
+            print("Both arms call the real API, so this bills roughly twice one pass.\n")
     else:
         provider = SimulatedProvider(latency_ms=args.provider_latency)
         print("Simulated run: token, cost, cache, memory and overhead figures are real.")
@@ -126,6 +135,22 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("Output-length, latency, throughput and quality figures need --live")
             print("or --provider-latency.\n")
+
+    if args.semantic_cache_audit:
+        if not args.live:
+            print(
+                "note: --semantic-cache-audit without --live uses SimulatedProvider, which "
+                "returns synthetic content -- it exercises the similarity/hit-rate plumbing "
+                "but cannot demonstrate an actual wrong-answer collision the way a live run "
+                "can. Treat this as a smoke test, not ADR-015 evidence.\n"
+            )
+        report = run_semantic_cache_audit(provider)
+        print("\n".join(format_audit_report(report)))
+        if guard is not None:
+            print(f"spent ${guard.spent_usd:.4f} across {guard.calls} live calls")
+        return 0
+
+    selected = [WORKLOADS[n] for n in (args.workload or sorted(WORKLOADS))]
 
     stages = set(args.stages or ())
     if args.strict_fidelity and stages:
