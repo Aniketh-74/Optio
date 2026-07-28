@@ -304,6 +304,81 @@ resolves 14/15 calls before either lossy stage ever runs). Not a benchmark
 result — one live data point per stage, recorded because it happened, not
 because it is a claim about your traffic.
 
+## `semantic_cache`: the measured false-positive rate (ADR-015)
+
+**The number this section exists for: at the shipped default threshold of
+0.97, `semantic_cache` served a wrong answer to 85.7% of the adversarial
+probes that reached it.** Not a simulation, not an inference from quality
+scores — measured live against `gpt-4o-mini` on 2026-07-29, `$0.0078` across
+six threshold runs totalling 247 calls, via
+`python -m optio_optimize.bench --semantic-cache-audit --live`.
+
+The workload (`bench/adversarial.py`) is eight near-duplicate pairs sharing a
+~100-word support-policy context and differing in exactly one embedded fact,
+across the four shapes a word-overlap metric is structurally blind to — a
+changed number, a changed entity, a negation, a changed date — plus eight
+**controls**: the same questions reworded over an identical context, where a
+cache hit is the win rather than the failure. Both halves matter, and running
+only one of them is how you get a comfortable answer:
+
+| `semantic_threshold` | false positives (wrong answers served) | benign hits (legitimate reuse) |
+|---|---|---|
+| 0.90 (`OptimizeConfig`'s floor) | **100.0%** (7/7) | 100.0% (8/8) |
+| 0.95 | **100.0%** (7/7) | 75.0% (6/8) |
+| **0.97 (shipped default)** | **85.7%** (6/7) | 37.5% (3/8) |
+| 0.98 | 14.3% (1/7) | **0.0%** (0/8) |
+| 0.99 | 0.0% (0/7) | **0.0%** (0/8) |
+| 1.00 | 0.0% (0/7) | **0.0%** (0/8) |
+
+**There is no setting on this workload where the stage is both safe and
+useful.** Legitimate reuse reaches zero at 0.98, where wrong answers are still
+being served; by the time false positives reach zero the stage has stopped
+firing entirely, and the byte-identical case it is then reduced to is already
+covered by `exact_cache` — losslessly, on by default, for free. A threshold
+sweep against only the adversarial set would have shown 0.99 as a clean fix.
+It is not a fix; it is an off switch with extra steps.
+
+One adversarial probe is excluded from every row as **degenerate**: the model
+gave the same answer to both halves (both "within four business hours"), so a
+hit there is not demonstrably wrong and counting it as one would have inflated
+the headline. 6/7 and 7/7 are the honest denominators.
+
+What a false positive actually looked like, verbatim, at the shipped default
+(similarity 0.9888 — the highest in the set):
+
+> asked: "Are weekend escalations covered under this plan?" against a context
+> reading *"Weekend escalations are **not** covered under this plan at no
+> extra cost."*
+> served: *"Yes, weekend escalations are covered under this plan at no extra
+> cost."*
+> correct: *"No, weekend escalations are not covered under this plan at no
+> extra cost."*
+
+The negation is the worst case and the clearest one: `not` is a single word in
+a ~100-word prompt, so removing it moves Jaccard similarity by almost nothing
+while inverting the answer. That is not a tuning problem. A word-set metric
+has no representation in which "covered" and "not covered" are far apart, so
+no threshold expressible in that metric can separate them — which is why the
+resolution recorded in ADR-015 is a documented guardrail rather than a number.
+
+**The single miss at 0.97 shows the mechanism from the other side.** The
+`us-east-1` vs `eu-west-1` pair scored 0.9545 and correctly declined — not
+because the metric understood that a region changed, but because
+`similarity.words()` splits on `[a-z0-9]+`, so those two identifiers
+contribute *four* differing tokens (`us`/`east`/`eu`/`west`) instead of one.
+It passed for a reason that has nothing to do with meaning, and a workload
+using `region A`/`region B` would have collided like all the rest.
+
+**What this does not say.** One workload shape (long retrieved context, one
+changed detail), one model, one similarity function. It is the *production*
+shape for a RAG pipeline, which is why it was chosen, but a caller whose
+prompts are short and lexically diverse will see different numbers — the
+audit is checked in and takes `pairs=` so they can measure their own rather
+than inherit these. And every number here is a property of the **default
+lexical** `similarity_fn`; an embedding-based one is a constructor argument
+(`Optimizer(similarity_fn=...)`) and is explicitly out of scope of this
+measurement, not implicated by it.
+
 ## Overhead
 
 Our own cost per request, measured with the provider's time excluded:

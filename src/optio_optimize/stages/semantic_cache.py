@@ -69,15 +69,35 @@ class SemanticCacheStage(Stage):
     capability and style, not just a cached fact.
 
     **The default similarity is lexical (word-set overlap), not embeddings**
-    -- see :mod:`optio_optimize.similarity`. Combined with
-    :data:`~optio_optimize.config.DEFAULT_SEMANTIC_THRESHOLD`'s severe 0.97,
-    this is deliberately conservative to the point of rarely firing on
-    anything but near-identical wording: a lexical metric cannot tell "what
-    is 2+2" from "what is 2+3" are different, so the threshold does the
-    entire job of keeping this safe, and a metric that scored genuinely
-    different prompts as close would make that threshold meaningless. A
-    caller who wants a higher hit rate on real paraphrases should supply an
-    embedding-based ``similarity_fn``, not lower the threshold.
+    -- see :mod:`optio_optimize.similarity`. This class used to say that
+    combining it with :data:`~optio_optimize.config.DEFAULT_SEMANTIC_THRESHOLD`'s
+    severe 0.97 made the stage "deliberately conservative to the point of
+    rarely firing on anything but near-identical wording", and that "the
+    threshold does the entire job of keeping this safe".
+
+    **That was wrong, and it was measured wrong on 2026-07-29.** Against a
+    workload of long shared contexts differing in one embedded fact -- the
+    ordinary shape of a RAG prompt -- the stage fired on 7 of 8 near-duplicates
+    at 0.97 and served a demonstrably wrong answer on 6 of the 7 probes that
+    could distinguish one (85.7%). The reasoning above has the mechanism
+    backwards: a *long shared prefix* is what drives Jaccard similarity, so
+    the more context a prompt carries, the less the one word that changes the
+    answer moves the score. Negation is the extreme -- dropping ``not`` from a
+    ~100-word prompt scored 0.9888.
+
+    No threshold fixes this. Sweeping 0.90 through 1.00 live, the rate of
+    legitimate paraphrase hits fell to zero (at 0.98) *before* the wrong-answer
+    rate did (at 0.99), so every setting is either unsafe or inert, and the
+    inert end is territory :class:`~optio_optimize.stages.caching.ExactCacheStage`
+    already covers losslessly and by default. That is a property of the metric,
+    not of the number: a word-set representation has no axis on which "covered"
+    and "not covered" are far apart.
+
+    So the guidance is not "raise the threshold", it is: **this stage is only
+    defensible with an embedding-based ``similarity_fn`` supplied by the
+    caller**, and remains off by default. See
+    ``docs/optimize-benchmarks.md`` for the full sweep and ADR-015 for the
+    resolution.
     """
 
     fidelity = Fidelity.ALTERED

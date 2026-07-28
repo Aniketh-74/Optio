@@ -41,6 +41,18 @@ from the false-positive denominator instead of quietly counted either way.
 That is also why the report prints a *hit rate* next to the false-positive
 rate: the first characterises the threshold, the second characterises the
 risk, and on a degenerate probe they are not the same number.
+
+**And why there is a benign control set.** An adversarial workload alone can
+only ever answer "how often is this wrong", which makes ``semantic_threshold
+= 1.0`` look like a perfect score instead of what it is -- a stage that never
+fires, whose byte-identical case ``exact_cache`` already serves losslessly and
+for free. :data:`SEMANTIC_CACHE_BENIGN_PAIRS` mirrors the adversarial
+questions one for one with a *reworded question over an identical context*:
+the legitimate reuse this stage exists to capture. Reporting both rates at a
+given threshold turns "is it safe" into the question actually worth asking --
+"is there a setting where it is both safe and useful" -- and, live at
+2026-07-29, the answer on this workload shape was no. See
+``docs/optimize-benchmarks.md`` for the measured sweep.
 """
 
 from __future__ import annotations
@@ -137,6 +149,18 @@ class NearDuplicatePair:
         )
 
 
+def _request(question: str, fact: str, model: str) -> LLMRequest:
+    context = _POLICY_CONTEXT.format(fact=fact)
+    return LLMRequest(
+        model=model,
+        messages=(
+            Message(role="system", content="Answer using only the context provided."),
+            Message(role="user", content=f"Context:\n{context}\n\nQuestion: {question}"),
+        ),
+        temperature=0.0,
+    )
+
+
 def _pair(
     category: str,
     question: str,
@@ -145,30 +169,49 @@ def _pair(
     *,
     model: str = DEFAULT_AUDIT_MODEL,
 ) -> NearDuplicatePair:
-    def request(fact: str) -> LLMRequest:
-        context = _POLICY_CONTEXT.format(fact=fact)
-        return LLMRequest(
-            model=model,
-            messages=(
-                Message(role="system", content="Answer using only the context provided."),
-                Message(role="user", content=f"Context:\n{context}\n\nQuestion: {question}"),
-            ),
-            temperature=0.0,
-        )
-
     return NearDuplicatePair(
         category=category,
-        seed=request(seed_fact),
-        near_duplicate=request(near_duplicate_fact),
+        seed=_request(question, seed_fact, model),
+        near_duplicate=_request(question, near_duplicate_fact, model),
         seed_fact=seed_fact,
         near_duplicate_fact=near_duplicate_fact,
     )
 
 
-#: Two pairs per category, eight total -- three live calls each (seed,
-#: near-duplicate under semantic_cache, near-duplicate baseline), so a full
-#: run is 24 calls against a cheap model. Small enough to run often, real
-#: enough to mean something.
+def _benign_pair(
+    question: str,
+    rephrased: str,
+    fact: str,
+    *,
+    model: str = DEFAULT_AUDIT_MODEL,
+) -> NearDuplicatePair:
+    """A control probe: same context, same fact, question reworded.
+
+    The mirror image of an adversarial pair, and the half that keeps the
+    audit honest. A threshold high enough to reject every adversarial pair
+    also rejects these -- and these are the *legitimate* reuse
+    ``semantic_cache`` exists to capture, so a hit here is the win, not the
+    failure. Measuring only the adversarial set would make "threshold 1.0"
+    look like a perfect answer instead of what it is: a stage that never
+    fires.
+
+    Carries ``category="benign"``, which
+    :attr:`SemanticCacheAuditReport.false_positive_rate` never counts.
+    """
+    return NearDuplicatePair(
+        category="benign",
+        seed=_request(question, fact, model),
+        near_duplicate=_request(rephrased, fact, model),
+        seed_fact=fact,
+        near_duplicate_fact=fact,
+    )
+
+
+#: Two pairs per category, eight total. Three live calls each (seed,
+#: near-duplicate under semantic_cache, near-duplicate baseline), less one
+#: per cache hit -- so a full default audit including the eight controls
+#: costs 32-48 calls against a cheap model, measured at $0.0010-$0.0015.
+#: Small enough to run often, real enough to mean something.
 SEMANTIC_CACHE_ADVERSARIAL_PAIRS: tuple[NearDuplicatePair, ...] = (
     _pair(
         "number",
@@ -220,6 +263,65 @@ SEMANTIC_CACHE_ADVERSARIAL_PAIRS: tuple[NearDuplicatePair, ...] = (
     ),
 )
 
+#: The control set: eight probes whose two halves ask the *same* question in
+#: different words against an identical context, so a hit is the win rather
+#: than the failure. Deliberately mirrors the adversarial questions one for
+#: one, so the two rates at a given threshold are comparable rather than
+#: measured on different material -- the comparison is the whole point. A
+#: threshold that rejects every adversarial pair and every benign one has not
+#: made the stage safe, it has switched it off, and ``exact_cache`` already
+#: handles the byte-identical case losslessly and for free.
+SEMANTIC_CACHE_BENIGN_PAIRS: tuple[NearDuplicatePair, ...] = (
+    _benign_pair(
+        "How many support seats does the plan include?",
+        "What is the number of support seats included in the plan?",
+        "The plan includes 50 support seats.",
+    ),
+    _benign_pair(
+        "What is the guaranteed response time in hours for priority tickets?",
+        "How many hours is the guaranteed response time for priority tickets?",
+        "Priority tickets outside the standard window are guaranteed a response within 4 hours.",
+    ),
+    _benign_pair(
+        "Which region is the primary deployment region?",
+        "What region is the primary deployment in?",
+        "The primary deployment region is us-east-1.",
+    ),
+    _benign_pair(
+        "Which team handles escalations that miss the guaranteed window?",
+        "What team is responsible for escalations that miss the guaranteed window?",
+        "Escalations that miss the guaranteed window are handled by the Platform team.",
+    ),
+    _benign_pair(
+        "Are weekend escalations covered under this plan?",
+        "Does this plan cover weekend escalations?",
+        "Weekend escalations are covered under this plan at no extra cost.",
+    ),
+    _benign_pair(
+        "Does this plan include on-call phone support?",
+        "Is on-call phone support included in this plan?",
+        "This plan includes on-call phone support for priority tickets.",
+    ),
+    _benign_pair(
+        "When is the next contract renewal due?",
+        "What is the due date of the next contract renewal?",
+        "The next contract renewal is due by March 1st.",
+    ),
+    _benign_pair(
+        "By what date must configuration changes be submitted for the next release?",
+        "What is the submission deadline for configuration changes in the next release?",
+        "Configuration changes for the next release must be submitted by the 5th of the month.",
+    ),
+)
+
+#: What ``--semantic-cache-audit`` runs by default: both halves, because
+#: either one alone is misleading. The adversarial set alone makes a very
+#: high threshold look perfect; the benign set alone makes a low one look
+#: excellent.
+SEMANTIC_CACHE_AUDIT_PAIRS: tuple[NearDuplicatePair, ...] = (
+    SEMANTIC_CACHE_ADVERSARIAL_PAIRS + SEMANTIC_CACHE_BENIGN_PAIRS
+)
+
 
 @dataclass(slots=True)
 class PairResult:
@@ -252,8 +354,21 @@ class PairResult:
     served_from_cache: bool
 
     @property
+    def is_benign(self) -> bool:
+        """Whether this is a control probe rather than an adversarial one.
+
+        A benign pair's two halves have the *same* correct answer, so a hit
+        is the behaviour the stage exists for, not a failure. Benign results
+        never enter the false-positive numerator or denominator; they are
+        reported separately as a hit rate, which is what says whether a
+        threshold safe enough to reject the adversarial set leaves the stage
+        able to do anything at all.
+        """
+        return self.pair.category == "benign"
+
+    @property
     def probe_is_valid(self) -> bool:
-        """Whether this pair actually probed anything, live.
+        """Whether this adversarial pair actually probed anything, live.
 
         The pairs are *constructed* so the two questions have different
         correct answers, but construction is a claim about the prompts, not
@@ -268,8 +383,11 @@ class PairResult:
         that differs from ``seed_response``, the two questions demonstrably
         have different answers live and a hit here really would be wrong.
         When it does not, the probe is degenerate and is reported as such
-        rather than folded into the headline number.
+        rather than folded into the headline number. Always ``False`` for a
+        benign control, which is not an adversarial probe at all.
         """
+        if self.is_benign:
+            return False
         return self.near_duplicate_baseline.strip() != self.seed_response.strip()
 
     @property
@@ -300,26 +418,60 @@ class SemanticCacheAuditReport:
 
     @property
     def valid_probes(self) -> list[PairResult]:
-        """Probes the model demonstrably answers two different ways.
+        """Adversarial probes the model demonstrably answers two different ways.
 
         The denominator for :attr:`false_positive_rate`. A degenerate probe
         (see :attr:`PairResult.probe_is_valid`) cannot distinguish a wrong
         answer from a right one, so counting it either way would be a made-up
-        number.
+        number. Benign controls are never in here -- they are not adversarial
+        probes and have their own rate.
         """
         return [r for r in self.results if r.probe_is_valid]
 
     @property
+    def adversarial_results(self) -> list[PairResult]:
+        """Every probe built to have two different correct answers."""
+        return [r for r in self.results if not r.is_benign]
+
+    @property
+    def benign_results(self) -> list[PairResult]:
+        """Every control probe: reworded question, same correct answer."""
+        return [r for r in self.results if r.is_benign]
+
+    @property
     def hit_rate(self) -> float:
-        """Fraction of pairs where the stage fired at all.
+        """Fraction of *adversarial* pairs where the stage fired at all.
 
         Characterises the *threshold*: how often a near-duplicate clears it.
         Reported next to, never instead of, :attr:`false_positive_rate` --
         they answer different questions and on a degenerate probe they differ.
         """
-        if not self.results:
+        adversarial = self.adversarial_results
+        if not adversarial:
             return 0.0
-        return sum(1 for r in self.results if r.served_from_cache) / len(self.results)
+        return sum(1 for r in adversarial if r.served_from_cache) / len(adversarial)
+
+    @property
+    def benign_hit_rate(self) -> float:
+        """Fraction of control probes where the stage fired -- the *win* rate.
+
+        The number that stops a high threshold from looking free. Raising
+        ``semantic_threshold`` until the adversarial set stops colliding is
+        only progress if legitimate paraphrases still hit; if this falls to
+        zero at the same time, the "safe" setting is one where the stage
+        does nothing, and ``exact_cache`` (lossless, on by default) already
+        covers the byte-identical case for free.
+
+        Note this counts *firing*, not answer correctness: a benign pair's
+        two halves share the same context and the same embedded fact, so the
+        answer being reused is the answer to the same question. That is a
+        weaker claim than a judge would make and it is the only one this
+        measurement supports.
+        """
+        benign = self.benign_results
+        if not benign:
+            return 0.0
+        return sum(1 for r in benign if r.served_from_cache) / len(benign)
 
     @property
     def false_positive_rate(self) -> float:
@@ -346,7 +498,7 @@ class SemanticCacheAuditReport:
 def run_semantic_cache_audit(
     provider: BenchProvider,
     *,
-    pairs: tuple[NearDuplicatePair, ...] = SEMANTIC_CACHE_ADVERSARIAL_PAIRS,
+    pairs: tuple[NearDuplicatePair, ...] = SEMANTIC_CACHE_AUDIT_PAIRS,
     threshold: float = DEFAULT_SEMANTIC_THRESHOLD,
 ) -> SemanticCacheAuditReport:
     """Run every adversarial pair live and measure the false-positive rate.
@@ -432,30 +584,46 @@ def run_semantic_cache_audit(
 def format_audit_report(report: SemanticCacheAuditReport) -> list[str]:
     """Render an audit report as human-readable lines."""
     valid = report.valid_probes
-    degenerate = len(report.results) - len(valid)
-    hits = sum(1 for r in report.results if r.served_from_cache)
+    adversarial = report.adversarial_results
+    benign = report.benign_results
+    degenerate = len(adversarial) - len(valid)
+    hits = sum(1 for r in adversarial if r.served_from_cache)
+    benign_hits = sum(1 for r in benign if r.served_from_cache)
+    threshold = report.results[0].threshold if report.results else 0.0
     lines = [
-        f"semantic_cache adversarial audit -- model {report.model}",
-        f"hit rate:            {report.hit_rate:.1%} "
-        f"({hits}/{len(report.results)} pairs cleared the threshold)",
+        f"semantic_cache adversarial audit -- model {report.model}, threshold {threshold:.2f}",
         f"false-positive rate: {report.false_positive_rate:.1%} "
-        f"({sum(1 for r in valid if r.false_positive)}/{len(valid)} valid probes)",
+        f"({sum(1 for r in valid if r.false_positive)}/{len(valid)} valid adversarial probes)"
+        "   <- wrong answers served",
+        f"benign hit rate:     {report.benign_hit_rate:.1%} "
+        f"({benign_hits}/{len(benign)} control probes)"
+        "   <- legitimate reuse captured",
+        f"adversarial hits:    {report.hit_rate:.1%} "
+        f"({hits}/{len(adversarial)} cleared the threshold)",
     ]
     if degenerate:
         lines.append(
-            f"  note: {degenerate} probe(s) excluded as degenerate -- the model gave the "
-            "same answer to both halves, so a hit there proves nothing either way."
+            f"  note: {degenerate} adversarial probe(s) excluded as degenerate -- the model "
+            "gave the same answer to both halves, so a hit there proves nothing either way."
         )
-    if not valid and report.results:
+    if not valid and adversarial:
         lines.append(
-            "  WARNING: no probe was valid. The 0.0% above measured nothing; it is not "
-            "a safety result."
+            "  WARNING: no adversarial probe was valid. The 0.0% above measured nothing; "
+            "it is not a safety result."
+        )
+    if benign and not benign_hits and not hits:
+        lines.append(
+            "  WARNING: this threshold fired on nothing at all, adversarial or benign. "
+            "That is not a safe setting, it is an off one -- and exact_cache already "
+            "covers the byte-identical case losslessly."
         )
     lines.append("")
     for category, results in report.by_category().items():
         lines.append(f"# {category}")
         for result in results:
-            if not result.probe_is_valid:
+            if result.is_benign:
+                marker = "hit (the win)" if result.served_from_cache else "missed (no reuse)"
+            elif not result.probe_is_valid:
                 marker = "DEGENERATE PROBE"
             elif result.false_positive:
                 marker = "FALSE POSITIVE"
@@ -466,6 +634,11 @@ def format_audit_report(report: SemanticCacheAuditReport) -> list[str]:
                 f"(threshold={result.threshold:.2f}, "
                 f"{'fired' if result.served_from_cache else 'declined'})"
             )
+            if result.is_benign:
+                lines.append(f"    shared fact:        {result.pair.seed_fact}")
+                lines.append(f"    seed answer:        {result.seed_response!r}")
+                lines.append(f"    reworded answer:    {result.near_duplicate_response!r}")
+                continue
             lines.append(f"    seed fact:          {result.pair.seed_fact}")
             lines.append(f"    near-dup fact:      {result.pair.near_duplicate_fact}")
             lines.append(f"    seed answer:        {result.seed_response!r}")

@@ -23,6 +23,38 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **`semantic_cache`'s live false-positive rate, measured: 85.7% at the shipped default
+  threshold.** The first ADR-015 evidence, and it did not go the way the stage's own docstring
+  predicted. `bench/adversarial.py` (new) plus `--semantic-cache-audit` run eight
+  near-duplicate-but-different-answer prompt pairs -- a changed number, entity, negation, or date
+  inside a shared ~100-word context -- and eight same-answer controls, live. Measured against
+  `gpt-4o-mini` on 2026-07-29, $0.0078 across 247 calls, sweeping `semantic_threshold` from
+  `OptimizeConfig`'s 0.9 floor to 1.0: **wrong answers served 100% / 100% / 85.7% / 14.3% / 0% /
+  0%, while legitimate paraphrase reuse ran 100% / 75% / 37.5% / 0% / 0% / 0%.** Reuse hits zero
+  at 0.98, one step *before* wrong answers do, so no setting is both safe and useful and the safe
+  end is territory `exact_cache` already covers losslessly and by default. The class docstring
+  previously claimed the 0.97 default made the stage "conservative to the point of rarely firing
+  on anything but near-identical wording" and that "the threshold does the entire job of keeping
+  this safe"; both sentences are now quoted in place and corrected, because the mechanism runs
+  the other way -- a *longer* shared context makes the one word that changes the answer matter
+  *less* to a word-overlap score. Dropping `not` from a ~100-word prompt scored 0.9888. No
+  default changed and no threshold moved: this is a metric-level limit, not a tuning one, and the
+  recommendation is that the stage is only defensible with a caller-supplied embedding-based
+  `similarity_fn`. Full sweep and a verbatim wrong-answer transcript in
+  `docs/optimize-benchmarks.md`; resolution in ADR-015.
+- **The audit measures three things it could have assumed, each of which would have produced a
+  wrong number that looked right.** (1) A hit only counts as a false positive if the model
+  demonstrably answers the two halves differently -- so every pair makes a third, cache-disabled
+  call, and one probe was excluded as degenerate (the model said "within four business hours" to
+  both), making the honest denominator 6/7 rather than a flattering 6/8. (2) The benign control
+  set exists because an adversarial-only sweep shows `semantic_threshold=0.99` as a clean fix; it
+  is not a fix, it is an off switch, and only the control column reveals that. (3) The reported
+  similarity is taken from the stage's own `_similarity_fn` and `_prompt_text` rather than
+  re-derived locally, so a future change to how the stage renders a request cannot leave the
+  audit reporting a margin the stage never used. 28 tests, including a property asserting the
+  control set never outscores the adversarial set -- if a future `similarity_fn` ever separates
+  them, that test failing is the signal to re-derive this resolution.
+
 - **`bench/__main__.py`'s `--aggressive` flag, which bundled `semantic_cache` and `compress_prompt`
   together, is replaced by a repeatable `--stage NAME` flag that isolates exactly the named
   `ALTERED`-tier stage(s).** ADR-015 (new: see below) found the old flag had produced the *only*

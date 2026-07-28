@@ -19,7 +19,7 @@ from optio_optimize.bench.providers import (
     available_live_provider,
 )
 from optio_optimize.bench.workloads import WORKLOADS
-from optio_optimize.config import CHEAP_COUNTERPART, OptimizeConfig
+from optio_optimize.config import CHEAP_COUNTERPART, DEFAULT_SEMANTIC_THRESHOLD, OptimizeConfig
 from optio_optimize.types import LLMRequest, Message
 
 if TYPE_CHECKING:
@@ -107,8 +107,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "run the ADR-015 adversarial audit instead of the workload suite: eight "
-            "near-duplicate-but-different-answer prompt pairs, measuring semantic_cache's "
-            "live false-positive rate directly. Ignores --workload/--stage."
+            "near-duplicate-but-different-answer prompt pairs measuring semantic_cache's "
+            "live false-positive rate directly, plus eight same-answer controls "
+            "measuring what a safe threshold costs in legitimate reuse. Ignores "
+            "--workload/--stage."
+        ),
+    )
+    parser.add_argument(
+        "--semantic-threshold",
+        type=float,
+        default=DEFAULT_SEMANTIC_THRESHOLD,
+        help=(
+            f"similarity a --semantic-cache-audit hit requires (default "
+            f"{DEFAULT_SEMANTIC_THRESHOLD}, the shipped one). ADR-015 wants the default "
+            "measured plus nearby values, so the margin the default actually buys is a "
+            "number rather than an assumption. OptimizeConfig rejects anything below 0.9."
         ),
     )
     args = parser.parse_args(argv)
@@ -144,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
                 "but cannot demonstrate an actual wrong-answer collision the way a live run "
                 "can. Treat this as a smoke test, not ADR-015 evidence.\n"
             )
-        report = run_semantic_cache_audit(provider)
+        report = run_semantic_cache_audit(provider, threshold=args.semantic_threshold)
         print("\n".join(format_audit_report(report)))
         if guard is not None:
             print(f"spent ${guard.spent_usd:.4f} across {guard.calls} live calls")

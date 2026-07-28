@@ -13,6 +13,8 @@ import pytest
 
 from optio_optimize.bench.adversarial import (
     SEMANTIC_CACHE_ADVERSARIAL_PAIRS,
+    SEMANTIC_CACHE_AUDIT_PAIRS,
+    SEMANTIC_CACHE_BENIGN_PAIRS,
     NearDuplicatePair,
     format_audit_report,
     run_semantic_cache_audit,
@@ -54,18 +56,18 @@ class TestRunSemanticCacheAudit:
     def test_reports_one_result_per_pair(self) -> None:
         report = run_semantic_cache_audit(SimulatedProvider())
 
-        assert len(report.results) == len(SEMANTIC_CACHE_ADVERSARIAL_PAIRS)
+        assert len(report.results) == len(SEMANTIC_CACHE_AUDIT_PAIRS)
 
     def test_a_hit_serves_the_seeds_exact_response_text(self) -> None:
         report = run_semantic_cache_audit(SimulatedProvider())
 
-        hits = [r for r in report.results if r.served_from_cache]
+        hits = [r for r in report.adversarial_results if r.served_from_cache]
         assert hits, "expected at least one collision at the default threshold"
         for hit in hits:
             assert hit.near_duplicate_response == hit.seed_response
             assert hit.false_positive is True
 
-    def test_every_simulated_probe_is_valid(self) -> None:
+    def test_every_simulated_adversarial_probe_is_valid(self) -> None:
         # SimulatedProvider hashes the request text, so the near-duplicate's
         # uncached answer can never coincide with the seed's. Degenerate
         # probes are a live-model phenomenon (both halves declining the same
@@ -73,8 +75,8 @@ class TestRunSemanticCacheAudit:
         # what makes the other tests here interpretable.
         report = run_semantic_cache_audit(SimulatedProvider())
 
-        assert all(r.probe_is_valid for r in report.results)
-        assert len(report.valid_probes) == len(report.results)
+        assert all(r.probe_is_valid for r in report.adversarial_results)
+        assert len(report.valid_probes) == len(report.adversarial_results)
 
     def test_a_degenerate_probe_is_excluded_from_the_false_positive_rate(self) -> None:
         # A hit whose baseline answer matches the seed's proves nothing: the
@@ -96,7 +98,7 @@ class TestRunSemanticCacheAudit:
 
         assert report.valid_probes == []
         assert report.false_positive_rate == 0.0
-        assert "WARNING: no probe was valid" in "\n".join(format_audit_report(report))
+        assert "WARNING: no adversarial probe was valid" in "\n".join(format_audit_report(report))
 
     def test_pairs_are_rebuilt_at_the_providers_own_model(self) -> None:
         # The stage scopes matching per request.model and the token counter
@@ -155,18 +157,19 @@ class TestRunSemanticCacheAudit:
 
         assert report.false_positive_rate == 0.0
 
-    def test_false_positive_rate_matches_the_hit_fraction(self) -> None:
+    def test_false_positive_rate_matches_the_adversarial_hit_fraction(self) -> None:
         report = run_semantic_cache_audit(SimulatedProvider())
 
-        hits = sum(1 for r in report.results if r.served_from_cache)
-        assert report.false_positive_rate == hits / len(report.results)
+        adversarial = report.adversarial_results
+        hits = sum(1 for r in adversarial if r.served_from_cache)
+        assert report.false_positive_rate == hits / len(adversarial)
 
     def test_by_category_groups_every_result_exactly_once(self) -> None:
         report = run_semantic_cache_audit(SimulatedProvider())
 
         grouped = report.by_category()
         assert sum(len(v) for v in grouped.values()) == len(report.results)
-        assert set(grouped) == {"number", "entity", "negation", "time"}
+        assert set(grouped) == {"number", "entity", "negation", "time", "benign"}
 
     def test_a_custom_pair_set_is_honoured(self) -> None:
         custom = (
@@ -204,6 +207,71 @@ class TestRunSemanticCacheAudit:
         pair = SEMANTIC_CACHE_ADVERSARIAL_PAIRS[0]
 
         assert pair.at_model(pair.seed.model) is pair
+
+
+class TestBenignControlSet:
+    """The half that stops a high threshold from looking free."""
+
+    def test_the_control_set_mirrors_the_adversarial_one(self) -> None:
+        assert len(SEMANTIC_CACHE_BENIGN_PAIRS) == len(SEMANTIC_CACHE_ADVERSARIAL_PAIRS)
+        assert all(p.category == "benign" for p in SEMANTIC_CACHE_BENIGN_PAIRS)
+
+    def test_both_halves_of_a_control_pair_carry_the_same_fact(self) -> None:
+        # The point of a control: identical context, identical embedded fact,
+        # only the question's wording differs. A control whose fact differed
+        # would be an adversarial pair wearing the wrong label.
+        for pair in SEMANTIC_CACHE_BENIGN_PAIRS:
+            assert pair.seed_fact == pair.near_duplicate_fact
+            assert pair.seed.messages != pair.near_duplicate.messages
+
+    def test_the_default_audit_runs_both_halves(self) -> None:
+        assert SEMANTIC_CACHE_AUDIT_PAIRS == (
+            SEMANTIC_CACHE_ADVERSARIAL_PAIRS + SEMANTIC_CACHE_BENIGN_PAIRS
+        )
+
+        report = run_semantic_cache_audit(SimulatedProvider())
+
+        assert len(report.adversarial_results) == len(SEMANTIC_CACHE_ADVERSARIAL_PAIRS)
+        assert len(report.benign_results) == len(SEMANTIC_CACHE_BENIGN_PAIRS)
+
+    def test_a_control_hit_is_never_counted_as_a_false_positive(self) -> None:
+        report = run_semantic_cache_audit(SimulatedProvider(), pairs=SEMANTIC_CACHE_BENIGN_PAIRS)
+
+        assert report.valid_probes == []
+        assert report.false_positive_rate == 0.0
+        assert all(not r.probe_is_valid and not r.false_positive for r in report.results)
+
+    def test_benign_hit_rate_counts_only_control_probes(self) -> None:
+        report = run_semantic_cache_audit(SimulatedProvider())
+
+        benign = report.benign_results
+        expected = sum(1 for r in benign if r.served_from_cache) / len(benign)
+        assert report.benign_hit_rate == expected
+
+    def test_raising_the_threshold_never_helps_the_control_set_more_than_the_adversarial(
+        self,
+    ) -> None:
+        # The finding this control set exists to make visible, asserted as a
+        # property rather than left in a doc: on this workload shape there is
+        # no threshold that rejects near-duplicates while still capturing
+        # legitimate paraphrases, because the two sets score in the same
+        # similarity band. If a future similarity_fn ever separated them, this
+        # test failing is the signal that the recommendation should be revisited.
+        for threshold in (0.90, 0.95, 0.97, 0.98, 0.99, 1.0):
+            report = run_semantic_cache_audit(SimulatedProvider(), threshold=threshold)
+            assert report.benign_hit_rate <= report.hit_rate, (
+                f"at threshold {threshold} the control set outscored the adversarial "
+                "set -- the similarity metric now separates them and ADR-015's "
+                "semantic_cache resolution needs re-deriving"
+            )
+
+    def test_a_threshold_that_fires_on_nothing_is_flagged_not_congratulated(self) -> None:
+        report = run_semantic_cache_audit(SimulatedProvider(), threshold=1.0)
+        text = "\n".join(format_audit_report(report))
+
+        assert report.false_positive_rate == 0.0
+        assert report.benign_hit_rate == 0.0
+        assert "fired on nothing at all" in text
 
 
 class TestFormatAuditReport:
