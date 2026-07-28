@@ -23,6 +23,61 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **The `compress_prompt` anomaly, chased across six workloads and explained.** The one prior
+  live data point -- cost -71.5%, output tokens *+71.4%*, 10/10 diverged, on `rag_queries` under
+  the bundled `--aggressive` flag -- reproduces exactly with the stage isolated, so it is real
+  and it is `compress_prompt`'s alone. It is also **not general**, and the cause is not the one
+  ADR-015 guessed. Live against `gpt-4o-mini` 2026-07-29, $0.0138 across 181 calls: on `fan_out`
+  the stage gave up 82.9% of input tokens and 67.8% of cost for **byte-identical output on all
+  12 responses**, and `tool_calling_chat` the same at 68.9%/41.5% across 20; `unique_questions`
+  correctly saved nothing at all. Only the two synthetic RAG workloads regressed, both by 6 of 10
+  judged answers. ADR-015 hypothesised the longer outputs were the model "hedging or
+  over-explaining to compensate" for an underspecified prompt. Reading the diverged pairs instead
+  of counting them shows something else entirely: the baseline was emitting a 4-token
+  `'INSUFFICIENT CONTEXT.'` refusal and the compressed arm a 13-token sentence answering anyway.
+  The whole output-token increase is that substitution.
+- **The mechanism, confirmed against the transformed prompt rather than inferred.** These
+  workloads' system prompt is `_SYSTEM_PROMPT * 9`, so `"If the context does not contain the
+  answer, say exactly: INSUFFICIENT CONTEXT. Never speculate."` appears nine times.
+  `CompressPromptStage` collapses the system message 6,408 -> 916 characters, taking that
+  instruction from **9 occurrences to 1** -- deleting no distinct sentence, and therefore
+  information-preserving by the stage's own standard. The model then answered 6 of 10 questions
+  it had correctly refused, attributing revenue to a quarter the context never named. So the
+  documented risk ("a false near-duplicate judgment erases a fact that was never restated") is
+  not what bit; the real one is that **an instruction whose force came from repetition loses that
+  force**, and only requests exercising that instruction reveal it -- which is exactly why
+  `fan_out` and `tool_calling_chat` took the identical 9->1 collapse with zero divergence. A
+  caller whose system prompt leans on repetition for emphasis is the exposed case, and no token
+  or cost metric can see it. `stages/compress.py`'s docstring now says so.
+- **`--control`: the divergence floor every previous number was missing.** Runs a workload twice
+  with the optimizer off on *both* arms, so any difference is the provider's. This project has
+  been reporting live divergence counts on the assumption that `temperature=0` is deterministic.
+  It is not: `unique_questions` diverged on **4/12, 5/12, 4/12** across three runs with
+  byte-identical prompts. The floor is workload-dependent and mostly zero (0/10 `rag_queries`,
+  0/20 `tool_calling_chat`, 0/12 `fan_out`, 1/12 `multi_turn_chat`), which is what makes the
+  `rag_queries` 10/10 a real finding -- and what makes `multi_turn_chat`'s "1 of 12 diverged" no
+  finding at all, since it sits exactly on its own floor. Every divergence figure in
+  `docs/optimize-benchmarks.md` now carries its floor beside it.
+- **`--isolate`, because `--stage` was still confounded one layer down.** ADR-015 retired
+  `--aggressive` for bundling two ALTERED stages, but `--stage compress_prompt` left every
+  default-on stage running, and `deduplicate` was contributing 720 tokens to the same delta. The
+  first `--stage` run of this session reproduced the original confound in miniature. `--isolate`
+  turns off every other stage including the lossless caches -- `exact_cache` resolving a repeat
+  before the isolated stage sees it is precisely how the original run credited one stage for
+  another's work. Also `--judge` (model-backed equivalence grading) and `--show-divergences N`
+  (print the pairs), both required by ADR-015 and neither previously reachable from the CLI even
+  though `harness.compare()` has accepted a `Judge` all along.
+- **The judge's first prompt was wrong, and its number looked fine.** Asking "is B equivalent to
+  A" scored `rag_queries` at 10/10 WORSE -- while the diverged pairs, read directly, showed the
+  optimized arm giving *fuller* answers. The judge was treating "B says something A did not" as
+  a failure. Re-framed to ask about *regression* specifically, with `BETTER` an allowed verdict,
+  the same pair returns BETTER and the workload scores 4 equivalent / 6 worse. `max_tokens` was
+  ruled out as the cause first (4 and 16 gave identical verdicts). One limitation is documented
+  rather than tuned away: the judge never sees the prompt, so on a pair where the baseline
+  declined and the optimized arm answered it cannot tell a recovered answer from a hallucinated
+  one -- it votes WORSE, which is the defensible call from what it can see, and those pairs need
+  `--show-divergences` plus the workload's ground truth. 24 tests on the bench CLI, up from 13.
+
 - **`semantic_cache`'s live false-positive rate, measured: 85.7% at the shipped default
   threshold.** The first ADR-015 evidence, and it did not go the way the stage's own docstring
   predicted. `bench/adversarial.py` (new) plus `--semantic-cache-audit` run eight

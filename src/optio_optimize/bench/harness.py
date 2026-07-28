@@ -200,6 +200,7 @@ def _compare_quality(
             result.equivalent += 1
         else:
             result.divergent += 1
+            result.divergent_pairs.append((ref, cand))
     return result
 
 

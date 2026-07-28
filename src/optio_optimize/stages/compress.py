@@ -7,6 +7,31 @@ before it already said. The stronger claim is why this is ``ALTERED`` and
 ``deduplicate`` is only ``SHAPED``: exact repeats provably carry no new
 information, but "near-duplicate" is a lexical-similarity judgment call, and
 a judgment call can be wrong.
+
+**What six live workloads found (2026-07-29, ADR-015).** On four of them this
+stage is close to free: ``fan_out`` gave up 82.9% of its input tokens for
+byte-identical output on every response, ``tool_calling_chat`` 68.9%, both
+against a measured zero divergence floor. On two synthetic RAG workloads it
+caused a real regression, and the shape of it is worth knowing because it is
+not the one the risk model predicted.
+
+The risk model here has always been "a false near-duplicate judgment erases a
+fact that was never restated". That is not what happened. Nothing was erased:
+every distinct sentence survived. What the stage removed was *repetition* --
+a system prompt stating ``"If the context does not contain the answer, say
+exactly: INSUFFICIENT CONTEXT. Never speculate."`` nine times collapsed to
+stating it once, which is information-preserving by any reasonable definition.
+The model then stopped honouring it, answering 6 of 10 questions it had
+correctly refused, with an attribution the context did not support.
+
+So the failure mode this stage actually carries, in addition to the one
+already documented, is: **an instruction whose force came from being repeated
+loses that force, and only requests that exercise that instruction reveal
+it.** The same 9-to-1 collapse on ``fan_out`` and ``tool_calling_chat`` was
+harmless because their tasks never reach a conditional-refusal branch. A
+caller whose system prompt leans on repetition for emphasis -- a common
+prompt-engineering habit -- is the one at risk here, and no token-count or
+cost metric can see it. See ``docs/optimize-benchmarks.md``.
 """
 
 from __future__ import annotations

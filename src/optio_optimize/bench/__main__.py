@@ -23,6 +23,7 @@ from optio_optimize.config import CHEAP_COUNTERPART, DEFAULT_SEMANTIC_THRESHOLD,
 from optio_optimize.types import LLMRequest, Message
 
 if TYPE_CHECKING:
+    from optio_optimize.bench.harness import Judge
     from optio_optimize.bench.providers import BenchProvider
     from optio_optimize.stages.summarize import Summarizer
 
@@ -114,6 +115,53 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--control",
+        action="store_true",
+        help=(
+            "measure the provider's own nondeterminism: run each workload twice with "
+            "the optimizer off entirely and report how many responses differ anyway. "
+            "This is the floor every divergence number has to be read against -- "
+            "gpt-4o-mini at temperature=0 diverged on 4-5 of 12 identical prompts when "
+            "this was added, so a workload reporting '1 of 12 diverged' has measured "
+            "nothing. Ignores --stage."
+        ),
+    )
+    parser.add_argument(
+        "--isolate",
+        action="store_true",
+        help=(
+            "turn off every stage except the ones named by --stage, including the "
+            "lossless and SHAPED stages that are on by default. Without this, --stage X "
+            "measures 'X on top of the shipped defaults' -- which is what a user who "
+            "flips X on actually gets, but leaves the delta shared with deduplicate, "
+            "trim_history and prune_retrieval, so no result attributes cleanly to X. "
+            "ADR-015 evidence needs this flag; a deployment-shaped estimate does not."
+        ),
+    )
+    parser.add_argument(
+        "--judge",
+        action="store_true",
+        help=(
+            "grade every diverged response pair with a model call, so the report "
+            "separates 'the text changed' from 'the answer got worse'. ADR-015 requires "
+            "both numbers for an ALTERED-tier stage; without this flag any difference "
+            "counts as divergence, which is the conservative reading, not a quality "
+            "measurement. Adds one call per divergence."
+        ),
+    )
+    parser.add_argument(
+        "--show-divergences",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "print the first N diverged (baseline, optimized) response pairs per "
+            "workload. ADR-015 wants diverged pairs read, not just counted: a count "
+            "cannot tell harmless rewording from the model getting something wrong it "
+            "previously had right."
+        ),
+    )
+    parser.add_argument(
         "--semantic-threshold",
         type=float,
         default=DEFAULT_SEMANTIC_THRESHOLD,
@@ -165,6 +213,32 @@ def main(argv: list[str] | None = None) -> int:
 
     selected = [WORKLOADS[n] for n in (args.workload or sorted(WORKLOADS))]
 
+    if args.control:
+        if not args.live:
+            print(
+                "note: --control against SimulatedProvider always reports 0 divergences, "
+                "because the simulator is a pure function of the request. That is the "
+                "point of a simulator and the reason this measurement needs --live.\n"
+            )
+        print(
+            "nondeterminism control: optimizer off on BOTH arms, so every divergence "
+            "below belongs to the provider, not to this library.\n"
+        )
+        for workload in selected:
+            print(f"# {workload.description}")
+            result = compare(
+                workload, provider, OptimizeConfig(enabled=False), model=provider.model
+            )
+            quality = result.quality
+            print("\n".join(format_result(result)))
+            print(
+                f"    -> floor: {quality.divergent}/{quality.compared} differ with "
+                f"identical prompts\n"
+            )
+        if guard is not None:
+            print(f"spent ${guard.spent_usd:.4f} across {guard.calls} live calls")
+        return 0
+
     stages = set(args.stages or ())
     if args.strict_fidelity and stages:
         print(
@@ -205,6 +279,19 @@ def main(argv: list[str] | None = None) -> int:
             "not this A/B harness.\n"
         )
 
+    if args.isolate and not stages:
+        print(
+            "--isolate turns off every stage except the ones --stage names, and no "
+            "--stage was given, which would benchmark an empty pipeline against itself.",
+            file=sys.stderr,
+        )
+        return 2
+
+    # --strict-fidelity and --isolate both strip the default-on stages, for
+    # opposite reasons: the first so an identical-output claim is tested
+    # against only stages that make it, the second so a measured delta belongs
+    # to exactly one stage. Same switch, so they compose without special-casing.
+    others_off = args.strict_fidelity or args.isolate
     config = OptimizeConfig(
         semantic_cache="semantic_cache" in stages,
         compress_prompt="compress_prompt" in stages,
@@ -216,12 +303,20 @@ def main(argv: list[str] | None = None) -> int:
         # pruning are SHAPED too (they change what the prompt says, not just
         # its price) and default on, so they need the same treatment or this
         # flag stops proving what it claims to.
-        structured_output=not args.strict_fidelity,
-        adaptive_max_tokens=not args.strict_fidelity,
-        trim_history=not args.strict_fidelity,
-        deduplicate=not args.strict_fidelity,
-        prune_retrieval=not args.strict_fidelity,
+        structured_output=not others_off,
+        adaptive_max_tokens=not others_off,
+        trim_history=not others_off,
+        deduplicate=not others_off,
+        prune_retrieval=not others_off,
+        # exact_cache and prefix_cache are lossless and default on. Under
+        # --isolate they still have to go: exact_cache resolving a repeat
+        # before compress_prompt ever sees it is precisely how the earlier
+        # confounded run credited one stage for another's work.
+        exact_cache=not args.isolate,
+        prefix_cache=not args.isolate,
     )
+    if args.isolate:
+        print(f"isolated run: {', '.join(sorted(stages))} only, every other stage off.\n")
 
     # Only stages promising byte-identical output can be held to it. Running
     # with `structured_output` on and demanding identical responses would fail
@@ -237,14 +332,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"note: {', '.join(shaping)} may reshape replies; divergence is expected.")
         print("      Run with --strict-fidelity to hold every stage to identical output.\n")
 
+    judge = None
+    if args.judge:
+        if not args.live:
+            print(
+                "note: --judge without --live grades SimulatedProvider's hashed content, "
+                "which is never equivalent to anything. The verdicts mean nothing; this "
+                "only exercises the plumbing.\n"
+            )
+        judge = _build_live_judge(provider)
+
     divergences = 0
     for workload in selected:
         print(f"# {workload.description}")
         print(f"# expected: {workload.expectation}\n")
         # Priced against what the provider actually served, never against a
         # hardcoded name -- see BenchProvider.model.
-        result = compare(workload, provider, config, model=provider.model, summarizer=summarizer)
+        result = compare(
+            workload, provider, config, model=provider.model, summarizer=summarizer, judge=judge
+        )
         print("\n".join(format_result(result)))
+        for baseline_text, optimized_text in result.quality.divergent_pairs[
+            : args.show_divergences
+        ]:
+            print("\n    --- divergence ---")
+            print(f"    baseline:  {baseline_text!r}")
+            print(f"    optimized: {optimized_text!r}")
         print()
         if strict and result.quality.divergent:
             divergences += result.quality.divergent
@@ -275,6 +388,74 @@ def _resolve_cheap_model(explicit: str | None, provider_model: str) -> str | Non
         ``"gpt-4o-mini"``, which is already the cheap end of its own family.
     """
     return explicit if explicit is not None else CHEAP_COUNTERPART.get(provider_model)
+
+
+def _build_live_judge(provider: BenchProvider) -> Judge:
+    """A model-backed equivalence judge for ``harness.compare()``.
+
+    Answers the question a divergence count cannot: two responses differ, but
+    does the *second* still answer the question as well as the first? Asks the
+    same provider the benchmark is already using, at ``temperature=0``, for a
+    single-token verdict.
+
+    Deliberately asymmetric, matching what an operator actually cares about:
+    the optimized answer may be shorter, longer or reworded and still pass;
+    it fails only if it *regresses* -- loses a fact the baseline had,
+    contradicts it, or gets vaguer on a specific the question asked for.
+
+    **The first version of this prompt asked "is B equivalent to A" and got a
+    materially wrong answer**, which is worth recording because the number it
+    produced looked plausible. Framed that way, a `compress_prompt` run on
+    `rag_queries` scored 10/10 WORSE -- while the diverged pairs, read
+    directly, showed the optimized arm giving *fuller* answers than the
+    baseline. The judge was treating "B says something A did not" as a
+    failure. Asking specifically about regression, and offering BETTER as an
+    allowed verdict, fixed it: the same pair came back BETTER. Verified by
+    probe, not assumed, and `max_tokens` was ruled out as the cause first (4
+    and 16 gave identical verdicts).
+
+    **Known limitation, not worked around.** The judge sees the two answers
+    and never the prompt, so on a pair where the baseline declined
+    ("INSUFFICIENT CONTEXT") and the optimized arm answered, it cannot tell a
+    recovered answer from a hallucinated one -- and it votes WORSE, which is
+    the defensible call from what it can see. Those pairs need
+    ``--show-divergences`` and the workload's ground truth, which is exactly
+    why ADR-015 asks for diverged pairs to be *read* rather than only graded.
+
+    Args:
+        provider: The active ``BenchProvider``.
+
+    Returns:
+        A ``Judge``: ``(baseline, optimized) -> bool``, true when the
+        optimized answer did not regress.
+    """
+
+    def judge(baseline: str, optimized: str) -> bool:
+        request = LLMRequest(
+            model=provider.model,
+            messages=(
+                Message(
+                    role="system",
+                    content=(
+                        "Answer A and answer B respond to the same question. Judge only "
+                        "whether B is a REGRESSION from A. Reply with exactly one word:\n"
+                        "WORSE - B contradicts A, omits a fact A stated, or is vaguer "
+                        "than A on a specific the question asked for.\n"
+                        "BETTER - B states a fact A lacked, or answers where A declined.\n"
+                        "EQUIVALENT - anything else, including pure differences of "
+                        "wording, length, formatting or ordering.\n"
+                        "Extra detail in B is never WORSE."
+                    ),
+                ),
+                Message(role="user", content=f"A:\n{baseline}\n\nB:\n{optimized}"),
+            ),
+            temperature=0.0,
+            max_tokens=4,
+        )
+        verdict = provider(request).content.strip().upper()
+        return verdict.startswith(("EQUIVALENT", "BETTER"))
+
+    return judge
 
 
 def _build_live_summarizer(provider: BenchProvider, cheap_model: str | None) -> Summarizer:

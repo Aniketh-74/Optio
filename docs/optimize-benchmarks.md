@@ -304,6 +304,14 @@ resolves 14/15 calls before either lossy stage ever runs). Not a benchmark
 result — one live data point per stage, recorded because it happened, not
 because it is a claim about your traffic.
 
+> **Resolved.** Both halves of that paragraph turned out to be right about the
+> numbers and wrong about the cause. The anomaly is real and reproduces
+> exactly with `compress_prompt` isolated — but the longer answers are not the
+> model "writing longer answers against the trimmed context", they are short
+> refusals being replaced by full sentences, and the guess that it was
+> hedging was wrong. See *"`compress_prompt`: the anomaly, chased across six
+> workloads"* below.
+
 ## `semantic_cache`: the measured false-positive rate (ADR-015)
 
 **The number this section exists for: at the shipped default threshold of
@@ -378,6 +386,110 @@ than inherit these. And every number here is a property of the **default
 lexical** `similarity_fn`; an embedding-based one is a constructor argument
 (`Optimizer(similarity_fn=...)`) and is explicitly out of scope of this
 measurement, not implicated by it.
+
+## The divergence floor: what "10/10 diverged" was missing
+
+Every live divergence number this document has ever printed — including the
+`compress_prompt` result below and the `--aggressive` one above — was measured
+against an assumption nobody had checked: that `temperature=0` makes the
+provider deterministic, so any difference between the two arms is the
+optimizer's doing. **It does not, and some of it was not.**
+
+`python -m optio_optimize.bench --control --live` runs each workload twice with
+the optimizer *off on both arms* and reports how many responses differ anyway.
+Measured against `gpt-4o-mini` on 2026-07-29, $0.0179 across 152 calls:
+
+| workload | responses differing with byte-identical prompts |
+|---|---|
+| `rag_queries` | 0 / 10 |
+| `rag_queries_noisy` | 0 / 10 |
+| `tool_calling_chat` | 0 / 20 |
+| `fan_out` | 0 / 12 |
+| `multi_turn_chat` | 1 / 12 |
+| `unique_questions` | **4 / 12** |
+
+So the floor is workload-dependent and mostly zero — but not always, and
+`unique_questions` reproduced 4/12, 5/12, 4/12 across three runs. Any result
+at or under its own workload's floor has measured nothing. This is why the
+`compress_prompt` table below carries a floor column: without it,
+`multi_turn_chat`'s "1 of 12 diverged" reads as a small quality effect, and it
+is not an effect at all.
+
+## `compress_prompt`: the anomaly, chased across six workloads (ADR-015)
+
+The one prior data point — cost −71.5%, **output tokens +71.4%**, 10/10
+diverged, on `rag_queries` under the bundled `--aggressive` flag — is
+reproduced exactly, now with `semantic_cache` off and every default-on stage
+off (`--stage compress_prompt --isolate`). It is real, it is
+`compress_prompt`'s alone, and it is **not** general: it belongs to one
+workload shape, and the mechanism is not the one ADR-015 guessed.
+
+Live against `gpt-4o-mini`, 2026-07-29, $0.0138 across 181 calls:
+
+| workload | input tokens | cost | output tokens | diverged | floor | judge |
+|---|---|---|---|---|---|---|
+| `rag_queries` | −84.3% | −65.5% | **+71.4%** | 10/10 | 0/10 | 4 ok, **6 worse** |
+| `rag_queries_noisy` | −81.6% | −61.6% | **+71.4%** | 10/10 | 0/10 | 4 ok, **6 worse** |
+| `multi_turn_chat` | −73.4% | −51.7% | +5.0% | 1/12 | 1/12 | — (at floor) |
+| `tool_calling_chat` | −68.9% | −41.5% | 0.0% | 0/20 | 0/20 | — |
+| `fan_out` | −82.9% | −67.8% | 0.0% | 0/12 | 0/12 | — |
+| `unique_questions` | 0.0% | −0.3% | +0.4% | 2–5/12 | 4/12 | — (at floor) |
+
+**On four of six workloads `compress_prompt` is close to free money.**
+`fan_out` gave up 82.9% of its input tokens and 67.8% of its cost for
+byte-identical output on all 12 responses, against a measured floor of zero.
+`tool_calling_chat` did the same at 68.9%/41.5% across 20 responses.
+`unique_questions` correctly saved nothing at all — the stage declined on every
+request, which is the right answer for prompts with no internal repetition, and
+is also what made that workload an accidental control.
+
+**On the two RAG workloads it causes a real regression, and the diverged pairs
+say what kind.** Read directly (`--show-divergences`), all six judge-WORSE
+pairs on each workload have the same shape:
+
+> baseline: `'INSUFFICIENT CONTEXT.'`
+> optimized: `'Subscription growth in the enterprise segment drove revenue in Q5.'`
+
+The workload's system prompt says *"Answer using only the context provided. If
+the context does not contain the answer, say exactly: INSUFFICIENT CONTEXT.
+Never speculate."* The retrieved chunk says revenue was *"driven primarily by
+subscription growth in the enterprise segment"* — for *"the period"*, naming no
+quarter. The baseline honours the instruction and refuses. The compressed arm
+answers, attributing the driver to a specific quarter the context never
+establishes, taking the quarter number from the question. That is speculation,
+which the prompt explicitly forbids. **The output-token increase is entirely
+this**: a 4-token refusal replaced by a 13-token sentence, not the hedging or
+over-explaining ADR-015 hypothesised.
+
+**The mechanism, confirmed by inspecting the transformed prompt.** These
+workloads' system prompt is `_SYSTEM_PROMPT * 9` — the grounding instruction
+is stated nine times. `CompressPromptStage` drops near-duplicate sentences, so
+it collapses the system message from 6,408 to 916 characters: `"INSUFFICIENT
+CONTEXT"` goes from **9 occurrences to 1**, `"Never speculate"` from 9 to 1.
+The user message's 8 near-identical retrieved chunks collapse to 1 at the same
+time. No information is *deleted* in either case — every distinct sentence
+survives — but the instruction's **salience through repetition** does not, and
+that turns out to be what was holding the refusal behaviour in place.
+
+**Which is why the same collapse is harmless on `fan_out` and
+`tool_calling_chat`.** They carry the identical 9×-repeated system prompt and
+get the identical 9→1 collapse, with zero divergence — because their tasks
+never reach the conditional-refusal branch. The answer is present in the
+prompt, so no instruction about what to do when it is absent can matter. The
+regression is not "compression breaks instructions"; it is narrower and more
+specific: **compression can strip the redundancy that a conditional
+instruction was relying on for weight, and that only shows up on requests
+that actually exercise that condition.**
+
+**What this does not say.** Six workloads, one model, one similarity metric.
+The two that regressed are both synthetic RAG shapes built from the same chunk
+text, so they are closer to one and a half data points than two — they agree
+because they are similar, which is weaker evidence than two independent
+workloads agreeing. Costs also shifted between repeat runs of the same
+workload (`rag_queries` baseline priced $0.00166 then $0.00137), which is
+OpenAI's server-side prefix cache warming between runs; `BenchProvider.reset()`
+already documents that a live provider cannot honour a cache reset, and this is
+that limit showing up in a price.
 
 ## Overhead
 

@@ -99,6 +99,12 @@ class QualityResult:
             ``temperature=0``. Without that, differing responses prove nothing
             -- two identical calls to a sampled model also differ -- and every
             quality figure here is uninterpretable.
+        divergent_pairs: The actual ``(baseline, optimized)`` text of every
+            divergence, kept so they can be *read*. ADR-015 requires this for
+            ``ALTERED``-tier stages specifically: "10/10 diverged" cannot
+            distinguish harmless rewording from the model getting something
+            wrong it had right, and only the pairs themselves can. Empty for
+            an identical run, so the ordinary lossless path stores nothing.
     """
 
     compared: int = 0
@@ -106,6 +112,7 @@ class QualityResult:
     equivalent: int = 0
     divergent: int = 0
     deterministic_baseline: bool = True
+    divergent_pairs: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def identical_rate(self) -> float | None:

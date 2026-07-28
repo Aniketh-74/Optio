@@ -11,8 +11,14 @@ from __future__ import annotations
 
 import pytest
 
-from optio_optimize.bench.__main__ import _build_live_summarizer, _resolve_cheap_model, main
+from optio_optimize.bench.__main__ import (
+    _build_live_judge,
+    _build_live_summarizer,
+    _resolve_cheap_model,
+    main,
+)
 from optio_optimize.bench.providers import SimulatedProvider
+from optio_optimize.types import LLMRequest, LLMResponse
 
 pytestmark = pytest.mark.optimize
 
@@ -155,3 +161,136 @@ class TestSummarizeHistoryIsolation:
         assert exit_code == 0
         assert "summarize_history" in out
         assert "not ADR-015 evidence" in out
+
+
+class TestIsolateFlag:
+    """``--stage X`` alone still runs the default-on stages alongside X."""
+
+    def test_stage_without_isolate_leaves_the_default_stages_running(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The confounder --isolate exists for: deduplicate contributes to the
+        # same delta, so the measured saving is not compress_prompt's alone.
+        exit_code = main(["--stage", "compress_prompt", "--workload", "rag_queries"])
+
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "deduplicate" in out
+
+    def test_isolate_turns_every_other_stage_off(self, capsys: pytest.CaptureFixture[str]) -> None:
+        exit_code = main(["--stage", "compress_prompt", "--isolate", "--workload", "rag_queries"])
+
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "isolated run: compress_prompt only" in out
+        assert "compress_prompt" in out
+        for other in ("deduplicate", "prune_retrieval", "trim_history", "structured_output"):
+            assert other not in out
+
+    def test_isolate_also_drops_the_lossless_caches(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # exact_cache resolving a repeat before the isolated stage ever sees
+        # it is how the original --aggressive run credited one stage for
+        # another's work; retry_storm is the workload where that bites.
+        exit_code = main(["--stage", "compress_prompt", "--isolate", "--workload", "retry_storm"])
+
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "exact_cache" not in out
+        assert "n/a  (0/0 lookups)" in out
+
+    def test_isolate_without_any_stage_is_rejected(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        exit_code = main(["--isolate", "--workload", "rag_queries"])
+
+        assert exit_code == 2
+        assert "would benchmark an empty pipeline against itself" in capsys.readouterr().err
+
+
+class TestNondeterminismControl:
+    """The floor every divergence number has to be read against."""
+
+    def test_control_runs_both_arms_unoptimized(self, capsys: pytest.CaptureFixture[str]) -> None:
+        exit_code = main(["--control", "--workload", "unique_questions"])
+
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "optimizer off on BOTH arms" in out
+        assert "floor: 0/12 differ with identical prompts" in out
+
+    def test_control_says_the_simulator_cannot_measure_this(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A simulated floor of zero is a property of the simulator being a
+        # pure function, not evidence that a provider is deterministic.
+        main(["--control", "--workload", "rag_queries"])
+
+        assert "always reports 0 divergences" in capsys.readouterr().out
+
+    def test_control_ignores_stage_selection(self, capsys: pytest.CaptureFixture[str]) -> None:
+        main(["--control", "--stage", "compress_prompt", "--workload", "rag_queries"])
+
+        out = capsys.readouterr().out
+        assert "compress_prompt" not in out
+        assert "floor:" in out
+
+
+class TestDivergencePairsAreReadable:
+    def test_show_divergences_prints_the_pairs(self, capsys: pytest.CaptureFixture[str]) -> None:
+        main(
+            [
+                "--stage",
+                "compress_prompt",
+                "--isolate",
+                "--workload",
+                "rag_queries",
+                "--show-divergences",
+                "2",
+            ]
+        )
+
+        out = capsys.readouterr().out
+        assert out.count("--- divergence ---") == 2
+        assert "baseline:" in out
+        assert "optimized:" in out
+
+    def test_pairs_are_not_printed_unless_asked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        main(["--stage", "compress_prompt", "--isolate", "--workload", "rag_queries"])
+
+        assert "--- divergence ---" not in capsys.readouterr().out
+
+
+class TestLiveJudgeBuilder:
+    def test_a_verdict_of_equivalent_or_better_is_not_a_regression(self) -> None:
+        verdicts = iter(["EQUIVALENT", "BETTER", "WORSE"])
+
+        class _Judging(SimulatedProvider):
+            def __call__(self, request: LLMRequest) -> LLMResponse:
+                response = super().__call__(request)
+                object.__setattr__(response, "content", next(verdicts))
+                return response
+
+        judge = _build_live_judge(_Judging())
+
+        assert judge("a", "b") is True
+        assert judge("a", "b") is True
+        assert judge("a", "b") is False
+
+    def test_the_judge_asks_about_regression_not_similarity(self) -> None:
+        # The first version asked "is B equivalent to A" and scored a fuller
+        # answer as WORSE, producing a 10/10-regression number that the
+        # diverged pairs contradicted. The prompt must offer BETTER.
+        captured = {}
+
+        class _Capturing(SimulatedProvider):
+            def __call__(self, request: LLMRequest) -> LLMResponse:
+                captured["system"] = request.messages[0].content
+                return super().__call__(request)
+
+        _build_live_judge(_Capturing())("a", "b")
+
+        assert "REGRESSION" in captured["system"]
+        assert "BETTER" in captured["system"]
+        assert "Extra detail in B is never WORSE." in captured["system"]
