@@ -380,8 +380,6 @@ class TestOptioPricesASpanThisPackageEmits:
 
         run_agent()
 
-        step_span = next(
-            s for s in exporter.get_finished_spans() if s.name.startswith("chat ")
-        )
+        step_span = next(s for s in exporter.get_finished_spans() if s.name.startswith("chat "))
         assert step_span.attributes is not None
         assert step_span.attributes[telemetry.GEN_AI_RUN_ID]

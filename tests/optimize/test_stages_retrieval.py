@@ -100,9 +100,7 @@ class TestPruneRetrievalDropsLowOverlapBlocks:
 
     def test_at_least_one_block_always_survives(self) -> None:
         stage = PruneRetrievalStage()
-        content = "\n\n".join(
-            [CHUNK_C, "another unrelated aside", "Question: what drove revenue?"]
-        )
+        content = "\n\n".join([CHUNK_C, "another unrelated aside", "Question: what drove revenue?"])
 
         result = stage.before(_request(content), _ctx())
 
@@ -153,13 +151,9 @@ class TestItIntegratesWithThePipeline:
 
         def provider(request: LLMRequest) -> LLMResponse:
             seen_lengths.append(len(request.messages[0].content))
-            return LLMResponse(
-                content="ok", input_tokens=100, output_tokens=5, model=request.model
-            )
+            return LLMResponse(content="ok", input_tokens=100, output_tokens=5, model=request.model)
 
-        context = "\n\n".join(
-            [CHUNK_A, CHUNK_B, CHUNK_A, CHUNK_C, "Question: what drove revenue?"]
-        )
+        context = "\n\n".join([CHUNK_A, CHUNK_B, CHUNK_A, CHUNK_C, "Question: what drove revenue?"])
         request = LLMRequest(
             model="gpt-4o",
             messages=(Message(role="user", content=context),),

@@ -231,9 +231,7 @@ class TestOpenAIProviderMockedSDK:
         assistant_calls = [
             {"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
         ]
-        assistant_msg = Message(
-            role="assistant", content="", extra={"tool_calls": assistant_calls}
-        )
+        assistant_msg = Message(role="assistant", content="", extra={"tool_calls": assistant_calls})
         tool_msg = Message(role="tool", content="result", extra={"tool_call_id": "call_1"})
 
         provider(_chat_request(messages=(assistant_msg, tool_msg)))
@@ -249,9 +247,7 @@ class TestOpenAIProviderMockedSDK:
         provider = _openai_provider(monkeypatch, backend)
 
         provider(
-            _chat_request(
-                max_tokens=256, temperature=0.7, response_format={"type": "json_object"}
-            )
+            _chat_request(max_tokens=256, temperature=0.7, response_format={"type": "json_object"})
         )
 
         sent = backend.requests[0]

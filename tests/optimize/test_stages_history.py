@@ -206,9 +206,7 @@ class TestItIntegratesWithThePipeline:
 
         def provider(request: LLMRequest) -> LLMResponse:
             seen_sizes.append(len(request.messages))
-            return LLMResponse(
-                content="ok", input_tokens=100, output_tokens=5, model=request.model
-            )
+            return LLMResponse(content="ok", input_tokens=100, output_tokens=5, model=request.model)
 
         history: list[Message] = [Message(role="system", content="You are terse.")]
         for turn in range(20):
