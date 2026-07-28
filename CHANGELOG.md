@@ -21,7 +21,33 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **Behavior classification is O(1) per step instead of O(window).** Call counts are maintained
+  as steps arrive rather than recomputed on each one. Per-step cost at the default window falls
+  from 53 µs to 37 µs, and stops scaling with `behavior_window_size` entirely — 370 µs to 38 µs
+  at a window of 1000. Widening the window to catch longer cycles is now a memory decision
+  rather than a latency one. No change to any verdict.
+- **`import optio` is about a quarter faster** — 211 ms to 158 ms (median of 12 cold starts).
+  `__version__` resolves on first access rather than at import (PEP 562), so `importlib.metadata`
+  and the `zipfile`/`email`/`inspect` tree it pulls in are no longer loaded by every program that
+  imports optio.
+- **A step's cost signals now derive from a single ledger read.** `actual_cost` and
+  `budget_remaining` previously came from two separate snapshots, so under concurrency they could
+  describe different ledger states — two numbers that were never simultaneously true. A policy
+  asserting `remaining == limit - actual` could see a contradiction.
+
+### Documentation
+
+- **[ADR-012](docs/design/adr/adr-012-the-public-api-is-the-top-level-package-only.md) states the
+  public API boundary**: the supported surface is exactly what `optio` exports at the top level,
+  and everything reachable only through a submodule is internal regardless of being importable,
+  documented and typed. Previously unstated, which left every internal signature arguably frozen.
+- `GENAI_SEMCONV_VERSION` is exported and is now documented; it was a public promise mentioned
+  nowhere.
+- Removed a stale README caveat claiming the adapters had not been tested against real
+  frameworks. Four isolated CI jobs verify each adapter against genuine LangGraph, CrewAI,
+  OpenAI Agents SDK and Claude Agent SDK objects, including the cases each must refuse.
 
 ## [0.1.0] — 2026-07-27
 

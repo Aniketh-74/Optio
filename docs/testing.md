@@ -146,6 +146,50 @@ judgement to dismiss. Wiring it as a blocking gate would train contributors to a
 the two modules where silent wrongness is worst — the ledger and the guard — and after any
 change to cost arithmetic.
 
+## Profiling
+
+Section 16 rule 10 forbids optimizing without a benchmark to justify it, so the hot path was
+profiled before anything was changed. Two findings were worth acting on; recording them here
+because the *shape* of both is easy to miss.
+
+**Classification was O(window) per step.** `classify` rebuilt a `Counter` over the whole window
+on every step — 1,018,775 generator calls for 20,000 steps. Every existing test passed: the
+cost is bounded by config, so it never becomes O(run), and
+`test_classification_is_flat_in_run_length` checks exactly that. What no test checked was the
+cost against *window size*:
+
+| window | before | after |
+|---|---|---|
+| 50 (default) | 53 µs | **37 µs** |
+| 200 | 105 µs | **41 µs** |
+| 1000 | 370 µs | **38 µs** |
+
+The window is now counted incrementally on append. Widening it to catch longer cycles is a
+memory decision rather than a latency one.
+
+The risk that swap introduces is drift — stored counts diverging from the deque — and drift is
+invisible to every other test in the suite, because the deque itself stays correct. Three
+property tests in `TestIncrementalCountsMatchARecount` compare against a full recount on *every*
+add, not just at the end, since a decrement error that a later eviction cancels out would pass a
+final-state check having produced wrong verdicts throughout. Verified by removing the eviction
+decrement: all three fail.
+
+**The cost lane took two ledger snapshots per priced step.** Halving that is the smaller half of
+the fix. The larger half is consistency: taken separately, a concurrent step can land between
+them, so `actual_cost` and `budget_remaining` describe different ledger states — two numbers
+that were never simultaneously true. A policy checking `remaining == limit - actual` would see a
+contradiction, which is worse than either number being merely stale.
+
+**Import time: 211 ms → 158 ms.** `importlib.metadata` cost 88 ms of it — 42% — pulling in
+`zipfile`, `email.message`, `pathlib` and `inspect` to read a version string most programs never
+touch. It resolves lazily now (PEP 562). The pre-existing 500 ms budget test is far too loose to
+catch that returning, so `test_version_lookup_stays_off_the_import_path` names the specific
+modules instead; re-adding the eager import fails it while the budget test stays green.
+
+Nothing else in the profile justifies changing. It is flat, the leader does inherent work
+(sorting and hashing span attributes), and per-step overhead sits at ~67 µs against a 5 ms
+budget — 75× headroom. Further optimization would be the premature kind rule 10 names.
+
 ## Concurrency
 
 Agent frameworks are overwhelmingly concurrent — LangGraph fans out to parallel branches,
