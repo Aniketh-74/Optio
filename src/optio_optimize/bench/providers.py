@@ -1,0 +1,428 @@
+"""Providers for benchmarking: real APIs, and a simulator for everything else.
+
+Real calls are the authoritative measurement — only a live model can tell you
+what an optimization did to output length, end-to-end latency, or answer
+quality. They also cost money and need credentials, so this module is built
+around two rules:
+
+**We never handle the key.** Adapters read the provider SDK's own environment
+variable and pass nothing. This library does not accept, store, log, or forward
+a credential, matching §10's position in the core.
+
+**Nothing spends money without being asked twice.** A live run requires an
+explicit flag *and* passes a spend estimate to a guard that aborts above a cap.
+A benchmark that quietly bills someone is a far worse bug than a slow one.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import time
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Protocol
+
+from optio_optimize.config import PRICING
+from optio_optimize.tokens import TokenCounter, count_request, default_counter
+from optio_optimize.types import LLMResponse
+
+if TYPE_CHECKING:
+    from optio_optimize.types import LLMRequest
+
+#: Default ceiling for a live run. Deliberately small: the suite should be
+#: cheap enough to run often, and a benchmark nobody runs proves nothing.
+DEFAULT_SPEND_CAP_USD = 1.00
+
+
+class BenchProvider(Protocol):
+    """Something that answers a request and reports what it cost."""
+
+    @property
+    def is_live(self) -> bool:
+        """Whether this reaches a real model."""
+        ...
+
+    @property
+    def models_latency(self) -> bool:
+        """Whether a call takes a realistic amount of time.
+
+        Declared rather than measured. Our own tokenizer runs inside the timed
+        region of a benchmark, and on a large prompt it costs enough to look
+        like network latency -- so the clock cannot distinguish "a provider
+        answered slowly" from "we did expensive work". Only the provider knows.
+        """
+        ...
+
+    @property
+    def label(self) -> str:
+        """Identifier for reports."""
+        ...
+
+    def __call__(self, request: LLMRequest) -> LLMResponse:
+        """Answer one request."""
+        ...
+
+
+class SpendGuard:
+    """Aborts a live run before it exceeds a cap.
+
+    Checks *before* each call using an estimate, and tracks actual spend after.
+    Estimating first is the point: discovering the overspend afterwards is not
+    a guard, it is a receipt.
+    """
+
+    def __init__(self, cap_usd: float = DEFAULT_SPEND_CAP_USD) -> None:
+        """Build a guard.
+
+        Args:
+            cap_usd: Maximum to spend across the run.
+
+        Raises:
+            ValueError: If the cap is not positive.
+        """
+        if cap_usd <= 0:
+            raise ValueError(f"cap_usd must be positive, got {cap_usd}")
+        self.cap_usd = cap_usd
+        self.spent_usd = 0.0
+        self.calls = 0
+
+    def check(self, estimated_usd: float) -> None:
+        """Raise if this call would breach the cap.
+
+        Raises:
+            RuntimeError: When the projected total exceeds the cap.
+        """
+        if self.spent_usd + estimated_usd > self.cap_usd:
+            raise RuntimeError(
+                f"spend cap reached: ${self.spent_usd:.4f} spent, this call is "
+                f"~${estimated_usd:.4f}, cap is ${self.cap_usd:.2f}. "
+                "Raise cap_usd or shrink the workload."
+            )
+
+    def record(self, actual_usd: float) -> None:
+        """Add a completed call's real cost."""
+        self.spent_usd += actual_usd
+        self.calls += 1
+
+
+@dataclass(slots=True)
+class SimulatedProvider:
+    """A deterministic stand-in that bills honestly for what it is sent.
+
+    Its one job that matters: **count the request it actually receives.** That
+    is what makes token-reduction measurable without a live model -- a stage
+    that shrinks the prompt shows up here as a smaller bill, exactly as it would
+    at a real provider.
+
+    What it cannot do is tell you anything real about completion length,
+    latency, or answer quality. It is honest about that by construction:
+    :attr:`is_live` is ``False``, and the metrics layer refuses to report those
+    figures for a non-live arm rather than printing a fabricated one.
+
+    Attributes:
+        output_tokens: Completion length to report. Fixed, so both arms are
+            comparable, and meaningless as a measurement.
+        latency_ms: Artificial delay per call. Zero by default to keep the
+            suite fast; set it to model a real provider's round trip when
+            comparing throughput.
+        model: Model name used for pricing.
+    """
+
+    output_tokens: int = 120
+    latency_ms: float = 0.0
+    model: str = "gpt-4o"
+    _seen_prefixes: set[str] = field(default_factory=set)
+
+    @property
+    def is_live(self) -> bool:
+        """Never live."""
+        return False
+
+    @property
+    def models_latency(self) -> bool:
+        """True only when a deliberate delay was configured."""
+        return self.latency_ms > 0
+
+    @property
+    def label(self) -> str:
+        """Identifier for reports."""
+        return f"simulated({self.model})"
+
+    def __call__(self, request: LLMRequest) -> LLMResponse:
+        """Answer a request, billing for its real size."""
+        if self.latency_ms > 0:
+            time.sleep(self.latency_ms / 1000.0)
+
+        counter = default_counter()
+        input_tokens = count_request(request, counter)
+        cached = self._prefix_cache_hit(request, counter)
+
+        # Deterministic content derived from the request, so the quality
+        # comparison is meaningful: identical requests produce identical
+        # answers, and a stage that changed the prompt shows up as a change.
+        digest = hashlib.blake2b(
+            "|".join(m.content for m in request.messages).encode("utf-8", "replace"),
+            digest_size=8,
+        ).hexdigest()
+        return LLMResponse(
+            content=f"simulated-answer-{digest}",
+            input_tokens=input_tokens,
+            output_tokens=self.output_tokens,
+            cached_input_tokens=cached,
+            model=request.model,
+            finish_reason="stop",
+        )
+
+    def _prefix_cache_hit(self, request: LLMRequest, counter: TokenCounter) -> int:
+        """Model provider-side prefix caching for a marked request.
+
+        Without this the simulator makes the prefix stage look worthless: it
+        marks a boundary, the stub ignores it, and the report shows zero
+        benefit from what is usually the largest lossless saving available.
+        That is a defect in the *measurement*, not in the stage.
+
+        The model follows the documented vendor behaviour: a marked prefix is
+        billed at a discount on every call after the first that carries the
+        same prefix. Approximate, and clearly a model rather than a
+        measurement -- which is exactly why the metrics layer refuses to report
+        latency or output length from this provider and why ``--live`` exists.
+        """
+        boundary = 0
+        for index, message in enumerate(request.messages):
+            if message.cacheable:
+                boundary = index + 1
+                break
+        if boundary == 0:
+            return 0
+
+        prefix_text = "|".join(m.content for m in request.messages[:boundary])
+
+        # Longest *common* prefix, not exact match on the marked boundary.
+        # Vendors cache by token prefix, so a conversation that grows still hits
+        # on everything it shares with the previous call. Exact-matching the
+        # marked text made every turn of a growing chat a miss and reported
+        # zero benefit from a feature that works -- a simulator bug that would
+        # have been read as a stage bug.
+        best = max(
+            (seen for seen in self._seen_prefixes if prefix_text.startswith(seen)),
+            key=len,
+            default="",
+        )
+        self._seen_prefixes.add(prefix_text)
+        if not best:
+            return 0  # First call writes the cache; it does not read it.
+        return counter.count_text(best, request.model)
+
+
+class OpenAIProvider:
+    """Real OpenAI chat completions.
+
+    Reads ``OPENAI_API_KEY`` from the environment via the SDK's own mechanism.
+    This class never sees the value.
+    """
+
+    def __init__(self, model: str = "gpt-4o-mini", guard: SpendGuard | None = None) -> None:
+        """Build the adapter.
+
+        Args:
+            model: Model to call. Defaults to the cheap one -- a benchmark
+                should not default to the expensive option.
+            guard: Spend guard. One with the default cap when omitted.
+
+        Raises:
+            RuntimeError: If the SDK is missing or no key is configured, with
+                the specific remedy rather than a generic import error.
+        """
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise RuntimeError(
+                "the openai package is required for live benchmarking: pip install openai"
+            ) from exc
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise RuntimeError(
+                "OPENAI_API_KEY is not set. Live benchmarking needs it; the "
+                "simulator needs nothing."
+            )
+        self._client = OpenAI()
+        self.model = model
+        self.guard = guard if guard is not None else SpendGuard()
+
+    @property
+    def is_live(self) -> bool:
+        """Always live."""
+        return True
+
+    @property
+    def models_latency(self) -> bool:
+        """A real network round trip always does."""
+        return True
+
+    @property
+    def label(self) -> str:
+        """Identifier for reports."""
+        return f"openai({self.model})"
+
+    def __call__(self, request: LLMRequest) -> LLMResponse:
+        """Send the request and normalize the reply."""
+        estimated = _estimate_cost(request, self.model)
+        self.guard.check(estimated)
+
+        payload: dict[str, object] = {
+            "model": self.model,
+            "messages": [{"role": m.role, "content": m.content} for m in request.messages],
+        }
+        if request.max_tokens is not None:
+            payload["max_completion_tokens"] = request.max_tokens
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
+        if request.response_format is not None:
+            payload["response_format"] = request.response_format
+
+        completion = self._client.chat.completions.create(**payload)
+        usage = completion.usage
+        cached = 0
+        if usage is not None and getattr(usage, "prompt_tokens_details", None) is not None:
+            cached = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
+
+        response = LLMResponse(
+            content=completion.choices[0].message.content or "",
+            input_tokens=usage.prompt_tokens if usage else 0,
+            output_tokens=usage.completion_tokens if usage else 0,
+            cached_input_tokens=cached,
+            model=completion.model,
+            finish_reason=completion.choices[0].finish_reason,
+        )
+        self.guard.record(_actual_cost(response, self.model))
+        return response
+
+
+class AnthropicProvider:
+    """Real Anthropic messages, with prefix-cache markers applied.
+
+    The one provider where this library's ``cacheable`` marker becomes a real
+    API field, so it is where the prefix stage can be measured rather than
+    assumed.
+    """
+
+    def __init__(self, model: str = "claude-haiku-4", guard: SpendGuard | None = None) -> None:
+        """Build the adapter.
+
+        Raises:
+            RuntimeError: If the SDK is missing or no key is configured.
+        """
+        try:
+            from anthropic import Anthropic
+        except ImportError as exc:
+            raise RuntimeError(
+                "the anthropic package is required for live benchmarking: pip install anthropic"
+            ) from exc
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY is not set. Live benchmarking needs it; the "
+                "simulator needs nothing."
+            )
+        self._client = Anthropic()
+        self.model = model
+        self.guard = guard if guard is not None else SpendGuard()
+
+    @property
+    def is_live(self) -> bool:
+        """Always live."""
+        return True
+
+    @property
+    def models_latency(self) -> bool:
+        """A real network round trip always does."""
+        return True
+
+    @property
+    def label(self) -> str:
+        """Identifier for reports."""
+        return f"anthropic({self.model})"
+
+    def __call__(self, request: LLMRequest) -> LLMResponse:
+        """Send the request, translating cacheable markers to cache_control."""
+        estimated = _estimate_cost(request, self.model)
+        self.guard.check(estimated)
+
+        system_blocks = []
+        turns = []
+        for message in request.messages:
+            if message.role == "system":
+                block: dict[str, object] = {"type": "text", "text": message.content}
+                if message.cacheable:
+                    # This is the whole point of the prefix stage: the marker
+                    # our pipeline placed becomes the provider's own cache
+                    # directive, and the discount is then measurable.
+                    block["cache_control"] = {"type": "ephemeral"}
+                system_blocks.append(block)
+            else:
+                turns.append({"role": message.role, "content": message.content})
+
+        reply = self._client.messages.create(
+            model=self.model,
+            max_tokens=request.max_tokens or 1024,
+            system=system_blocks or None,
+            messages=turns,
+            temperature=request.temperature if request.temperature is not None else 1.0,
+        )
+        usage = reply.usage
+        cached = getattr(usage, "cache_read_input_tokens", 0) or 0
+        text = "".join(b.text for b in reply.content if getattr(b, "type", "") == "text")
+
+        response = LLMResponse(
+            content=text,
+            input_tokens=usage.input_tokens + cached,
+            output_tokens=usage.output_tokens,
+            cached_input_tokens=cached,
+            model=reply.model,
+            finish_reason=reply.stop_reason,
+        )
+        self.guard.record(_actual_cost(response, self.model))
+        return response
+
+
+def _estimate_cost(request: LLMRequest, model: str) -> float:
+    """Rough pre-call cost, for the spend guard.
+
+    Assumes a generous completion length. Over-estimating is correct here: the
+    guard should stop early rather than let the last call be the one that
+    breaks the cap.
+    """
+    pricing = PRICING.get(model)
+    if pricing is None:
+        return 0.0
+    input_tokens = count_request(request, default_counter())
+    assumed_output = 1024
+    return (
+        input_tokens * pricing.input_usd_per_m + assumed_output * pricing.output_usd_per_m
+    ) / 1_000_000
+
+
+def _actual_cost(response: LLMResponse, model: str) -> float:
+    """Real cost of a completed call."""
+    from optio_optimize.savings import _cost
+
+    pricing = PRICING.get(model)
+    if pricing is None:
+        return 0.0
+    return _cost(
+        pricing, response.input_tokens, response.output_tokens, response.cached_input_tokens
+    )
+
+
+def available_live_provider(
+    guard: SpendGuard | None = None,
+) -> BenchProvider | None:
+    """Return a live provider if one is configured, else ``None``.
+
+    Checks Anthropic first: it is the only provider whose prefix caching this
+    library controls explicitly, so it measures strictly more than the others.
+    """
+    for factory in (AnthropicProvider, OpenAIProvider):
+        try:
+            return factory(guard=guard)
+        except RuntimeError:
+            continue
+    return None

@@ -21,7 +21,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from optio_optimize.cache import MemoryCache, request_key
-from optio_optimize.stages.base import Stage, StageResult
+from optio_optimize.stages.base import Fidelity, Stage, StageResult
 from optio_optimize.tokens import count_request
 
 if TYPE_CHECKING:
@@ -47,7 +47,9 @@ class ExactCacheStage(Stage):
     because every individual response looks plausible.
     """
 
-    lossy = False
+    # The stored response *is* the model's answer to this exact prompt, so
+    # serving it is identical by construction rather than by approximation.
+    fidelity = Fidelity.IDENTICAL
 
     def __init__(self, backend: CacheBackend | None = None) -> None:
         """Build the stage.
@@ -137,7 +139,8 @@ class PrefixCacheStage(Stage):
     count. Claiming avoided tokens here would inflate every report.
     """
 
-    lossy = False
+    # A marker changes what the provider *bills*, never what it generates.
+    fidelity = Fidelity.IDENTICAL
 
     @property
     def name(self) -> str:

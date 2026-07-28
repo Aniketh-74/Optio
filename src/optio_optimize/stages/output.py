@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from optio_optimize.stages.base import Stage, StageResult
+from optio_optimize.stages.base import Fidelity, Stage, StageResult
 
 if TYPE_CHECKING:
     from optio_optimize.stages.base import StageContext
@@ -49,7 +49,10 @@ class AdaptiveMaxTokensStage(Stage):
     the ceiling only applies once there is a real sample.
     """
 
-    lossy = False
+    # SHAPED, not IDENTICAL: a ceiling that binds truncates the reply. Rare by
+    # design, but "rare" is not "never", and a stage claiming identical output
+    # must be able to guarantee it.
+    fidelity = Fidelity.SHAPED
 
     def __init__(self) -> None:
         """Build the stage with an empty observation history."""
@@ -110,7 +113,11 @@ class StructuredOutputStage(Stage):
     call to make.
     """
 
-    lossy = False
+    # SHAPED. This appends an instruction to the prompt, so the model answers
+    # differently -- more tersely, which is the point. The A/B suite reported
+    # every fan_out response as divergent while this claimed to be lossless,
+    # and the suite was right.
+    fidelity = Fidelity.SHAPED
 
     #: Appended to the system prompt. Deliberately terse -- it costs input
     #: tokens on every call, so a long instruction can outweigh what it saves.

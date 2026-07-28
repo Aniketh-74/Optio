@@ -188,6 +188,13 @@ ignore_missing_imports = true
 module = ["tiktoken.*"]
 ignore_missing_imports = true
 
+# Provider SDKs used only by the live benchmark (optio_optimize.bench). Never
+# imported unless someone passes --live, and installing all of them to type-check
+# a benchmark would contradict the minimal-core rule they exist to demonstrate.
+[[tool.mypy.overrides]]
+module = ["openai.*", "anthropic.*"]
+ignore_missing_imports = true
+
 # ---------------------------------------------------------------------------
 # Test (§9)
 # ---------------------------------------------------------------------------

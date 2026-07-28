@@ -27,12 +27,56 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from optio_optimize.config import OptimizeConfig
     from optio_optimize.tokens import TokenCounter
     from optio_optimize.types import LLMRequest, LLMResponse
+
+
+class Fidelity(Enum):
+    """How much a stage may change the model's answer.
+
+    A two-way lossy/lossless split was the first design and it was wrong, in a
+    way the benchmark caught immediately: ``structured_output`` was marked
+    lossless, and the A/B suite reported **every** response in the ``fan_out``
+    workload as divergent. Both facts were correct. The stage appends an
+    instruction to the system prompt, so the model answers differently -- that
+    is the entire point of it -- and no amount of it being *desirable* makes the
+    output identical.
+
+    Three levels, because the middle case is real and common:
+
+    ``IDENTICAL``
+        The response is byte-for-byte what an unoptimized call would return.
+        Achievable only by not calling the model differently at all: serving a
+        cached answer for the same request, or marking a prefix the provider
+        bills at a discount. Divergence here is a bug, and the benchmark fails
+        the build over it.
+
+    ``SHAPED``
+        The information is preserved; the presentation changes. Suppressing a
+        prose wrapper around JSON, or capping a reply that would have rambled.
+        A user gets what they asked for in a more compact form. Enabled by
+        default, because that is a trade almost everyone wants -- but it is
+        stated rather than hidden behind a "lossless" claim.
+
+    ``ALTERED``
+        The content itself may differ: a near-match served from a semantic
+        cache, a compressed prompt, a cheaper model, a summarized history.
+        Off by default, and gated by the eval suite (ADR-013 rule 3).
+    """
+
+    IDENTICAL = "identical"
+    SHAPED = "shaped"
+    ALTERED = "altered"
+
+    @property
+    def guarantees_identical_output(self) -> bool:
+        """Whether a response must match the unoptimized one exactly."""
+        return self is Fidelity.IDENTICAL
 
 
 @dataclass(slots=True)
@@ -99,10 +143,21 @@ class Stage(ABC):
             in ``disabled_stages``.
     """
 
-    #: Whether this stage can change what the model would have produced.
-    #: Lossy stages are off unless explicitly enabled, and the eval suite
+    #: How far this stage may move the answer. See :class:`Fidelity`.
+    #: ``ALTERED`` stages are off unless explicitly enabled, and the eval suite
     #: (ADR-013 rule 3) is required to cover every one of them.
-    lossy: bool = False
+    fidelity: Fidelity = Fidelity.IDENTICAL
+
+    @property
+    def lossy(self) -> bool:
+        """Whether this stage may change the answer's content.
+
+        ``SHAPED`` is deliberately *not* lossy: the information survives, only
+        its presentation changes. Kept as a property so the warning on
+        construction and the eval gate both key off content risk rather than
+        firing on every stage that reformats a reply.
+        """
+        return self.fidelity is Fidelity.ALTERED
 
     @property
     @abstractmethod
