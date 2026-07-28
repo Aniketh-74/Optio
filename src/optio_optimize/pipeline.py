@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from optio_optimize.savings import SavingsReport, StageSaving
@@ -42,6 +43,38 @@ _log = logging.getLogger("optio_optimize")
 
 #: Callable that actually talks to the provider.
 ProviderCall = Callable[["LLMRequest"], "LLMResponse"]
+
+#: The async counterpart. Exists because every realistic adapter target --
+#: the OpenAI Agents SDK's ``Model.get_response`` chief among them -- is
+#: ``async def`` and abstract, with no synchronous alternative. Stage logic
+#: itself performs no I/O, so only "call the provider" differs between the
+#: two execution paths; :meth:`Pipeline._run_stages` is shared by both.
+AsyncProviderCall = Callable[["LLMRequest"], "Awaitable[LLMResponse]"]
+
+
+@dataclass(slots=True)
+class _StageRun:
+    """What running every stage's ``before`` hook produced.
+
+    Attributes:
+        request: The request as every stage that succeeded left it.
+        ctx: The context stages ran against. Carried forward rather than
+            rebuilt, because a stage's ``after`` hook must see the same
+            ``scratch`` its own ``before`` populated -- the cache stages
+            carry their key across the two calls this way.
+        short_circuit: A response, if some stage served one without calling
+            the provider.
+        saved_input: Input tokens avoided across every stage that ran.
+        saved_output: Output tokens avoided across every stage that ran.
+        fired: Names of the stages that did something, in execution order.
+    """
+
+    request: LLMRequest
+    ctx: StageContext
+    short_circuit: LLMResponse | None = None
+    saved_input: int = 0
+    saved_output: int = 0
+    fired: list[str] = field(default_factory=list)
 
 
 class Pipeline:
@@ -115,18 +148,72 @@ class Pipeline:
         if not self.config.enabled:
             return call(request)
 
+        run = self._run_stages(request, run_id)
+        if run.short_circuit is not None:
+            return self._finish_and_emit(run, run.short_circuit, run_id, short_circuited=True)
+
+        response = call(run.request)
+        self._run_after(run.request, response, run.ctx)
+        return self._finish_and_emit(run, response, run_id, short_circuited=False)
+
+    async def aexecute(
+        self,
+        request: LLMRequest,
+        call: AsyncProviderCall,
+        *,
+        run_id: str | None = None,
+    ) -> LLMResponse:
+        """The async twin of :meth:`execute`, for an async provider call.
+
+        Stage logic performs no I/O, so nothing about running stages differs
+        between the two paths -- :meth:`_run_stages` is shared verbatim. Only
+        the line that calls the provider needs an ``await``, which is the
+        entire reason this method exists rather than asking every async
+        caller (the OpenAI Agents SDK's ``Model.get_response`` chief among
+        them, ``async def`` and abstract with no synchronous alternative) to
+        bridge to :meth:`execute` themselves.
+
+        Args:
+            request: The caller's request.
+            call: Async function that performs the real provider call.
+            run_id: optio run this belongs to, for attributing savings.
+
+        Returns:
+            Same contract as :meth:`execute`.
+
+        Raises:
+            Exception: Only whatever ``call`` raises.
+        """
+        if not self.config.enabled:
+            return await call(request)
+
+        run = self._run_stages(request, run_id)
+        if run.short_circuit is not None:
+            return self._finish_and_emit(run, run.short_circuit, run_id, short_circuited=True)
+
+        response = await call(run.request)
+        self._run_after(run.request, response, run.ctx)
+        return self._finish_and_emit(run, response, run_id, short_circuited=False)
+
+    def _run_stages(self, request: LLMRequest, run_id: str | None) -> _StageRun:
+        """Run every stage's ``before`` hook, stopping at a short-circuit or the deadline.
+
+        Args:
+            request: The caller's request.
+            run_id: Passed through to the shared :class:`StageContext`.
+
+        Returns:
+            What the run produced, up to (and including, if one fired) a
+            short-circuit.
+        """
         ctx = StageContext(config=self.config, counter=self._counter, run_id=run_id)
-
-        # `current` advances only on a stage that succeeds outright. A stage
-        # that raises leaves it untouched, so the next stage receives the last
-        # good request rather than whatever a half-finished transform produced.
-        current = request
+        run = _StageRun(request=request, ctx=ctx)
         deadline = time.perf_counter() + self.config.latency_budget_ms / 1000.0
-        short_circuit: LLMResponse | None = None
-        saved_input = 0
-        saved_output = 0
-        fired: list[str] = []
 
+        # `run.request` advances only on a stage that succeeds outright. A
+        # stage that raises leaves it untouched, so the next stage receives
+        # the last good request rather than whatever a half-finished
+        # transform produced.
         for stage in self.stages:
             if time.perf_counter() >= deadline:
                 # Out of budget. Everything remaining is skipped rather than
@@ -135,50 +222,56 @@ class Pipeline:
                 _log.debug("optio_optimize: latency budget spent, skipping remaining stages")
                 break
 
-            result, elapsed_ms = self._run_before(stage, current, ctx)
+            result, elapsed_ms = self._run_before(stage, run.request, ctx)
             if result is None:
                 continue
 
             self._account(stage.name, result, elapsed_ms)
-            saved_input += result.saved_input_tokens
-            saved_output += result.saved_output_tokens
-            current = result.request
+            run.saved_input += result.saved_input_tokens
+            run.saved_output += result.saved_output_tokens
+            run.request = result.request
             if result.note:
                 # A non-empty note is how a stage says "I did something" --
                 # the same signal PrefixCacheStage's zero-token-saving marker
                 # relies on to show up in reports at all.
-                fired.append(stage.name)
+                run.fired.append(stage.name)
             if result.short_circuited:
-                short_circuit = result.response
+                run.short_circuit = result.response
                 break
 
-        totals = (saved_input, saved_output)
-        if short_circuit is not None:
-            self._finish(totals, current, short_circuit, short_circuited=True)
-            if self.config.emit_spans:
-                record_span(
-                    current,
-                    short_circuit,
-                    stages=fired,
-                    saved_input_tokens=saved_input,
-                    saved_output_tokens=saved_output,
-                    short_circuited=True,
-                    run_id=run_id,
-                    tracer_provider=self._tracer_provider,
-                )
-            return short_circuit
+        return run
 
-        response = call(current)
-        self._run_after(current, response, ctx)
-        self._finish(totals, current, response, short_circuited=False)
+    def _finish_and_emit(
+        self,
+        run: _StageRun,
+        response: LLMResponse,
+        run_id: str | None,
+        *,
+        short_circuited: bool,
+    ) -> LLMResponse:
+        """Record savings and optionally emit a span, shared by both call paths.
+
+        Args:
+            run: What :meth:`_run_stages` produced.
+            response: The response to report against -- the short-circuit, or
+                what the provider returned.
+            run_id: Forwarded to :func:`~optio_optimize.telemetry.record_span`.
+            short_circuited: Whether the provider was ever called.
+
+        Returns:
+            ``response``, unchanged -- this method exists for its side
+            effects, and returns its argument so call sites stay one-liners.
+        """
+        totals = (run.saved_input, run.saved_output)
+        self._finish(totals, run.request, response, short_circuited=short_circuited)
         if self.config.emit_spans:
             record_span(
-                current,
+                run.request,
                 response,
-                stages=fired,
-                saved_input_tokens=saved_input,
-                saved_output_tokens=saved_output,
-                short_circuited=False,
+                stages=run.fired,
+                saved_input_tokens=run.saved_input,
+                saved_output_tokens=run.saved_output,
+                short_circuited=short_circuited,
                 run_id=run_id,
                 tracer_provider=self._tracer_provider,
             )

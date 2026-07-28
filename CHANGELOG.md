@@ -23,6 +23,29 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **`optio_optimize` gained an async entry point (`Optimizer.acall`/`Pipeline.aexecute`)** and its
+  first framework adapter, `optio_optimize.adapters.openai_agents.wrap_openai_client`. Building the
+  adapter surfaced that the package had no way to support an async provider call at all — every
+  realistic target (the OpenAI Agents SDK's `Model.get_response` chief among them) is `async def`
+  and abstract, with no synchronous alternative — so `Pipeline`'s stage-running logic was factored
+  out into a shared, still-synchronous `_run_stages` that both `execute` and the new `aexecute`
+  call; only "call the provider" differs between the two paths.
+  The adapter wraps an `AsyncOpenAI` client's `chat.completions.create` (the SDK's own extension
+  point for a Chat-Completions-backed model) rather than reimplementing the SDK's Responses-API
+  `Model` protocol, which this package's `LLMRequest`/`LLMResponse` were never designed to
+  represent. Streaming calls bypass optimization entirely; a request-translation failure falls back
+  to the unwrapped client rather than raising, extending Pipeline's fail-open guarantee to code that
+  runs outside it.
+  Two real bugs were found and fixed while driving the adapter against the actual `openai` and
+  `agents` packages (not hand-built stand-ins): a cache hit returned the *original* call's
+  `ChatCompletion`, non-zero `usage` included, so a call that cost nothing looked exactly as
+  expensive as the one that filled the cache — fixed by gating on `LLMResponse.served_from` rather
+  than "is there a native object available." And the Agents SDK represents an unset field
+  (temperature, max_tokens) as a falsy `openai.Omit`/`NotGiven` sentinel, not `None`, which every
+  `is not None` check in this package's stages was reading as "the caller already set this" —
+  found only by calling the real `agents.OpenAIChatCompletionsModel.get_response()` with its
+  default `ModelSettings()`, since no hand-written test kwargs would have used a sentinel. See
+  `src/optio_optimize/adapters/openai_agents.py` and `tests/optimize/test_adapters_openai_agents.py`.
 - **`optio_optimize` now emits spans `optio` already knows how to price (ADR-014).**
   `Optimizer(emit_spans=True)` (default off) makes `Optimizer.call()` emit one
   standard OTel GenAI span per request, using the exact attribute names

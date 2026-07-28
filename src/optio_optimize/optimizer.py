@@ -17,7 +17,7 @@ from optio_optimize.stages import build_stages
 if TYPE_CHECKING:
     from opentelemetry.trace import TracerProvider
 
-    from optio_optimize.pipeline import ProviderCall
+    from optio_optimize.pipeline import AsyncProviderCall, ProviderCall
     from optio_optimize.savings import SavingsReport
     from optio_optimize.stages.base import Stage
     from optio_optimize.types import LLMRequest, LLMResponse
@@ -93,6 +93,35 @@ class Optimizer:
             unless a lossy stage is enabled.
         """
         return self._pipeline.execute(request, provider, run_id=run_id)
+
+    async def acall(
+        self,
+        request: LLMRequest,
+        provider: AsyncProviderCall,
+        *,
+        run_id: str | None = None,
+    ) -> LLMResponse:
+        """The async twin of :meth:`call`, for an async provider function.
+
+        Every stage runs synchronously either way -- none perform I/O -- so
+        this differs from :meth:`call` only in awaiting ``provider``. It
+        exists because the realistic targets for adapting this package to a
+        framework are themselves async: the OpenAI Agents SDK's
+        ``Model.get_response`` is ``async def`` and abstract, with no
+        synchronous alternative, and the same is true of most modern agent
+        runtimes.
+
+        Args:
+            request: The call to make.
+            provider: Async function performing the real API call.
+            run_id: optio run id, so savings attribute to the same run the cost
+                lane is metering.
+
+        Returns:
+            The response. Identical to what ``provider`` would have returned,
+            unless a lossy stage is enabled.
+        """
+        return await self._pipeline.aexecute(request, provider, run_id=run_id)
 
     @property
     def report(self) -> SavingsReport:

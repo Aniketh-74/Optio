@@ -46,8 +46,9 @@ Agent governance engines (Microsoft Agent Governance Toolkit, OPA, Cedar) can de
 ## Install
 
 ```bash
-pip install optio                # core
+pip install optio                # core: signals only, never touches a request
 pip install "optio[langgraph]"   # + framework adapter
+pip install "optio[optimize]"    # + optio_optimize: acts on the signals (see below)
 ```
 
 Two runtime dependencies — `opentelemetry-api` and `opentelemetry-sdk`. Nothing else, no
@@ -169,6 +170,63 @@ corpus does and does not model):
 
 Both are CI-gated. The detection rate is gated alongside the FP rate because a zero false-positive
 rate is trivially achievable by never detecting anything.
+
+## optio_optimize — acting on the signals, not just emitting them
+
+`optio` never changes a request (ADR-001). `optio_optimize` is the separate, opt-in package that
+does: caching, history trimming, deduplication, and retrieval pruning, sitting in the request path
+rather than beside it ([ADR-013](docs/design/adr/adr-013-optimization-lives-in-a-separate-package.md)).
+Installing `optio` alone never pulls it in.
+
+```python
+from optio_optimize import Optimizer
+
+optimizer = Optimizer()  # lossless by default: caching, prefix markers, token ceilings
+response = optimizer.call(request, provider_fn)  # or `await optimizer.acall(...)` for async
+```
+
+**Live-measured, not simulated.** `docs/optimize-benchmarks.md` is generated the same way the
+core's overhead numbers are — the file states which figures are live-API-verified and which are
+still simulated, and corrects itself in place when a live run contradicts an earlier simulated
+claim (it has, twice, over two workloads: multi_turn_chat was measured at +36.3% simulated / −7.7%
+live in one round, and simulation vs. live cost direction flipped again for `trim_history` under
+OpenAI's automatic prefix caching in the next). Against `gpt-4o-mini`:
+
+| Workload | Cost reduction (live) |
+|---|---|
+| `retry_storm` | **93.5%** |
+| `tool_loop` | **80.8%** |
+| `fan_out` | **68.2%** |
+| `rag_queries` | **16.5%** |
+| `multi_turn_chat` | **8.4%** |
+
+**One adapter today: the OpenAI Agents SDK**, via `optio_optimize.adapters.openai_agents.wrap_openai_client`.
+Requires `pip install openai` (and `openai-agents` for the SDK itself) — neither ships with
+`optio[optimize]`; this is the one place in the package that reads prompt content, so it stays
+opt-in down to its own dependency. The wrapper intercepts an `AsyncOpenAI` client's
+`chat.completions.create`, the SDK's own extension point for a Chat-Completions-backed model,
+rather than reimplementing its Responses-API `Model` protocol. Streaming calls pass through
+unmodified; a translation failure falls back to the unwrapped client rather than raising. Two real
+bugs were found and fixed building it — a cache hit that returned the *original* call's non-zero
+token usage, and the Agents SDK's `Omit` sentinel (not `None`) for unset fields being read as "the
+caller already set this" — both caught only by driving the real SDK, not by hand-written test
+input; see the adapter's module docstring and `tests/optimize/test_adapters_openai_agents.py`.
+
+```python
+from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
+from openai import AsyncOpenAI
+from optio_optimize.adapters.openai_agents import wrap_openai_client
+
+client = wrap_openai_client(AsyncOpenAI(), trim_history=True)
+model = OpenAIChatCompletionsModel(model="gpt-4o-mini", openai_client=client)
+```
+
+**Emits spans `optio` already knows how to price**, opt-in via `Optimizer(emit_spans=True)`
+([ADR-014](docs/design/adr/adr-014-optimize-emits-spans-optio-already-knows-how-to-read.md)) — no
+code changed on the `optio` side, and `optio_optimize` still imports nothing from `optio` (checked
+by `lint-imports`, not just claimed). Don't combine with other GenAI OTel instrumentation on the
+same calls, or both will emit `gen_ai.usage.*` for the same request and `optio`'s cost lane will
+sum them.
 
 ## Configuration
 
