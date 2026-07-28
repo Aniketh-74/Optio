@@ -486,11 +486,16 @@ class AnthropicProvider:
         estimated = _estimate_cost(request, self.model)
         self.guard.check(estimated)
 
-        system_blocks = []
-        turns = []
+        # Our Message is provider-neutral by design (ADR-013), so it has to be
+        # cast to the SDK's own TypedDicts at the boundary, the same pattern
+        # as OpenAIProvider. Built as plain dicts first because a Message's
+        # role is a superset (it includes "tool", which Anthropic has no
+        # MessageParam role for) of what either TypedDict accepts.
+        system_blocks: list[dict[str, Any]] = []
+        turns: list[dict[str, Any]] = []
         for message in request.messages:
             if message.role == "system":
-                block: dict[str, object] = {"type": "text", "text": message.content}
+                block: dict[str, Any] = {"type": "text", "text": message.content}
                 if message.cacheable:
                     # This is the whole point of the prefix stage: the marker
                     # our pipeline placed becomes the provider's own cache
@@ -500,16 +505,27 @@ class AnthropicProvider:
             else:
                 turns.append({"role": message.role, "content": message.content})
 
+        from anthropic.types import MessageParam, TextBlock
+
         reply = self._client.messages.create(
             model=self.model,
             max_tokens=request.max_tokens or 1024,
-            system=system_blocks or None,
-            messages=turns,
+            # `None` rather than the SDK's own omit sentinel (`NotGiven`),
+            # same reasoning as OpenAIProvider above: every anthropic version
+            # accepts None here as "no system prompt", so casting to Any
+            # avoids pinning to a sentinel name that has changed across SDKs.
+            system=cast("Any", system_blocks or None),
+            messages=cast("list[MessageParam]", turns),
             temperature=request.temperature if request.temperature is not None else 1.0,
         )
         usage = reply.usage
         cached = getattr(usage, "cache_read_input_tokens", 0) or 0
-        text = "".join(b.text for b in reply.content if getattr(b, "type", "") == "text")
+        # isinstance rather than the prior `getattr(b, "type", "") == "text"`:
+        # both are correct at runtime, but only isinstance lets mypy narrow
+        # the block union so `.text` is actually known to exist -- the string
+        # check alone type-checked only because anthropic was previously
+        # exempted from mypy via ignore_missing_imports, which hid this.
+        text = "".join(b.text for b in reply.content if isinstance(b, TextBlock))
 
         response = LLMResponse(
             content=text,

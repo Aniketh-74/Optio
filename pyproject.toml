@@ -69,6 +69,15 @@ dev = [
     # the `cedar` CLI, which needs a Rust toolchain -- this way the pack is
     # verified locally too, not only in CI. Test-only; never a runtime import.
     "cedarpy>=4.8.0",
+    # optio_optimize's live-provider adapters (bench/providers.py). Needed to
+    # exercise real SDK request/response shapes with a mocked HTTP transport
+    # (no network, no key) -- without the package installed, those tests
+    # import-skip, which is exactly how a prior gap here went unnoticed: the
+    # `[openai]` extra above pulls in openai transitively via openai-agents,
+    # but `[dev]` alone never did, so every mocked-SDK provider test silently
+    # skipped in CI's main test job.
+    "openai>=1.0.0",
+    "anthropic>=0.34.0",
 ]
 
 [project.urls]

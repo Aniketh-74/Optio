@@ -23,6 +23,25 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **Mocked-SDK tests for `OpenAIProvider`/`AnthropicProvider`, and `anthropic` joins `openai` as a
+  dev dependency.** `bench/providers.py` coverage was 38% -- the real-provider adapters had no
+  tests at all beyond the free `SimulatedProvider` and `SpendGuard` cases, because a real API
+  call costs money and CI never installed `openai`/`anthropic` for the main test job anyway. Both
+  adapters are now driven the same way `test_adapters_openai_agents.py` drives the OpenAI Agents
+  adapter: a genuine `openai.OpenAI` / `anthropic.Anthropic` client with only the HTTP transport
+  mocked (`httpx.MockTransport`), so the request built and the response parsed are real
+  `ChatCompletion`/`Message` shapes validated by each SDK's own pydantic models -- no network, no
+  key, no spend. Coverage: 38% -> 95%; the remaining 5% is two `ImportError` branches (untestable
+  short of uninstalling a real package mid-suite) and `Protocol` method stubs, which have no body
+  to execute. 30 new tests. Installing `anthropic` for real also surfaced 13 real mypy errors in
+  `AnthropicProvider.__call__` that `ignore_missing_imports` had been silently hiding since the
+  provider was written -- an untyped `list[dict]` passed where the SDK's `TextBlockParam`/
+  `MessageParam` TypedDicts were expected, and a `getattr(b, "type", "") == "text"` check mypy
+  could not narrow into `.text` being safe to read. Fixed with the same cast-at-the-boundary
+  pattern `OpenAIProvider` already uses, plus an `isinstance(b, TextBlock)` check that lets mypy
+  actually verify the narrowing rather than trust a string comparison. `anthropic` was never
+  installed anywhere in this repo before this change, so this class had gone completely
+  unexercised against the real SDK for as long as it has existed. See `tests/optimize/test_providers.py`.
 - **OPA and AGT policy packs gain an `optio_optimize` visibility rule.** `optio_optimize`
   (ADR-014) writes `optio_optimize.stage` on the step span when `emit_spans` is on; a source that
   correlates step and run attributes can now surface a warning when a lossy stage
