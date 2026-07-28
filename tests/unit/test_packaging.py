@@ -50,24 +50,34 @@ _LAZY_ONLY_MODULES = ("importlib.metadata", "zipfile", "email.message")
 
 
 def test_version_lookup_stays_off_the_import_path():
-    """``__version__`` resolves lazily, so metadata machinery is not imported.
+    """``__version__`` resolves lazily, so *optio* imports no metadata machinery.
 
     ``importlib.metadata`` measured at 88 ms of a 211 ms import -- 42% of it --
     for a string most programs never read, and it is a library, so every user
     paid it at startup. The 500 ms budget above is far too loose to notice that
     coming back: an eager ``import importlib.metadata`` added anywhere on the
     core path would restore the cost and still pass.
+
+    Measured as optio's *own* contribution, by importing the OTel SDK first and
+    checking what optio then adds. The obvious formulation -- "``importlib.metadata``
+    is absent after ``import optio``" -- is a claim about the whole dependency
+    tree, not about us: OpenTelemetry 1.27.0 imports it itself, so that version
+    of the test failed on the dependency-floor job while passing on current OTel.
+    What we control, and all we can promise, is that optio adds nothing.
     """
     code = (
-        "import sys, optio; "
-        f"present=[m for m in {_LAZY_ONLY_MODULES!r} if m in sys.modules]; "
-        "print(','.join(present))"
+        # Import the dependency first and snapshot what it already loaded.
+        "import sys; import opentelemetry.sdk.trace; "
+        "before = set(sys.modules); "
+        "import optio; "
+        f"added = [m for m in {_LAZY_ONLY_MODULES!r} if m in sys.modules and m not in before]; "
+        "print(','.join(added))"
     )
     result = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
     assert result.stdout.strip() == "", (
-        f"core import pulled in lazy-only modules: {result.stdout.strip()}. "
+        f"importing optio added {result.stdout.strip()} on top of its dependencies. "
         "Something imports importlib.metadata eagerly again."
     )
 

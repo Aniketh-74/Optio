@@ -29,7 +29,7 @@ from __future__ import annotations
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from opentelemetry.sdk.trace import TracerProvider
@@ -43,6 +43,8 @@ from optio.runtime.installer import install_tap
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from opentelemetry.sdk.trace import ReadableSpan
 
 pytestmark = pytest.mark.soak
 
@@ -469,7 +471,7 @@ class TestTheBehaviorLaneLockIsLoadBearing:
         )
 
 
-def _span_for(tool: str) -> object:
+def _span_for(tool: str) -> ReadableSpan:
     """A finished-span stub carrying just what the behavior lane reads."""
     from unittest.mock import Mock
 
@@ -480,4 +482,4 @@ def _span_for(tool: str) -> object:
         semconv.GEN_AI_REQUEST_MODEL: "gpt-4o",
     }
     span.status = None
-    return span
+    return cast("ReadableSpan", span)

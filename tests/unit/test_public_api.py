@@ -231,7 +231,7 @@ class TestTheDocumentedBoundaryMatchesTheCode:
         return (Path(__file__).resolve().parents[2] / name).read_text(encoding="utf-8")
 
     @pytest.mark.parametrize("document", ["README.md", "CHANGELOG.md"])
-    def test_every_export_is_named_in_the_document(self, document: str):
+    def test_every_export_is_named_in_the_document(self, document: str) -> None:
         text = self._doc(document)
         # Dunders are conventions rather than API a user imports; the docs
         # describe the surface, not every attribute on the module object.
