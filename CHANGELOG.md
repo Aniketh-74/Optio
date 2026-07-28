@@ -23,6 +23,38 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **The ADR-013 rule 3 eval gate, and the four `ALTERED`-tier stages it unblocks**:
+  `route_models`, `compress_prompt`, `semantic_cache`, `summarize_history`. All four were config
+  fields since 0.1.0 with no stage behind them and no gate to ship them under; both land together
+  because the gate has no purpose without stages to check and the stages may not ship without it
+  (`docs/design/adr/adr-013-optimization-lives-in-a-separate-package.md` rule 3).
+  The gate (`src/optio_optimize/eval/`) is deliberately model-free: it checks that required facts
+  survive a stage's transformation of the prompt, or that a cache-style stage hits a near match
+  and refuses a stranger — not "does a model still answer well", which needs a real call and is
+  explicitly out of scope (see the package docstring for why, and what still needs
+  `bench/harness.py`'s live judge path instead). It runs as an ordinary, CI-blocking pytest module
+  (`tests/optimize/test_eval.py`), the same way property and fail-inject tests already do — no
+  separate runner.
+  Every stage defaults to the cheapest option that needed no new dependency: `semantic_cache` and
+  `compress_prompt` use lexical word-overlap (`optio_optimize/similarity.py`, refactored out of
+  `prune_retrieval`'s own helper), not embeddings; `route_models` never makes an auxiliary call,
+  only retargets `request.model` by a length heuristic; `summarize_history` ships no summarizer
+  and constructs no model client — the same rule the core's quality-lane judge follows — so
+  `summarize_history=True` alone spends nothing. `Optimizer` refuses to enable it silently:
+  turning it on without `summarizer=` raises at construction rather than becoming a flag that
+  looks configured and does nothing forever.
+  `summarize_history` and `trim_history` needed an ordering fix: both target the same aged-out
+  history window, and if trimming ran first (the pre-existing order) it would already have
+  deleted everything there was to summarize. `build_stages()` now runs `summarize_history` first
+  when both are enabled, with `trim_history` acting as a backstop on whatever remains.
+  `SummarizeHistoryStage` is the one stage that breaks the "stage bodies perform no I/O" premise
+  `Pipeline.aexecute` relies on (`pipeline.py`): a real summarizer calls a model. Documented as a
+  caveat rather than solved — a blocking summarizer used under `Optimizer.acall` stalls the event
+  loop for its duration, same as calling any other blocking function from async code.
+  A light live check (`--aggressive --live`, $0.0041/36 calls) found a real, recorded-not-hidden
+  result: `rag_queries` cost fell 71.5% but output tokens rose 71.4% and all 10 responses
+  diverged — `compress_prompt`'s heavy trimming of this workload's repetitive synthetic chunks
+  apparently made the live model write longer answers. See `docs/optimize-benchmarks.md`.
 - **Dedicated unit tests for `caching.py` and `output.py`**, both previously covered only
   indirectly through `test_pipeline.py`/the benchmark suite — `output.py` sat at 54% coverage,
   the lowest of any stage module despite output tokens billing at 3-5x the input rate per its

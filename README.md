@@ -228,6 +228,15 @@ by `lint-imports`, not just claimed). Don't combine with other GenAI OTel instru
 same calls, or both will emit `gen_ai.usage.*` for the same request and `optio`'s cost lane will
 sum them.
 
+**Four more stages exist, all off by default and experimental**: `route_models`, `compress_prompt`,
+`semantic_cache`, `summarize_history`. Each defaults to the cheapest option that needed no new
+dependency — lexical word-overlap instead of embeddings, a length heuristic instead of an
+auxiliary model call, no bundled summarizer at all (`summarize_history=True` alone spends nothing
+and raises at construction if you don't also supply one). Gated by a deliberately model-free eval
+suite (`src/optio_optimize/eval/`) rather than a claim of correctness — see
+`docs/optimize-benchmarks.md`'s "Phase 3" section for what that gate does and does not prove, and
+a live result it does not smooth over: cost fell but output length rose on one workload.
+
 ## Configuration
 
 Precedence: `instrument(...)` kwargs > `OPTIO_*` env vars > defaults.

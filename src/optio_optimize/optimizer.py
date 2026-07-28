@@ -20,6 +20,8 @@ if TYPE_CHECKING:
     from optio_optimize.pipeline import AsyncProviderCall, ProviderCall
     from optio_optimize.savings import SavingsReport
     from optio_optimize.stages.base import Stage
+    from optio_optimize.stages.semantic_cache import SimilarityFn
+    from optio_optimize.stages.summarize import Summarizer
     from optio_optimize.types import LLMRequest, LLMResponse
 
 
@@ -38,6 +40,8 @@ class Optimizer:
         *,
         stages: list[Stage] | None = None,
         tracer_provider: TracerProvider | None = None,
+        summarizer: Summarizer | None = None,
+        similarity_fn: SimilarityFn | None = None,
         **overrides: Any,
     ) -> None:
         """Build an optimizer.
@@ -47,17 +51,30 @@ class Optimizer:
                 when omitted.
             stages: Explicit stage list, bypassing the registry. For tests and
                 for users who need an order the registry does not produce;
-                ordering then becomes their responsibility.
+                ordering then becomes their responsibility. Also the escape
+                hatch past the ``summarizer`` requirement below, for a caller
+                who wants to construct ``SummarizeHistoryStage`` themselves.
             tracer_provider: Provider ``emit_spans`` draws its tracer from
                 (ADR-014). Defaults to OTel's global provider; only needed to
                 target a non-global one, e.g. in tests. Has no effect unless
                 ``emit_spans=True``.
+            summarizer: Turns dropped-history text into a summary, for
+                ``summarize_history``. This package constructs no model
+                client and calls no model on its own -- same rule the core's
+                quality-lane judge follows -- so there is no default.
+            similarity_fn: Similarity function for ``semantic_cache``.
+                Defaults to a lexical, embeddings-free metric; see
+                :mod:`optio_optimize.similarity`.
             **overrides: Individual config fields, e.g. ``semantic_cache=True``.
 
         Raises:
-            OptimizeConfigError: On invalid configuration, or if both ``config``
-                and ``overrides`` are given -- silently letting one win would
-                make the effective settings unpredictable.
+            OptimizeConfigError: On invalid configuration, if both ``config``
+                and ``overrides`` are given, or if ``summarize_history`` is on
+                with no ``summarizer`` and no explicit ``stages`` override --
+                the flag would otherwise be on and silently do nothing
+                forever, indistinguishable from the library not working
+                (§4.2's rule, the same one ``route_models``/``cheap_model``
+                already enforces).
         """
         if config is not None and overrides:
             from optio_optimize.errors import OptimizeConfigError
@@ -67,9 +84,20 @@ class Optimizer:
                 f"got config plus {sorted(overrides)}"
             )
         self.config = config if config is not None else config_from_mapping(overrides)
+        if self.config.summarize_history and summarizer is None and stages is None:
+            from optio_optimize.errors import OptimizeConfigError
+
+            raise OptimizeConfigError(
+                "summarize_history is on but no summarizer was given; the stage "
+                "would be active and always decline, which is indistinguishable "
+                "from not working. Pass Optimizer(summarizer=...), or build the "
+                "stage list yourself via stages=."
+            )
         self._pipeline = Pipeline(
             self.config,
-            stages if stages is not None else build_stages(self.config),
+            stages
+            if stages is not None
+            else build_stages(self.config, summarizer=summarizer, similarity_fn=similarity_fn),
             tracer_provider=tracer_provider,
         )
 

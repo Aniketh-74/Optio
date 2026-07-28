@@ -32,11 +32,17 @@ DEFAULT_LATENCY_BUDGET_MS = 100.0
 #: most of the value in recent history is.
 DEFAULT_RECENT_TURNS = 6
 
-#: Cosine similarity above which a semantic cache entry counts as a hit.
-#: 0.97 is deliberately severe. Public GPTCache-style examples often use 0.8-0.9;
-#: at those thresholds "what is 2+2" and "what is 2+3" collide, which for an
-#: agent making decisions is a wrong answer served instantly. Raising this is
-#: how you trade correctness for hit rate, and it should be a conscious edit.
+#: Similarity above which a semantic cache entry counts as a hit -- against
+#: whatever :data:`~optio_optimize.stages.semantic_cache.SimilarityFn` the
+#: stage is given, cosine or otherwise. 0.97 is deliberately severe. Public
+#: GPTCache-style examples often use cosine thresholds of 0.8-0.9; at those,
+#: "what is 2+2" and "what is 2+3" collide, which for an agent making
+#: decisions is a wrong answer served instantly. The packaged default
+#: similarity function is lexical word-overlap, not embeddings (see
+#: :mod:`optio_optimize.similarity`) -- coarser than cosine, so this
+#: threshold does more of the safety work by itself there than it would
+#: against a real embedding metric. Raising it is how you trade correctness
+#: for hit rate, and it should be a conscious edit either way.
 DEFAULT_SEMANTIC_THRESHOLD = 0.97
 
 

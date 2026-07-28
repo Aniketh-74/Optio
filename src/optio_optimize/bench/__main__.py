@@ -102,7 +102,14 @@ def main(argv: list[str] | None = None) -> int:
     config = OptimizeConfig(
         semantic_cache=args.aggressive,
         compress_prompt=args.aggressive,
-        summarize_history=args.aggressive,
+        # summarize_history is deliberately excluded from --aggressive: it
+        # ships no summarizer of its own (same rule the core's quality-lane
+        # judge follows) and Optimizer refuses to enable it without one, so
+        # there is no honest stand-in this CLI could supply -- a stub
+        # summarizer would produce numbers that measure the stub, not the
+        # stage. Exercise it via Optimizer(summarizer=...) directly.
+        # route_models is excluded for the same reason: it needs cheap_model,
+        # which this CLI has no representative default for.
         # Under --strict-fidelity, drop the reshaping stages so the run is a
         # clean test of the identical-output promise. trim_history, dedup and
         # pruning are SHAPED too (they change what the prompt says, not just

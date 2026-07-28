@@ -180,9 +180,54 @@ prefix cache is server-side and cannot be reset between arms. The baseline runs
 first, so the bias works against the result this library would like to report.
 
 **Output quality is checked as identity, not as correctness.** For the
-`IDENTICAL` stages that is exactly the right test. For `SHAPED` and `ALTERED`
-stages it is not sufficient, and the eval harness that covers them is still to
-be built — until it exists, those stages should be treated as unmeasured.
+`IDENTICAL` stages that is exactly the right test. For `SHAPED` stages it is
+not sufficient, but every one currently in the package (`trim_history`,
+`deduplicate`, `prune_retrieval`, `adaptive_max_tokens`, `structured_output`)
+has been live-checked directly above. The `ALTERED` tier's own eval gate is
+`src/optio_optimize/eval/` — see the next section for what it does and does
+not prove.
+
+## Phase 3: the `ALTERED`-tier stages (experimental, off by default)
+
+`route_models`, `compress_prompt`, `semantic_cache`, `summarize_history`
+landed with the ADR-013 rule 3 eval gate (`src/optio_optimize/eval/`,
+exercised by `tests/optimize/test_eval.py` — an ordinary, CI-blocking pytest
+module, no separate runner). All four stay off by default; none are counted
+in the headline table above, which only ever reflected the identical-output
+stages.
+
+**The eval gate is deliberately model-free**: it checks that a required fact
+survives a stage's transformation of the *prompt*, or that a cache-style stage
+hits a near match and refuses a stranger — never "does a model still answer
+correctly", which needs a real call this gate is built specifically to avoid.
+That is a real ceiling, stated rather than hidden: it proves a stage's own
+logic does what it claims, not that a live answer stays good. See
+`src/optio_optimize/eval/__init__.py` for the full reasoning and
+`bench/harness.py`'s live A/B path (with a caller-supplied judge) for the tool
+that covers the other half.
+
+**Cheapest defensible option throughout, by design.** `semantic_cache` and
+`compress_prompt` use lexical word-overlap (`optio_optimize/similarity.py`),
+not embeddings — no new dependency, no network call. `route_models` never
+makes an auxiliary call; it only retargets `request.model` based on a length
+heuristic. `summarize_history` ships no summarizer and constructs no model
+client, the same rule the core's quality-lane judge follows — the config flag
+alone spends nothing, and `Optimizer` refuses to enable it silently: turning
+it on without supplying `summarizer=` raises at construction rather than
+becoming a flag that looks configured and does nothing.
+
+**One live result worth recording rather than smoothing over.** A light live
+check (`--aggressive --live`, $0.0041 across 36 calls) on `rag_queries` showed
+input tokens down 84.3% and cost down 71.5% — but output tokens *up* 71.4%,
+and 10/10 responses diverged from baseline. `compress_prompt` cut input
+heavily on this workload's repetitive synthetic chunks; the live model
+apparently wrote longer answers against the trimmed context. Net cost still
+fell, but "cost went down" and "the model behaved the same" are different
+claims, and this is exactly the gap `Fidelity.ALTERED` exists to name.
+`retry_storm` in the same run stayed 100% identical (exact_cache still
+resolves 14/15 calls before either lossy stage ever runs). Not a benchmark
+result — one live data point per stage, recorded because it happened, not
+because it is a claim about your traffic.
 
 ## Overhead
 

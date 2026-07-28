@@ -16,9 +16,9 @@ rather than its evidence.
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING
 
+from optio_optimize.similarity import overlap_ratio, words
 from optio_optimize.stages.base import Fidelity, Stage, StageResult
 
 if TYPE_CHECKING:
@@ -30,21 +30,10 @@ if TYPE_CHECKING:
 #: how retrieval code overwhelmingly already assembles a context block.
 _BLOCK_SEP = "\n\n"
 
-_WORD = re.compile(r"[a-z0-9]+")
-
 
 def _blocks(content: str) -> list[str]:
     """Split message content into candidate context blocks."""
     return content.split(_BLOCK_SEP)
-
-
-def _words(text: str) -> set[str]:
-    """Lowercased word set for cheap lexical overlap.
-
-    No embeddings, no network call: a stage on the hot path may not perform
-    one (optio's §4.1, restated here for this package's own hot path).
-    """
-    return set(_WORD.findall(text.lower()))
 
 
 class DeduplicateStage(Stage):
@@ -168,12 +157,12 @@ class PruneRetrievalStage(Stage):
                 continue
 
             *body, tail = blocks
-            query_words = _words(tail)
+            query_words = words(tail)
             if not query_words:
                 new_messages.append(message)
                 continue
 
-            scored = [(block, _overlap(block, query_words)) for block in body]
+            scored = [(block, overlap_ratio(block, query_words)) for block in body]
             survivors = sum(1 for _, score in scored if score >= MIN_RELEVANCE)
             keep_count = max(MIN_KEPT_BLOCKS, survivors)
             ranked = sorted(range(len(scored)), key=lambda i: scored[i][1], reverse=True)
@@ -199,11 +188,3 @@ class PruneRetrievalStage(Stage):
             saved_input_tokens=saved,
             note="low-relevance context blocks dropped",
         )
-
-
-def _overlap(block: str, query_words: set[str]) -> float:
-    """Fraction of ``block``'s distinct words that also appear in the query."""
-    block_words = _words(block)
-    if not block_words:
-        return 0.0
-    return len(block_words & query_words) / len(block_words)
