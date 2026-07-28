@@ -23,6 +23,14 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **Dedicated unit tests for `caching.py` and `output.py`**, both previously covered only
+  indirectly through `test_pipeline.py`/the benchmark suite — `output.py` sat at 54% coverage,
+  the lowest of any stage module despite output tokens billing at 3-5x the input rate per its
+  own module docstring. Now 100% on both. Covers paths only reachable through specific
+  `before()`/`after()` sequencing: a truncated (`finish_reason="length"`) stored reply that must
+  never be served, `after()` receiving a response that already came from a cache and correctly
+  not re-storing it, `AdaptiveMaxTokensStage`'s bounded observation history, and
+  `StructuredOutputStage` both appending to an existing system message and inserting a fresh one.
 - **`optio_optimize` gained an async entry point (`Optimizer.acall`/`Pipeline.aexecute`)** and its
   first framework adapter, `optio_optimize.adapters.openai_agents.wrap_openai_client`. Building the
   adapter surfaced that the package had no way to support an async provider call at all — every
