@@ -26,7 +26,9 @@ import pytest
 from optio_optimize.bench import WORKLOADS, SimulatedProvider, compare
 from optio_optimize.bench.providers import SpendGuard
 from optio_optimize.config import OptimizeConfig
-from optio_optimize.stages.base import Fidelity
+from optio_optimize.stages.base import Fidelity, StageContext
+from optio_optimize.stages.retrieval import PruneRetrievalStage
+from optio_optimize.tokens import HeuristicCounter
 
 pytestmark = pytest.mark.optimize
 
@@ -258,3 +260,54 @@ class TestPrefixCachingIsCreditedToTheRightParty:
         assert result.baseline.cached_input_tokens == result.optimized.cached_input_tokens, (
             "arms saw different provider-cache state, so the comparison is biased"
         )
+
+
+class TestPruneRetrievalActuallyPrunes:
+    """``rag_queries`` cannot prove prune_retrieval works, only that it's safe.
+
+    Every chunk in ``rag_queries`` is about the same topic, so nothing ever
+    scores below the relevance floor and the stage always declines --
+    measured at 0 tokens saved, both simulated and live
+    (docs/optimize-benchmarks.md). A correct zero on a workload with nothing
+    to prune is not evidence the stage does anything. ``rag_queries_noisy``
+    mixes in one genuinely irrelevant chunk specifically to test that.
+    """
+
+    def test_the_irrelevant_chunk_is_dropped_from_every_request(self) -> None:
+        stage = PruneRetrievalStage()
+        ctx = StageContext(config=OptimizeConfig(), counter=HeuristicCounter())
+
+        for request in WORKLOADS["rag_queries_noisy"].requests():
+            result = stage.before(request, ctx)
+            sent = result.request.messages[-1].content
+            assert "office parking" not in sent, "the irrelevant chunk survived pruning"
+
+    def test_every_relevant_chunk_survives_in_every_request(self) -> None:
+        stage = PruneRetrievalStage()
+        ctx = StageContext(config=OptimizeConfig(), counter=HeuristicCounter())
+
+        for request in WORKLOADS["rag_queries_noisy"].requests():
+            result = stage.before(request, ctx)
+            sent = result.request.messages[-1].content
+            assert "Quarterly revenue" in sent, "a relevant chunk was dropped, not just the noise"
+            # All six relevant chunks share the same body text, so counting
+            # occurrences (rather than checking each [doc N] tag) is what
+            # actually proves none of them were pruned.
+            assert sent.count("Quarterly revenue") == 6
+
+    def test_the_stage_reports_real_savings_on_this_workload(self) -> None:
+        result = compare(
+            WORKLOADS["rag_queries_noisy"],
+            SimulatedProvider(),
+            OptimizeConfig(
+                exact_cache=False,
+                prefix_cache=False,
+                structured_output=False,
+                adaptive_max_tokens=False,
+                trim_history=False,
+                deduplicate=False,
+            ),
+            model="gpt-4o",
+        )
+
+        assert result.stage_savings.get("prune_retrieval", 0) > 0

@@ -23,6 +23,18 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **`rag_queries_noisy`: a benchmark workload that actually exercises `prune_retrieval`'s
+  pruning logic.** `rag_queries` reported 0 tokens saved from `prune_retrieval`, both simulated
+  and live — correctly, since every chunk in it shares the query's vocabulary and none should
+  score below the relevance floor, but a correct zero on a workload with nothing to prune is not
+  evidence the stage does anything. The new workload mixes one genuinely irrelevant chunk (an
+  office-parking notice) into otherwise-relevant retrieved context, landing it in the middle so a
+  stage that only happened to drop an edge chunk wouldn't look like it works by accident. Live
+  against `gpt-4o-mini` ($0.0029/20 calls): the irrelevant chunk was dropped on all 10 requests,
+  cost fell 9.1%, output stayed 90% identical. `tests/optimize/test_benchmark.py`'s
+  `TestPruneRetrievalActuallyPrunes` checks the same claim directly against the stage — the
+  irrelevant chunk is gone and all six relevant ones survive, on every request, not just in
+  aggregate token counts.
 - **The ADR-013 rule 3 eval gate, and the four `ALTERED`-tier stages it unblocks**:
   `route_models`, `compress_prompt`, `semantic_cache`, `summarize_history`. All four were config
   fields since 0.1.0 with no stage behind them and no gate to ship them under; both land together

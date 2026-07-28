@@ -100,7 +100,16 @@ identity across all 10 live calls -- removing an exact-duplicate context block
 changed nothing about the answer, on this workload. `prune_retrieval` reported
 zero, because the workload's chunks all share the query's key vocabulary
 (`revenue`) and none scored below the relevance floor: a correct, honest zero
-on a workload this heuristic was never going to touch, not a bug.
+on a workload this heuristic was never going to touch, not a bug -- but a
+correct zero on a workload with nothing to prune is not evidence the stage
+*does* anything, either. `rag_queries_noisy` exists to settle that: one
+genuinely irrelevant chunk (an office-parking notice) mixed into otherwise
+relevant retrieved context. Live: `prune_retrieval` dropped exactly that
+chunk on every one of the 10 requests, cost fell 9.1%, and output stayed
+90% identical (9/10) -- the one chunk removed genuinely wasn't needed for
+the answer in nearly every case. See `tests/optimize/test_benchmark.py`'s
+`TestPruneRetrievalActuallyPrunes` for the same claim checked directly
+against the stage, not just inferred from an aggregate token count.
 
 **Practical read:** both `multi_turn_chat` and `rag_queries` moved off the 0%
 floor documented above, with real dollars behind the number. `trim_history`'s

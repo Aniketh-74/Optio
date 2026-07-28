@@ -53,6 +53,21 @@ _CHUNK = (
     "Operating expenses rose more slowly than revenue. "
 )
 
+#: A retrieved chunk about a completely unrelated topic -- office parking, not
+#: the quarterly report the question is about. A real vector store returns
+#: chunks like this constantly: a near-miss on embedding similarity that a
+#: cheap lexical check can still catch, because it shares almost no
+#: vocabulary with the question. ``_rag_queries`` never includes one of
+#: these, which is why ``prune_retrieval`` measured 0 tokens saved on it,
+#: both simulated and live (``docs/optimize-benchmarks.md``) -- that is a
+#: correct zero on a workload with nothing to prune, not evidence the stage
+#: works. ``_rag_queries_noisy`` exists to give it something to prune.
+_IRRELEVANT_CHUNK = (
+    "The office parking garage will be closed for resurfacing next Tuesday. "
+    "Employees should use the visitor lot on Elm Street during the closure. "
+    "Badge access will still work at the north entrance."
+)
+
 
 @dataclass(slots=True)
 class Workload:
@@ -118,6 +133,39 @@ def _rag_queries(count: int = 10, chunks: int = 8, model: str = "gpt-4o") -> lis
         # Overlapping on purpose: chunk k of query q repeats chunk k of query
         # q-1 about half the time, as a real vector store would.
         context = "\n\n".join(f"[doc {(query + c) % 5}] {_CHUNK}" for c in range(chunks))
+        requests.append(
+            LLMRequest(
+                model=model,
+                messages=(
+                    _msg("system", _SYSTEM_PROMPT),
+                    _msg(
+                        "user", f"Context:\n{context}\n\nQuestion: what drove revenue in Q{query}?"
+                    ),
+                ),
+                temperature=0.0,
+            )
+        )
+    return requests
+
+
+def _rag_queries_noisy(count: int = 10, chunks: int = 6, model: str = "gpt-4o") -> list[LLMRequest]:
+    """Retrieval context with one genuinely irrelevant chunk mixed in.
+
+    ``rag_queries`` never exercises what ``prune_retrieval`` actually decides
+    to drop: every chunk there is about the same topic, so nothing ever
+    scores below the relevance floor and the stage always declines. This
+    workload gives it something to prune -- an office-parking-notice chunk,
+    landing in the middle of the context (not an edge, so a stage that only
+    ever happened to drop the first or last block would not look like it
+    works by accident) -- and something it must never touch: every chunk that
+    actually shares the question's vocabulary.
+    """
+    requests: list[LLMRequest] = []
+    for query in range(count):
+        relevant = [f"[doc {c}] {_CHUNK}" for c in range(chunks)]
+        midpoint = chunks // 2
+        blocks = [*relevant[:midpoint], f"[doc noise] {_IRRELEVANT_CHUNK}", *relevant[midpoint:]]
+        context = "\n\n".join(blocks)
         requests.append(
             LLMRequest(
                 model=model,
@@ -295,6 +343,13 @@ WORKLOADS: dict[str, Workload] = {
         build=_rag_queries,
         expectation="deduplication and pruning target this; little gain before Phase 2",
         tags=("deduplicate", "prune_retrieval"),
+    ),
+    "rag_queries_noisy": Workload(
+        name="rag_queries_noisy",
+        description="10 queries with one genuinely irrelevant chunk mixed into relevant context",
+        build=_rag_queries_noisy,
+        expectation="prune_retrieval must drop the irrelevant chunk and keep every relevant one",
+        tags=("prune_retrieval",),
     ),
     "tool_loop": Workload(
         name="tool_loop",
