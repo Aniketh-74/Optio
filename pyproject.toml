@@ -33,6 +33,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The optimization package (ADR-013). Opt-in on purpose: it sits in the request
+# path and reads prompt content, which the signals core never does. Installing
+# `optio` alone must never put a request rewriter in your process.
+optimize = ["tiktoken>=0.7.0"]
 langgraph = ["langgraph>=0.2.0", "langchain-core>=0.3.0"]
 openai = ["openai-agents>=0.0.1"]
 crewai = ["crewai>=0.60.0"]
@@ -75,7 +79,7 @@ Issues = "https://github.com/Aniketh-74/Agent-Meter/issues"
 Changelog = "https://github.com/Aniketh-74/Agent-Meter/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/optio"]
+packages = ["src/optio", "src/optio_optimize"]
 
 # The sdist ships tests, docs, policy packs and the demo. That is deliberate:
 # a downstream packager (Debian, conda-forge, an internal mirror) rebuilds from
@@ -176,6 +180,14 @@ disallow_untyped_defs = false
 module = ["langgraph.*", "agents.*", "claude_agent_sdk.*", "crewai.*"]
 ignore_missing_imports = true
 
+# tiktoken is an optional accuracy upgrade for optio_optimize's token counting
+# (ADR-013). It is a large wheel with a Rust extension, so it is not a hard
+# dependency, and the code falls back to a heuristic counter when it is absent.
+# Named explicitly for the same reason as the block above.
+[[tool.mypy.overrides]]
+module = ["tiktoken.*"]
+ignore_missing_imports = true
+
 # ---------------------------------------------------------------------------
 # Test (§9)
 # ---------------------------------------------------------------------------
@@ -193,10 +205,11 @@ markers = [
     "demo: the standalone demo produces the signals it claims (ADR-006)",
     "frameworks: adapters against the real frameworks they claim (R-TECH-3)",
     "soak: long-run memory stability (§11)",
+    "optimize: the optio_optimize package (ADR-013)",
 ]
 
 [tool.coverage.run]
-source = ["src/optio"]
+source = ["src/optio", "src/optio_optimize"]
 branch = true
 
 [tool.coverage.report]
@@ -211,7 +224,10 @@ exclude_lines = [
 # Import boundaries (§3.1, rule 11)
 # ---------------------------------------------------------------------------
 [tool.importlinter]
-root_package = "optio"
+# Both packages, so the contract forbidding core -> optimizer imports can see
+# them. A contract naming a module outside the analysed graph passes vacuously,
+# which would make the ADR-013 boundary look enforced while checking nothing.
+root_packages = ["optio", "optio_optimize"]
 
 [[tool.importlinter.contracts]]
 name = "Layered architecture (dependencies point inward)"
@@ -233,6 +249,16 @@ modules = [
     "optio.lanes.behavior",
     "optio.lanes.quality",
 ]
+
+[[tool.importlinter.contracts]]
+name = "optio never imports the optimizer (ADR-013)"
+# The whole point of the split is that installing the signals library does not
+# put a request rewriter in your process. One import from core to optimizer
+# would silently undo that, and it is exactly the kind of edit that looks
+# harmless in review.
+type = "forbidden"
+source_modules = ["optio"]
+forbidden_modules = ["optio_optimize"]
 
 [[tool.importlinter.contracts]]
 name = "semconv is a leaf (stdlib only)"
