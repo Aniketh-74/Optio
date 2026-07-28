@@ -23,6 +23,30 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **`bench/__main__.py`'s `--aggressive` flag, which bundled `semantic_cache` and `compress_prompt`
+  together, is replaced by a repeatable `--stage NAME` flag that isolates exactly the named
+  `ALTERED`-tier stage(s).** ADR-015 (new: see below) found the old flag had produced the *only*
+  live data point `compress_prompt` had, and that result -- cost down 71.5%, output tokens up
+  71.4%, 10/10 diverged -- could not honestly be attributed to `compress_prompt` alone, since
+  `semantic_cache` was active in the same run. `--stage` also gained `--cheap-model` (with a
+  `CHEAP_COUNTERPART`-table default) for isolating `route_models`, and wiring for a real,
+  live-calling summarizer for isolating `summarize_history` -- both previously excluded from
+  `--aggressive` because the CLI had nothing honest to supply either flag. `harness.compare()`/
+  `run_arm()` now thread `summarizer`/`similarity_fn` through to `Optimizer`, including to the
+  *baseline* arm's construction: `Optimizer.__init__` validates `summarize_history` regardless of
+  `config.enabled`, so the baseline needs a summarizer too even though `enabled=False` guarantees
+  `Pipeline.execute` returns before any stage runs it -- a real bug this change's own tests caught
+  immediately (`OptimizeConfigError` on the baseline arm) before it shipped. `route_models`
+  isolation via this CLI carries a stated caveat: `ArmResult` prices the whole optimized arm at
+  one flat rate, so it cannot reflect a per-request model swap actually happening -- `route_models`'s
+  real evidence needs a different measurement, tracked in ADR-015. New `tests/optimize/test_bench_cli.py`
+  (13 tests) is also this CLI's first test coverage at all; it had none before.
+- **ADR-015 — evidence bar for promoting an `ALTERED`-tier stage out of "experimental".** Defines,
+  per stage, what "proven safe to recommend" means, a risk model, and what live evidence would
+  justify loosening the off-by-default guardrail, written before any of that evidence is gathered.
+  `semantic_cache` (silently-wrong-answer failure mode) gets the most demanding bar: a dedicated
+  adversarial workload and a directly measured live false-positive rate. See
+  `docs/design/adr/adr-015-*.md`.
 - **CI now hard-fails if the provider SDKs pinned for testing go missing, and confirmed no test
   can ever spend real money.** Closing the audit's last item: is a real-provider test isolated
   the way `tests/frameworks/` isolates its own optional dependencies? For `openai`/`anthropic`

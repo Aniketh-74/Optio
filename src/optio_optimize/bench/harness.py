@@ -32,6 +32,8 @@ from optio_optimize.optimizer import Optimizer
 if TYPE_CHECKING:
     from optio_optimize.bench.providers import BenchProvider
     from optio_optimize.bench.workloads import Workload
+    from optio_optimize.stages.semantic_cache import SimilarityFn
+    from optio_optimize.stages.summarize import Summarizer
     from optio_optimize.types import LLMRequest, LLMResponse
 
 #: Judges two responses equivalent despite differing text.
@@ -43,6 +45,9 @@ def run_arm(
     requests: list[LLMRequest],
     provider: BenchProvider,
     config: OptimizeConfig,
+    *,
+    summarizer: Summarizer | None = None,
+    similarity_fn: SimilarityFn | None = None,
 ) -> tuple[ArmResult, Optimizer]:
     """Run one side of the comparison.
 
@@ -51,12 +56,17 @@ def run_arm(
         requests: The workload.
         provider: Where calls go.
         config: Optimizer settings; ``enabled=False`` makes this the control.
+        summarizer: Passed through to :class:`~optio_optimize.optimizer.Optimizer`,
+            for isolating ``summarize_history``. ``None`` unless that stage is
+            under test -- see ``bench/__main__.py``'s ``--stage`` handling.
+        similarity_fn: Passed through for ``semantic_cache``. ``None`` uses the
+            stage's own lexical default.
 
     Returns:
         The measurements, and the optimizer used, so its per-stage report and
         cache counters can be read afterwards.
     """
-    optimizer = Optimizer(config)
+    optimizer = Optimizer(config, summarizer=summarizer, similarity_fn=similarity_fn)
     provider.reset()
     result = ArmResult(name=name, live=provider.is_live)
 
@@ -104,6 +114,8 @@ def compare(
     *,
     judge: Judge | None = None,
     model: str = "gpt-4o",
+    summarizer: Summarizer | None = None,
+    similarity_fn: SimilarityFn | None = None,
 ) -> ABResult:
     """Run a workload both ways and measure the difference.
 
@@ -116,6 +128,15 @@ def compare(
             only when lossy stages are on -- without one, any difference counts
             as divergence, which is the conservative reading.
         model: Model name for pricing.
+        summarizer: Passed through for isolating ``summarize_history`` (ADR-015).
+            Also passed to the baseline arm's ``Optimizer`` construction --
+            required there too, since ``Optimizer.__init__`` validates
+            ``summarize_history`` regardless of ``enabled`` -- but the
+            baseline's ``enabled=False`` means ``Pipeline.execute`` returns
+            before any stage runs (``pipeline.py``), so the summarizer is
+            built and never called on that arm.
+        similarity_fn: Passed through for isolating ``semantic_cache`` (ADR-015).
+            Same reasoning as ``summarizer`` above.
 
     Returns:
         The full comparison.
@@ -127,8 +148,17 @@ def compare(
     # second would let any provider-side warming favour it unfairly.
     from dataclasses import replace
 
-    baseline, _ = run_arm("baseline", requests, provider, replace(active, enabled=False))
-    optimized, optimizer = run_arm("optimized", requests, provider, active)
+    baseline, _ = run_arm(
+        "baseline",
+        requests,
+        provider,
+        replace(active, enabled=False),
+        summarizer=summarizer,
+        similarity_fn=similarity_fn,
+    )
+    optimized, optimizer = run_arm(
+        "optimized", requests, provider, active, summarizer=summarizer, similarity_fn=similarity_fn
+    )
 
     quality = _compare_quality(
         baseline.responses,

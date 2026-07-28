@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import TYPE_CHECKING
 
 from optio_optimize.bench.harness import compare, format_result
 from optio_optimize.bench.providers import (
@@ -17,7 +18,16 @@ from optio_optimize.bench.providers import (
     available_live_provider,
 )
 from optio_optimize.bench.workloads import WORKLOADS
-from optio_optimize.config import OptimizeConfig
+from optio_optimize.config import CHEAP_COUNTERPART, OptimizeConfig
+from optio_optimize.types import LLMRequest, Message
+
+if TYPE_CHECKING:
+    from optio_optimize.bench.providers import BenchProvider
+    from optio_optimize.stages.summarize import Summarizer
+
+#: The four ADR-013-lossy stages this CLI can isolate one at a time. Order
+#: matches the module docstring's own ordering rules, not alphabetical.
+ALTERED_STAGES = ("route_models", "compress_prompt", "semantic_cache", "summarize_history")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,9 +60,27 @@ def main(argv: list[str] | None = None) -> int:
         help="run only this workload; repeatable. Default: all.",
     )
     parser.add_argument(
-        "--aggressive",
-        action="store_true",
-        help="enable output-altering stages (semantic cache, compression, routing)",
+        "--stage",
+        action="append",
+        choices=ALTERED_STAGES,
+        dest="stages",
+        help=(
+            "enable this ALTERED-tier (lossy) stage; repeatable. Each run isolates "
+            "exactly the named stage(s) -- ADR-015 requires isolated evidence, since "
+            "the old --aggressive flag bundled semantic_cache and compress_prompt "
+            "together and produced a confounded result neither stage's evidence could "
+            "actually be attributed to. Pass it more than once to test a deliberate "
+            "combination; the default (omitted) is none of the four."
+        ),
+    )
+    parser.add_argument(
+        "--cheap-model",
+        default=None,
+        help=(
+            "model for --stage route_models to downgrade to. Defaults to "
+            "config.CHEAP_COUNTERPART[provider.model] if the provider's model has a "
+            "known cheap counterpart; otherwise this must be set explicitly."
+        ),
     )
     parser.add_argument(
         "--provider-latency",
@@ -99,17 +127,52 @@ def main(argv: list[str] | None = None) -> int:
             print("Output-length, latency, throughput and quality figures need --live")
             print("or --provider-latency.\n")
 
+    stages = set(args.stages or ())
+    if args.strict_fidelity and stages:
+        print(
+            "--strict-fidelity holds every stage to identical output; the ALTERED "
+            f"stage(s) {', '.join(sorted(stages))} cannot honor that by definition.",
+            file=sys.stderr,
+        )
+        return 2
+
+    summarizer = None
+    if "summarize_history" in stages:
+        summarizer = _build_live_summarizer(provider, args.cheap_model)
+        if not args.live:
+            print(
+                "note: --stage summarize_history without --live calls the simulator, "
+                "which returns a fixed 'simulated-answer-<hash>' string, not a real "
+                "summary. This checks the stage's plumbing, not ADR-015 evidence.\n"
+            )
+
+    cheap_model = args.cheap_model
+    if "route_models" in stages:
+        cheap_model = _resolve_cheap_model(args.cheap_model, provider.model)
+        if cheap_model is None:
+            print(
+                f"--stage route_models needs a cheaper model to route to, and "
+                f"{provider.model!r} has no entry in CHEAP_COUNTERPART. Pass "
+                f"--cheap-model explicitly.",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            f"note: route_models will retarget routable requests from "
+            f"{provider.model} to {cheap_model}. This harness prices the whole "
+            "optimized arm at one flat rate (ABResult.model), so the cost/token "
+            "numbers below do not reflect the cheaper model actually being called "
+            "-- see ADR-015's route_models section for why this stage's real "
+            "evidence comes from a direct per-model capability comparison instead, "
+            "not this A/B harness.\n"
+        )
+
     config = OptimizeConfig(
-        semantic_cache=args.aggressive,
-        compress_prompt=args.aggressive,
-        # summarize_history is deliberately excluded from --aggressive: it
-        # ships no summarizer of its own (same rule the core's quality-lane
-        # judge follows) and Optimizer refuses to enable it without one, so
-        # there is no honest stand-in this CLI could supply -- a stub
-        # summarizer would produce numbers that measure the stub, not the
-        # stage. Exercise it via Optimizer(summarizer=...) directly.
-        # route_models is excluded for the same reason: it needs cheap_model,
-        # which this CLI has no representative default for.
+        semantic_cache="semantic_cache" in stages,
+        compress_prompt="compress_prompt" in stages,
+        summarize_history="summarize_history" in stages,
+        route_models="route_models" in stages,
+        cheap_model=cheap_model,
         # Under --strict-fidelity, drop the reshaping stages so the run is a
         # clean test of the identical-output promise. trim_history, dedup and
         # pruning are SHAPED too (they change what the prompt says, not just
@@ -129,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     from optio_optimize.optimizer import Optimizer
     from optio_optimize.stages.base import Fidelity
 
-    active = Optimizer(config)
+    active = Optimizer(config, summarizer=summarizer)
     shaping = [s.name for s in active._pipeline.stages if s.fidelity is not Fidelity.IDENTICAL]
     strict = not shaping
     if shaping:
@@ -142,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"# expected: {workload.expectation}\n")
         # Priced against what the provider actually served, never against a
         # hardcoded name -- see BenchProvider.model.
-        result = compare(workload, provider, config, model=provider.model)
+        result = compare(workload, provider, config, model=provider.model, summarizer=summarizer)
         print("\n".join(format_result(result)))
         print()
         if strict and result.quality.divergent:
@@ -159,6 +222,61 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     return 0
+
+
+def _resolve_cheap_model(explicit: str | None, provider_model: str) -> str | None:
+    """Pick a ``cheap_model`` for ``route_models``, or say there is none.
+
+    Args:
+        explicit: ``--cheap-model``, if the caller set it.
+        provider_model: The model actually being benchmarked.
+
+    Returns:
+        ``explicit`` if given; otherwise ``CHEAP_COUNTERPART[provider_model]``,
+        or ``None`` if that model has no known cheaper counterpart -- e.g.
+        ``"gpt-4o-mini"``, which is already the cheap end of its own family.
+    """
+    return explicit if explicit is not None else CHEAP_COUNTERPART.get(provider_model)
+
+
+def _build_live_summarizer(provider: BenchProvider, cheap_model: str | None) -> Summarizer:
+    """A real summarizer for isolating ``summarize_history`` (ADR-015).
+
+    Calls the same provider the benchmark is already using, at a small,
+    separate summarization request -- a real model call, not a stand-in, so
+    the numbers this produces measure the stage rather than a stub. Uses
+    ``cheap_model`` when given, since a summarizer's own cost should not
+    swamp the tokens it is trying to save; falls back to the provider's own
+    model otherwise.
+
+    Args:
+        provider: The active ``BenchProvider`` (live or simulated).
+        cheap_model: Model to summarize with, if the caller set one.
+
+    Returns:
+        A ``Summarizer`` callable.
+    """
+    model = cheap_model or provider.model
+
+    def summarize(text: str) -> str:
+        request = LLMRequest(
+            model=model,
+            messages=(
+                Message(
+                    role="system",
+                    content=(
+                        "Summarize the following conversation history in 2-3 sentences. "
+                        "Preserve every specific fact, number, name, and decision -- omit "
+                        "only conversational filler."
+                    ),
+                ),
+                Message(role="user", content=text),
+            ),
+            temperature=0.0,
+        )
+        return provider(request).content
+
+    return summarize
 
 
 if __name__ == "__main__":
