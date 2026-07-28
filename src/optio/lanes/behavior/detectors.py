@@ -50,14 +50,13 @@ number; ``docs/behavior.md`` carries it, measured by the fixture suite.
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 from optio import semconv
 
 if TYPE_CHECKING:
-    from optio.lanes.behavior.window import BehaviorWindow, StepSignature
+    from optio.lanes.behavior.window import BehaviorWindow
 
 #: Minimum steps before any pathology may be reported. Below this there is not
 #: enough evidence to distinguish a loop from an agent that has simply started
@@ -117,17 +116,18 @@ def classify(window: BehaviorWindow) -> Verdict:
         The verdict. ``healthy`` whenever the evidence is insufficient or
         ambiguous.
     """
-    steps: list[StepSignature] = list(window)
-    size = len(steps)
-
-    call_counts = Counter(step.call for step in steps)
+    # Counts come from the window, which maintains them as steps are added.
+    # Recomputing them here made every step cost O(window); see
+    # `BehaviorWindow.add`. Read-only: the counter is the window's own state.
+    size = len(window)
+    call_counts = window.call_counts
     repeat_count = max(call_counts.values()) if call_counts else 0
 
     if size < MIN_STEPS_FOR_VERDICT:
         # Report the count as evidence, but never a pathology this early.
         return Verdict(state=semconv.LOOP_STATE_HEALTHY, repeat_count=repeat_count)
 
-    errors = sum(1 for step in steps if step.errored)
+    errors = window.error_count
     if errors >= RETRY_STORM_MIN_ERRORS and errors / size >= RETRY_STORM_ERROR_RATE:
         return Verdict(state=semconv.LOOP_STATE_RETRY_STORM, repeat_count=repeat_count)
 

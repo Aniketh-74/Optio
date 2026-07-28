@@ -448,3 +448,65 @@ class TestIsolation:
         ledger = CostLedger()
         lane = CostLane(default_config(), ledger=ledger)
         assert lane.ledger is ledger
+
+
+class TestSignalsFromOneStepAgreeWithEachOther:
+    """A step's cost signals must all describe the same ledger state.
+
+    The lane emits `actual_cost` and `budget_remaining` from the same step. If
+    each takes its own ledger snapshot, a concurrent step landing between them
+    yields two numbers that were never simultaneously true -- spend from one
+    instant, headroom from another. A policy comparing them (the obvious
+    `remaining == limit - actual` check) then sees a contradiction, and the
+    disagreement is worse than either number being merely stale.
+    """
+
+    def test_actual_and_remaining_reconcile_exactly(self, make_span: MakeSpan) -> None:
+        budget = BudgetPolicy(limit_usd=100.0, max_steps=100)
+        lane = CostLane(default_config())
+        run = _StubRun(budget=budget)
+
+        for _ in range(5):
+            span = make_span(
+                **{
+                    semconv.GEN_AI_REQUEST_MODEL: "gpt-4o",
+                    semconv.GEN_AI_USAGE_INPUT_TOKENS: 1_000_000,
+                    semconv.GEN_AI_USAGE_OUTPUT_TOKENS: 0,
+                }
+            )
+            signals = _signals(lane.process_span(span, run))
+
+            actual = signals[semconv.RUN_ACTUAL_COST]
+            remaining = signals[semconv.RUN_BUDGET_REMAINING]
+            assert isinstance(actual, float) and isinstance(remaining, float)
+            # The identity a budget policy is entitled to rely on.
+            assert actual + remaining == pytest.approx(budget.limit_usd)
+
+    def test_the_signals_come_from_a_single_snapshot(self, make_span: MakeSpan) -> None:
+        """Only one snapshot is taken per priced step.
+
+        Guards the mechanism rather than the symptom: the consistency above
+        holds *because* both signals derive from one read. Someone reinstating
+        a second `snapshot()` call would reintroduce the straddle, and no
+        single-threaded assertion would notice.
+        """
+        lane = CostLane(default_config())
+        run = _StubRun(budget=BudgetPolicy(limit_usd=100.0, max_steps=100))
+        real_snapshot = lane.ledger.snapshot
+        calls: list[str] = []
+
+        def counting_snapshot(run_id: str):  # type: ignore[no-untyped-def]
+            calls.append(run_id)
+            return real_snapshot(run_id)
+
+        lane.ledger.snapshot = counting_snapshot  # type: ignore[method-assign]
+        span = make_span(
+            **{
+                semconv.GEN_AI_REQUEST_MODEL: "gpt-4o",
+                semconv.GEN_AI_USAGE_INPUT_TOKENS: 1_000_000,
+                semconv.GEN_AI_USAGE_OUTPUT_TOKENS: 0,
+            }
+        )
+        lane.process_span(span, run)
+
+        assert len(calls) == 1, f"expected one snapshot per priced step, got {len(calls)}"

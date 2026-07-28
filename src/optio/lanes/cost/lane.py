@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 
     from optio.config import Config
     from optio.lanes.base import RunLike
+    from optio.lanes.cost.ledger import LedgerSnapshot
     from optio.lanes.cost.pricing import PricingProvider
 
 _log: Final = logging.getLogger("optio")
@@ -97,7 +98,7 @@ class CostLane(Lane):
 
         snapshot = self.ledger.snapshot(run.run_id)
         signals = [Signal(semconv.RUN_ACTUAL_COST, snapshot.actual)]
-        signals.extend(self._forward_signals(run))
+        signals.extend(self._forward_signals(run, snapshot))
         return signals
 
     def on_run_end(self, run: RunLike) -> list[Signal]:
@@ -178,16 +179,29 @@ class CostLane(Lane):
 
         return cost_of(model, input_tokens or 0, output_tokens or 0, self.pricing)
 
-    def _forward_signals(self, run: RunLike) -> list[Signal]:
+    def _forward_signals(
+        self, run: RunLike, snapshot: LedgerSnapshot | None = None
+    ) -> list[Signal]:
         """Return the forward-looking signals for a run.
 
         Args:
             run: The run being metered.
+            snapshot: Ledger state to derive from. Taken here when omitted.
+                Callers that already hold one should pass it: a snapshot is a
+                locked scan of the run's open reservations, and taking a second
+                one costs that again for no new information.
+
+                It also keeps the signals *consistent*. Two snapshots taken
+                separately can straddle a concurrent step, so `actual_cost`
+                would describe one ledger state and `budget_remaining` another
+                -- two numbers that were never true at the same instant, which
+                is worse for a policy than either alone.
 
         Returns:
             Projection and budget signals, omitting any that cannot be computed.
         """
-        snapshot = self.ledger.snapshot(run.run_id)
+        if snapshot is None:
+            snapshot = self.ledger.snapshot(run.run_id)
         signals: list[Signal] = []
 
         projected = project_cost(snapshot, run.budget)

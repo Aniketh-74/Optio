@@ -15,6 +15,8 @@ are acceptable (Section 6.4); false positives are not.
 
 from __future__ import annotations
 
+from collections import Counter
+
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -71,6 +73,74 @@ class TestWindowBounds:
             window.add(step)
 
         assert window.total_steps == len(steps)
+
+
+class TestIncrementalCountsMatchARecount:
+    """The counts maintained by ``add`` must equal counting from scratch.
+
+    ``add`` updates ``call_counts`` and ``error_count`` incrementally so that
+    classification is O(1) rather than O(window). That trades a derived value
+    for stored state, and stored state can drift -- an eviction that forgets to
+    decrement leaves a phantom call inflating the repeat count forever, and
+    every verdict afterwards is computed from a window that never existed.
+
+    Drift is invisible to the other tests: the deque stays correct, so lengths
+    and contents still check out while the counts quietly diverge. These
+    properties compare against the recount the old implementation performed.
+    """
+
+    @given(
+        maxlen=st.integers(min_value=1, max_value=32),
+        steps=st.lists(signatures, max_size=300),
+    )
+    def test_counts_match_a_full_recount(self, maxlen: int, steps: list[StepSignature]) -> None:
+        window = BehaviorWindow(maxlen)
+        for step in steps:
+            window.add(step)
+            # Checked on every add, not only at the end: a decrement error that
+            # a later eviction happens to cancel out would pass a final-state
+            # check while having produced wrong verdicts along the way.
+            assert window.call_counts == Counter(s.call for s in window)
+            assert window.error_count == sum(1 for s in window if s.errored)
+
+    @given(
+        maxlen=st.integers(min_value=1, max_value=16),
+        steps=st.lists(signatures, min_size=1, max_size=200),
+    )
+    def test_no_zero_counts_survive_eviction(self, maxlen: int, steps: list[StepSignature]) -> None:
+        """Evicted calls leave no zeroed keys behind.
+
+        ``classify`` reads ``len(call_counts)`` as the number of distinct calls,
+        which gates the looping verdict. A key left at zero would keep counting
+        toward that total and could suppress a real loop indefinitely.
+        """
+        window = BehaviorWindow(maxlen)
+        for step in steps:
+            window.add(step)
+
+        assert all(count > 0 for count in window.call_counts.values())
+        assert len(window.call_counts) <= maxlen
+
+    @given(steps=st.lists(signatures, min_size=1, max_size=200))
+    def test_a_saturated_window_of_one_call_counts_only_that_call(
+        self, steps: list[StepSignature]
+    ) -> None:
+        """Filling the window with one repeated call collapses to a single key.
+
+        The textbook stuck agent, and the case where a stale key would be most
+        misleading: the window holds exactly one distinct call, so anything else
+        in the counter is drift.
+        """
+        window = BehaviorWindow(8)
+        for step in steps:
+            window.add(step)
+
+        repeated = steps[0]
+        for _ in range(8):
+            window.add(repeated)
+
+        assert dict(window.call_counts) == {repeated.call: 8}
+        assert window.error_count == (8 if repeated.errored else 0)
 
 
 class TestSignatureStability:
