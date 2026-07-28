@@ -217,6 +217,29 @@ plausible numbers is worse than one obviously wrong one), all three lanes writin
 concurrent `install_tap` calls resolving to a single tap, and every test bounded by a timeout so
 a deadlock fails CI rather than hanging it.
 
+### The behavior lane's lock became load-bearing too
+
+Making classification O(1) introduced a second read-modify-write: `add` decrements the evicted
+call's count and increments the new one. Applying the same method to it — remove the lock, run 16
+threads at a 100 ns switch interval — produced two failures, the second of them unanticipated:
+
+* **The counts drift from the deque.** Silent, exactly like the ledger's: the deque stays correct,
+  so nothing else in the suite looks wrong while every subsequent verdict is computed from a
+  window that never existed.
+* **`classify` raises `RuntimeError: dictionary changed size during iteration`**, from
+  `Counter.most_common` iterating the counter while another thread mutates it. The fail-open
+  guard absorbs it, so the agent survives — but the behavior signal disappears for those steps
+  and only `optio.internal.lane_errors` says why.
+
+Both are contained because `add` and `classify` both run inside the lane's existing lock.
+`TestTheBehaviorLaneLockIsLoadBearing` exists so that *narrowing* that lock — a reasonable-looking
+change now that classify is O(1) — fails here rather than in someone's agent. Verified the usual
+way: it goes red with the lock removed.
+
+This is the argument for re-running the concurrency method after an optimization rather than
+assuming the existing tests still cover it. The optimization was correct; it just moved where the
+lock had to be.
+
 ## What is deliberately not tested
 
 **Detector accuracy against real agent traffic.** The false-positive rate (0/1200) is measured

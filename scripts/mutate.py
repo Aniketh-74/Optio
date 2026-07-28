@@ -95,6 +95,16 @@ TARGETS: dict[str, Target] = {
         ),
         why="a false positive here becomes the user's outage (ADR-004)",
     ),
+    "window": Target(
+        module="src/optio/lanes/behavior/window.py",
+        tests=(
+            "tests/unit/test_window.py",
+            "tests/property/test_window_properties.py",
+            "tests/unit/test_detectors.py",
+            "tests/unit/test_false_positive_rate.py",
+        ),
+        why="counts are maintained incrementally; drift is silent and changes every verdict",
+    ),
 }
 
 

@@ -391,3 +391,93 @@ class TestTheLedgerLockIsLoadBearing:
         assert ledger.snapshot(run).actual == pytest.approx(1.0), (
             "a late reservation changed the cost of a run already reported"
         )
+
+
+class TestTheBehaviorLaneLockIsLoadBearing:
+    """The window's incremental counts are a read-modify-write, and need the lock.
+
+    `BehaviorWindow.add` decrements the evicted call's count and increments the
+    new one. That is the same shape as the ledger's `close_run` race -- and
+    unlike a plain dict write, the GIL does not make it atomic.
+
+    Two distinct failures appear when the lane's lock is removed, verified by
+    removing it:
+
+    * The counts drift from the deque, so every later verdict is computed from
+      a window that never existed. Silent: the deque stays correct, so nothing
+      else looks wrong.
+    * `classify` raises `RuntimeError: dictionary changed size during iteration`
+      from `Counter.most_common`, because it iterates the counter while another
+      thread mutates it. The fail-open guard absorbs that (ADR-004), so the
+      agent survives -- but the behavior signal vanishes for the affected steps
+      and only the `optio.internal.lane_errors` metric would say why.
+
+    Both are contained today because `add` and `classify` are called inside the
+    same lock. This test exists so that narrowing that lock for performance --
+    an entirely reasonable-looking change, since classify is now O(1) -- fails
+    here instead of in a user's agent.
+    """
+
+    @pytest.mark.timeout(TIMEOUT_SECONDS)
+    def test_counts_stay_consistent_under_contention(self) -> None:
+        from collections import Counter
+
+        from optio.lanes.behavior.lane import BehaviorLane
+
+        class _Run:
+            run_id = "shared"
+            budget = None
+
+        lane = BehaviorLane(Config(behavior_window_size=32))
+        run = _Run()
+        threads, per_thread = 16, 400
+        gate = threading.Barrier(threads)
+        errors: list[BaseException] = []
+
+        original = sys.getswitchinterval()
+        # Force preemption mid-sequence; at the default interval the whole
+        # read-modify-write usually completes inside one time slice and the
+        # race never appears.
+        sys.setswitchinterval(0.0000001)
+        try:
+
+            def worker(worker_id: int) -> None:
+                gate.wait()
+                try:
+                    for i in range(per_thread):
+                        lane.process_span(_span_for(f"t{(worker_id + i) % 6}"), run)
+                except BaseException as exc:  # noqa: BLE001 - recorded, then asserted
+                    errors.append(exc)
+
+            pool = [threading.Thread(target=worker, args=(n,)) for n in range(threads)]
+            for thread in pool:
+                thread.start()
+            for thread in pool:
+                thread.join(timeout=TIMEOUT_SECONDS)
+                assert not thread.is_alive(), "behavior lane deadlocked"
+        finally:
+            sys.setswitchinterval(original)
+
+        assert not errors, f"classification raised under contention: {errors[:3]}"
+
+        window = lane._windows["shared"]
+        assert window.call_counts == Counter(step.call for step in window), (
+            "maintained call counts drifted from the window's actual contents"
+        )
+        assert window.error_count == sum(1 for step in window if step.errored), (
+            "maintained error count drifted from the window's actual contents"
+        )
+
+
+def _span_for(tool: str) -> object:
+    """A finished-span stub carrying just what the behavior lane reads."""
+    from unittest.mock import Mock
+
+    span = Mock()
+    span.name = "gen_ai.chat"
+    span.attributes = {
+        semconv.GEN_AI_TOOL_NAME: tool,
+        semconv.GEN_AI_REQUEST_MODEL: "gpt-4o",
+    }
+    span.status = None
+    return span
