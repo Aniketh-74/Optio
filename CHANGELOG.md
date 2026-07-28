@@ -23,6 +23,23 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **CI now hard-fails if the provider SDKs pinned for testing go missing, and confirmed no test
+  can ever spend real money.** Closing the audit's last item: is a real-provider test isolated
+  the way `tests/frameworks/` isolates its own optional dependencies? For `openai`/`anthropic`
+  the answer needed to be different, not the same mechanism -- these are mocked-SDK tests (no
+  network, no key, no spend), so they belong in the main CI job rather than a dedicated
+  framework-style matrix job, but they still deserved the same "a gate that can pass by skipping
+  is not a gate" treatment the frameworks and policy suites already get. `tests/optimize/conftest.py`
+  gained a `pytest_configure` hook that fails the whole session under
+  `OPTIO_REQUIRE_PROVIDER_SDKS=1` (now set in the main CI job) if either package is missing --
+  one shared check rather than duplicating it per file, and deliberately *not* a per-file
+  import-time gate: an inline gate function tried first tripped ruff's `E402` rule, which
+  special-cases the literal call `pytest.importorskip(...)` and nothing else (confirmed
+  empirically). Also added `tests/optimize/test_ci_isolation.py`, asserting no workflow
+  references a real provider API key or invokes the live benchmark CLI, and no test file reads
+  a real provider key from the environment to use it (as opposed to setting a fake one for a
+  mocked client) -- the actual "confirm" this audit item asked for, now enforced rather than
+  simply true today.
 - **Mocked-SDK tests for `OpenAIProvider`/`AnthropicProvider`, and `anthropic` joins `openai` as a
   dev dependency.** `bench/providers.py` coverage was 38% -- the real-provider adapters had no
   tests at all beyond the free `SimulatedProvider` and `SpendGuard` cases, because a real API

@@ -104,6 +104,9 @@ def _chat_request(**overrides: Any) -> LLMRequest:
     return LLMRequest(**kwargs)
 
 
+pytest.importorskip("openai")
+
+
 class _FakeOpenAIBackend:
     """Records every request body and answers with a fixed usage/content."""
 
