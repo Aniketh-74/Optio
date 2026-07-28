@@ -73,6 +73,21 @@ The numbers in these packs (`$0.50` projected cost, `0.7` groundedness) are **pl
 There is no defensible default for what a run should cost; that depends on what the run is worth
 to you. Change them before you rely on them.
 
+## optio_optimize (ADR-014, opt-in)
+
+`optio_optimize` is a separate, opt-in package (ADR-013) that installing `optio` alone never
+pulls in. When a caller turns on `emit_spans`, it writes `optio_optimize.stage` on the *step*
+span, not the `gen_ai.run` span the rules above read — so surfacing it requires a source that
+correlates step and run attributes into one input document. The OPA and AGT packs each carry one
+rule for it; Cedar does not, because Cedar's permit/forbid model has no non-blocking "warn"
+primitive to express with.
+
+The rule is visibility-only and never a deny: enabling a lossy stage (`summarize_history`,
+`route_models`, `semantic_cache`, `compress_prompt`) is the operator's own informed choice, not a
+pathology — see `docs/design/adr/adr-013-*.md`. A policy that denied a step *because* the
+optimizer did exactly what it was configured to do would contradict that choice instead of
+enforcing it.
+
 ## Quality signals
 
 `groundedness`, `task_success`, and `cost_per_successful_task` are referenced by all three packs

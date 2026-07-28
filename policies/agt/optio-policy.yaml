@@ -117,6 +117,26 @@ spec:
       effect: warn
       message: "Cost per successful task exceeds $1.00."
 
+    # --- optio_optimize (ADR-014, opt-in step-level visibility) ---------------
+
+    - name: lossy-optimizer-stage-notice
+      description: >-
+        optio_optimize (a separate, opt-in package -- installing optio alone
+        never pulls it in) emits this on the STEP span when `emit_spans` is
+        enabled, not the `gen_ai.run` namespace declared above. A source that
+        correlates step and run attributes into one document can surface it
+        here; one that does not simply never sees the signal and this rule
+        stays inert, same as every `on_missing: skip` rule in this file.
+        Visibility only, deliberately never a deny: enabling a lossy stage
+        (summarize_history, route_models, semantic_cache, compress_prompt) is
+        the operator's own ADR-013 choice, not a pathology to gate on.
+      signal: optio_optimize.stage
+      condition: contains_any
+      values: ["summarize_history", "route_models", "semantic_cache", "compress_prompt"]
+      on_missing: skip
+      effect: warn
+      message: "Step served by a lossy optimizer stage; output may differ from an unoptimized call."
+
   # Fail-open is a property of optio (ADR-004): a lane that breaks emits
   # nothing rather than a wrong value. Mirror that here so a signal outage does
   # not become an agent outage. Setting this to `deny` inverts the guarantee and

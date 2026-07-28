@@ -143,6 +143,44 @@ test_a_priced_run_does_not_warn_about_pricing if {
 	count(optio.warn) == 0 with input as input_doc
 }
 
+# --- optio_optimize (ADR-014, step-level, opt-in) ----------------------------
+
+test_a_lossy_optimizer_stage_warns if {
+	count(optio.warn) == 1 with input as {"attributes": {"optio_optimize.stage": "semantic_cache"}}
+}
+
+test_a_second_lossy_stage_name_in_a_joined_list_still_warns if {
+	# optio_optimize joins multiple stage names with commas when more than one
+	# fired; the pattern must not require the lossy name to be the whole value.
+	count(optio.warn) == 1 with input as {"attributes": {
+		"optio_optimize.stage": "prefix_cache,compress_prompt",
+	}}
+}
+
+test_lossless_only_optimizer_stages_do_not_warn if {
+	count(optio.warn) == 0 with input as {"attributes": {
+		"optio_optimize.stage": "trim_history,exact_cache",
+	}}
+}
+
+test_no_optimizer_signal_does_not_warn if {
+	# The default: emit_spans is off, or optio_optimize is not installed at
+	# all. Absence means unknown, not "assume the worst stage fired".
+	#
+	# Uses a fully-priced healthy input (same shape as
+	# test_a_priced_run_does_not_warn_about_pricing) rather than bare
+	# loop_state, so the only thing under test is the optio_optimize rule --
+	# a loop_state-only input also trips the unrelated "unpriceable run"
+	# warning above and would make this test's subject ambiguous.
+	input_doc := {"attributes": {
+		"gen_ai.run.loop_state": "healthy",
+		"gen_ai.run.actual_cost": 0.02,
+		"gen_ai.run.budget_remaining": 4.98,
+	}}
+	optio.allow with input as input_doc
+	count(optio.warn) == 0 with input as input_doc
+}
+
 # --- combinations ------------------------------------------------------------
 
 test_multiple_breaches_are_all_reported if {

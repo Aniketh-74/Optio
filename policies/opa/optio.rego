@@ -126,3 +126,30 @@ warn contains msg if {
 	not signal("gen_ai.run.budget_remaining")
 	msg := "no step in this run could be priced; cost gating is not in force (check the pricing table)"
 }
+
+# --- optio_optimize (ADR-014, opt-in step-level visibility) ------------------
+#
+# optio_optimize (a separate, opt-in package -- installing optio alone never
+# pulls it in) emits its own attributes on the STEP span when `emit_spans`
+# is enabled, not the run span the rules above read. A consumer correlating
+# step and run attributes into one input document can surface this alongside
+# them; one that does not simply never sees `optio_optimize.stage` and this
+# rule stays inert, the same "absent means unknown" behavior as every rule
+# above.
+#
+# Visibility only, deliberately never a deny: turning on a lossy stage
+# (`summarize_history`, `route_models`, `semantic_cache`, `compress_prompt`)
+# is the operator's own informed choice, stated plainly by optio_optimize's
+# own ADR-013 ("the library's job is to make the choice legible rather than
+# to make it for them") -- a policy denying a step *because* the operator's
+# own optimizer configuration did exactly what they asked would contradict
+# that, not enforce it.
+
+warn contains msg if {
+	stage := signal("optio_optimize.stage")
+	regex.match(`(^|,)(summarize_history|route_models|semantic_cache|compress_prompt)(,|$)`, stage)
+	msg := sprintf(
+		"step served by a lossy optimizer stage (%s); output may differ from an unoptimized call",
+		[stage],
+	)
+}
