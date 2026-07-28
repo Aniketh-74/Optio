@@ -21,6 +21,35 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Added
+
+- **`optio_optimize` Phase 2: `trim_history`, `deduplicate`, `prune_retrieval`.**
+  Three bounded-risk stages (`Fidelity.SHAPED`, on by default) that drop context
+  rather than invent it: `trim_history` keeps the system prompt plus the most
+  recent `recent_turns` messages; `deduplicate` removes exact-repeat
+  blank-line-separated context blocks within a message; `prune_retrieval` drops
+  blocks that share almost no vocabulary with the message's final block (read as
+  the question). All three were config fields already (0.1.0) with no stage
+  behind them; `build_stages()` now wires them in between output-shaping and
+  prefix marking, per the ordering rule the module docstring already stated.
+- **Live-verified: `multi_turn_chat` and `rag_queries` move off the 0% floor.**
+  Both showed 0% token reduction on OpenAI before Phase 2 (documented above).
+  Live against `gpt-4o-mini`: `multi_turn_chat` cost −8.4% (input −7.3%,
+  output −35.0%), `rag_queries` cost −16.5% (input −4.2%, 100% identical
+  output across all 10 calls, entirely from `deduplicate`). Total spend to
+  measure: $0.0138 across 140 live calls.
+- **A simulated finding that a live run overturned**, recorded rather than
+  quietly dropped: a simulated pass predicted `trim_history` would *raise*
+  cost 34.8% on OpenAI-style automatic prefix caching, because a sliding
+  window shares almost no leading text between calls and so appears to defeat
+  the provider's own free caching of resent history. The live run showed the
+  opposite — cost fell 8.4%, and output tokens fell 35% along with it, an
+  effect the simulator cannot model since it always returns a fixed synthetic
+  completion length. Same category of error as the 36.3%-to-0% correction
+  above, now confirmed a second time: simulated figures in this package are a
+  hypothesis, not a result, until `--live` checks them. See
+  `docs/optimize-benchmarks.md` and `TrimHistoryStage`'s docstring.
+
 ### Changed
 
 - **Behavior classification is O(1) per step instead of O(window).** Call counts are maintained

@@ -30,8 +30,17 @@ from optio_optimize.stages.base import Fidelity
 
 pytestmark = pytest.mark.optimize
 
-#: Only the stages that promise byte-identical output.
-IDENTICAL_ONLY = OptimizeConfig(structured_output=False, adaptive_max_tokens=False)
+#: Only the stages that promise byte-identical output. trim_history, dedup and
+#: pruning are SHAPED (Phase 2, ADR-013) -- on by default, but they change what
+#: the prompt says, not just its price, so they are excluded here for the same
+#: reason structured_output and adaptive_max_tokens are.
+IDENTICAL_ONLY = OptimizeConfig(
+    structured_output=False,
+    adaptive_max_tokens=False,
+    trim_history=False,
+    deduplicate=False,
+    prune_retrieval=False,
+)
 
 
 class TestIdenticalStagesReallyAreIdentical:

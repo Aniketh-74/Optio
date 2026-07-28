@@ -104,9 +104,15 @@ def main(argv: list[str] | None = None) -> int:
         compress_prompt=args.aggressive,
         summarize_history=args.aggressive,
         # Under --strict-fidelity, drop the reshaping stages so the run is a
-        # clean test of the identical-output promise.
+        # clean test of the identical-output promise. trim_history, dedup and
+        # pruning are SHAPED too (they change what the prompt says, not just
+        # its price) and default on, so they need the same treatment or this
+        # flag stops proving what it claims to.
         structured_output=not args.strict_fidelity,
         adaptive_max_tokens=not args.strict_fidelity,
+        trim_history=not args.strict_fidelity,
+        deduplicate=not args.strict_fidelity,
+        prune_retrieval=not args.strict_fidelity,
     )
 
     # Only stages promising byte-identical output can be held to it. Running

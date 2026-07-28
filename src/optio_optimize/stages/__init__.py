@@ -20,19 +20,24 @@ from typing import TYPE_CHECKING
 
 from optio_optimize.stages.base import Stage, StageContext, StageResult
 from optio_optimize.stages.caching import ExactCacheStage, PrefixCacheStage
+from optio_optimize.stages.history import TrimHistoryStage
 from optio_optimize.stages.output import AdaptiveMaxTokensStage, StructuredOutputStage
+from optio_optimize.stages.retrieval import DeduplicateStage, PruneRetrievalStage
 
 if TYPE_CHECKING:
     from optio_optimize.config import OptimizeConfig
 
 __all__ = [
     "AdaptiveMaxTokensStage",
+    "DeduplicateStage",
     "ExactCacheStage",
     "PrefixCacheStage",
+    "PruneRetrievalStage",
     "Stage",
     "StageContext",
     "StageResult",
     "StructuredOutputStage",
+    "TrimHistoryStage",
     "build_stages",
 ]
 
@@ -59,7 +64,19 @@ def build_stages(config: OptimizeConfig) -> list[Stage]:
     if config.adaptive_max_tokens:
         stages.append(AdaptiveMaxTokensStage())
 
-    # 3. Prefix marking. Must be last so it sees the final message list.
+    # 3. Shrink. Must run before prefix marking sees the message list (rule 2
+    #    above). Cheapest-first within the block too: dropping whole aged-out
+    #    turns, then exact duplicate blocks, then the scoring pass pruning
+    #    needs -- each stage does less work on a prompt the previous one
+    #    already shrank.
+    if config.trim_history:
+        stages.append(TrimHistoryStage())
+    if config.deduplicate:
+        stages.append(DeduplicateStage())
+    if config.prune_retrieval:
+        stages.append(PruneRetrievalStage())
+
+    # 4. Prefix marking. Must be last so it sees the final message list.
     if config.prefix_cache:
         stages.append(PrefixCacheStage())
 

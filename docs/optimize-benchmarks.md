@@ -61,6 +61,56 @@ it. The simulator now models both styles, and the honest comparison is:
 OpenAI.** It costs nothing to leave on, but nobody should expect a discount
 they were already receiving.
 
+## Phase 2: history trimming, deduplication, pruning
+
+`trim_history`, `deduplicate` and `prune_retrieval` land after the table
+above. A simulated pass first predicted `trim_history` would *raise* cost on
+OpenAI-style automatic caching; a live run against the real API (below)
+overturned that, the same way the 36.3% claim above was overturned. Total
+spend for the full 7-workload live suite: **$0.0138 across 140 calls.**
+
+| workload | input ↓ | output ↓ | cost ↓ | quality |
+|---|---|---|---|---|
+| `multi_turn_chat` | 7.3% | 35.0% | **8.4%** | 25% identical, 9 SHAPED (expected) |
+| `rag_queries` | 4.2% | 0.0% | **16.5%** | 100% identical |
+
+Both were 0.0% token reduction before Phase 2 (see the honest-comparison table
+above); both now show real, positive, live-measured savings.
+
+**The simulated regression didn't hold up, and the reason is instructive.**
+The simulator's automatic-cache model matches a growing prefix by exact string
+comparison against everything seen so far, so a sliding window -- which
+changes its oldest surviving message almost every turn -- looked like it was
+forfeiting a discount the untrimmed baseline was accumulating for free.
+Simulated: tokens down 6.5%, cost *up* 34.8%. Live: cost *down* 8.4%, and
+output tokens fell 35% along with the input -- a shorter prompt produced
+shorter answers too, a real effect the simulator cannot see at all, since it
+always returns a fixed synthetic completion length regardless of what was
+sent. The provider's real caching behavior evidently doesn't reward an
+ever-growing prefix as reliably as the simulator's exact-match model assumed,
+and whatever discount trimming gives up on the input side was smaller than
+what a shorter prompt saved on output. This is the same category of error as
+the 36.3%-to-0% correction above -- a plausible mechanism, modelled
+carefully, that a live call still contradicted -- and it argues for treating
+every simulated number in this document as a hypothesis, not a result, until
+`--live` confirms it.
+
+`deduplicate` accounted for the entire `rag_queries` saving, at 100% output
+identity across all 10 live calls -- removing an exact-duplicate context block
+changed nothing about the answer, on this workload. `prune_retrieval` reported
+zero, because the workload's chunks all share the query's key vocabulary
+(`revenue`) and none scored below the relevance floor: a correct, honest zero
+on a workload this heuristic was never going to touch, not a bug.
+
+**Practical read:** both `multi_turn_chat` and `rag_queries` moved off the 0%
+floor documented above, with real dollars behind the number. `trim_history`'s
+divergence rate (9/12 responses reworded) is expected and priced in --
+it is `Fidelity.SHAPED`, not `IDENTICAL`, precisely because dropping context
+can change the answer. `deduplicate` and `prune_retrieval` stayed byte-identical
+on their one live test each; that is encouraging but is one workload's worth of
+evidence, not a guarantee for every prompt shape -- measure your own traffic
+before leaning on it.
+
 ## What the numbers mean per stage
 
 `exact_cache` is where the measured savings come from. It avoids the call
