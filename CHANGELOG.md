@@ -23,6 +23,16 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **OPA and AGT policy packs gain an `optio_optimize` visibility rule.** `optio_optimize`
+  (ADR-014) writes `optio_optimize.stage` on the step span when `emit_spans` is on; a source that
+  correlates step and run attributes can now surface a warning when a lossy stage
+  (`summarize_history`, `route_models`, `semantic_cache`, `compress_prompt`) served a step.
+  Warn-only, never deny — enabling a lossy stage is the operator's own ADR-013 choice, not a
+  pathology. Cedar is skipped: its permit/forbid model has no non-blocking warn primitive.
+  Verified against the real `opa` and `cedarpy` engines (not just structural checks), which
+  caught a real test bug: the absence test's input collided with an unrelated pre-existing
+  "unpriceable run" warning, unrelated to the new rule, and had to be rewritten to isolate the
+  rule actually under test. See `policies/README.md`.
 - **`multi_turn_chat_long`: does `trim_history`'s live win hold at scale?** The 12-turn
   `multi_turn_chat` result (cost −8.4%) is short enough that it could plausibly have been a
   small-scale artifact — ADR-013's own reasoning for why trimming can help or hurt is a scale
