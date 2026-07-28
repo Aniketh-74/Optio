@@ -8,6 +8,18 @@ python -m optio_optimize.bench --strict-fidelity            # free, instant
 python -m optio_optimize.bench --live --cap 1.00            # real API, capped
 ```
 
+**Last live-verified**, by section (a number gets no more trust than its date --
+provider caching behavior has already changed the reported figures once, see
+`_AUTO_CACHE_QUANTUM_TOKENS` in `bench/providers.py`):
+
+| Section | Date | Spend |
+|---|---|---|
+| Live results (identical-output stages) | 2026-07-28 | — |
+| `trim_history` / tool-call safety | 2026-07-28 | $0.0138 + $0.0055 |
+| Phase 3 (`ALTERED`-tier stages) | 2026-07-28 | $0.0041 |
+| `rag_queries_noisy` (`prune_retrieval`) | 2026-07-29 | $0.0029 |
+| `SimulatedProvider` cache-quantum calibration | 2026-07-29 | ~$0.001 (raw trace, not a bench run) |
+
 ## Live results (gpt-4o-mini, identical-output stages only)
 
 | workload | input ↓ | output ↓ | cost ↓ | latency | quality |
@@ -195,6 +207,31 @@ not sufficient, but every one currently in the package (`trim_history`,
 has been live-checked directly above. The `ALTERED` tier's own eval gate is
 `src/optio_optimize/eval/` — see the next section for what it does and does
 not prove.
+
+## The simulator's cache model, recalibrated against a fresh trace
+
+`SimulatedProvider`'s automatic-cache model (`bench/providers.py`) reports
+`cached_input_tokens` for OpenAI-style caching, and until 2026-07-29 it
+reported whatever token count the nearest message boundary past the
+1024-token floor happened to land on -- an arbitrary number, not a modelled
+one. An 8-call live trace that day (a growing conversation, ~1400-1700
+prompt tokens) showed `cached_tokens` moving in exact multiples of 128 --
+0 → 1408 → plateau → 1536 → plateau -- never landing between them, even
+though the prompt itself grew by an uneven token count every call. The
+simulator now rounds down to that quantum (`_AUTO_CACHE_QUANTUM_TOKENS`),
+pinned by `tests/optimize/test_providers.py`.
+
+**Worth noting rather than hiding**: an earlier trace (2026-07-28, the
+`multi_turn_chat` measurement above) recorded a 256-token jump between two
+calls, not 128. Read together, both are consistent with a single 128-token
+quantum -- 256 is two quanta crossed in one step, not evidence of a
+different granularity -- but the 2026-07-28 trace alone did not distinguish
+the two possibilities, and was not re-examined closely enough at the time to
+notice. This document now gives the date and method behind a calibration
+claim, not just the number, for exactly that reason: a provider's own
+caching behavior is not guaranteed to stay the same release to release
+either, and a stale, undated "128" would look identical to a correct one
+until someone re-measured it.
 
 ## Phase 3: the `ALTERED`-tier stages (experimental, off by default)
 

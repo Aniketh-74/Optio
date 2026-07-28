@@ -23,6 +23,20 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **`SimulatedProvider`'s automatic-cache model, recalibrated against a fresh live trace.**
+  It previously reported `cached_input_tokens` as whatever token count the nearest message
+  boundary past the 1024-token floor happened to land on — an arbitrary number, not a modelled
+  one. An 8-call live trace against `gpt-4o-mini` (2026-07-29) showed OpenAI's real
+  `cached_tokens` moving in exact multiples of 128 (`0 → 1408 → plateau → 1536 → plateau`),
+  never landing between them even as the prompt grew by an uneven count every call. The
+  simulator now rounds down to that quantum (`_AUTO_CACHE_QUANTUM_TOKENS`), pinned by the new
+  `tests/optimize/test_providers.py`. An earlier trace (2026-07-28) had recorded a 256-token
+  jump, which reads as two quanta crossed in one step now that there's a second data point —
+  not a contradiction, but not distinguishable from one at the time either, which is why
+  `docs/optimize-benchmarks.md` now dates every calibration claim instead of just stating a
+  number: a provider's caching behavior isn't guaranteed to stay fixed release to release, and a
+  stale "128" would look identical to a correct one until someone re-measured it. The doc also
+  gained a table mapping every live-verified section to its date and spend.
 - **`rag_queries_noisy`: a benchmark workload that actually exercises `prune_retrieval`'s
   pruning logic.** `rag_queries` reported 0 tokens saved from `prune_retrieval`, both simulated
   and live — correctly, since every chunk in it shares the query's vocabulary and none should

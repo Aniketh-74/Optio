@@ -29,11 +29,23 @@ from optio_optimize.types import LLMResponse
 if TYPE_CHECKING:
     from optio_optimize.types import LLMRequest
 
-#: Prefix length below which automatic caching does not engage. Measured
-#: against OpenAI: a 1401-token prompt reported 1024 cached on the first
-#: repeat and 1280 thereafter, so the floor is real and the granularity is
-#: coarse.
+#: Prefix length below which automatic caching does not engage. Confirmed
+#: twice live against OpenAI, most recently 2026-07-29 (a 1422-token prompt
+#: reported 0 cached on the first call, 1408 on the first repeat) -- the
+#: floor is real. The exact reported value both times was a multiple of
+#: :data:`_AUTO_CACHE_QUANTUM_TOKENS`, not an arbitrary number past the floor.
 _AUTO_CACHE_FLOOR_TOKENS = 1024
+
+#: Granularity of OpenAI's automatic cache. Confirmed live 2026-07-29 across
+#: an 8-call growing conversation: reported ``cached_tokens`` moved in exact
+#: multiples of 128 (0 -> 1408 -> plateau -> 1536 -> plateau), never landing
+#: between them, even though the prompt itself grew by an uneven number of
+#: tokens every call. An earlier trace (2026-07-28, docs/optimize-benchmarks.md)
+#: recorded a 256-token jump between two calls -- consistent with crossing two
+#: 128-token boundaries in one step, not a different quantum; not re-verified
+#: closely enough at the time to tell the difference, which is why this
+#: comment gives the date and the method rather than just the number.
+_AUTO_CACHE_QUANTUM_TOKENS = 128
 
 #: Default ceiling for a live run. Deliberately small: the suite should be
 #: cheap enough to run often, and a benchmark nobody runs proves nothing.
@@ -276,7 +288,7 @@ class SimulatedProvider:
             default="",
         )
         # Vendors cache at a coarse granularity; the observed floor is 1024
-        # tokens and increments of 128 above it. Below the floor, nothing.
+        # tokens. Below the floor, nothing.
         for boundary in range(len(request.messages), 0, -1):
             candidate = "|".join(m.content for m in request.messages[:boundary])
             if counter.count_text(candidate, request.model) >= _AUTO_CACHE_FLOOR_TOKENS:
@@ -286,7 +298,15 @@ class SimulatedProvider:
         if not best:
             return 0
         cached = counter.count_text(best, request.model)
-        return cached if cached >= _AUTO_CACHE_FLOOR_TOKENS else 0
+        if cached < _AUTO_CACHE_FLOOR_TOKENS:
+            return 0
+        # Round down to the cache quantum: the message boundary that crosses
+        # the floor lands at an arbitrary token count, but the provider only
+        # ever reports a multiple of _AUTO_CACHE_QUANTUM_TOKENS (confirmed
+        # live, see the constant's docstring) -- reporting the raw boundary
+        # count would overstate the discount by up to one quantum on every
+        # call, small per-call but compounding across a whole benchmark.
+        return (cached // _AUTO_CACHE_QUANTUM_TOKENS) * _AUTO_CACHE_QUANTUM_TOKENS
 
 
 class OpenAIProvider:
