@@ -56,6 +56,29 @@ class SummarizeHistoryStage(Stage):
     ``Fidelity.ALTERED``: the summary is generated text, not the history
     itself, and a summarizer -- however good -- can omit or misstate
     something a later turn depended on. Off by default (ADR-013).
+
+    **What one live measurement found (2026-07-29, ADR-015).** On a
+    conversation with four load-bearing facts planted before the
+    ``recent_turns`` window and asked back afterwards, this stage recovered
+    **4 of 4** where ``trim_history`` recovered **0 of 4**, with **zero**
+    silent errors -- no fact was misstated, which is the failure that would
+    matter most. The stage does what it claims.
+
+    **It still cost more than not optimizing at all**, and the reason lives
+    in this class rather than in the numbers: :meth:`before` calls the
+    summarizer *unconditionally, on every request*. There is no memoization
+    keyed on the dropped history, so the same aged-out turns are re-summarized
+    on every turn of a conversation. Measured: the summarized prompt was 261
+    tokens against the full history's 466 -- a real reduction -- but the
+    summarizer call added 361 tokens nobody was spending, for 622 total. The
+    prompt is bounded; the *cost* is not, because it scales with the dropped
+    history just as the full prompt does, so the bounded-prompt advantage
+    cannot catch up.
+
+    A summary computed once and reused across turns would change that
+    arithmetic entirely. This stage does not do that, and a caller enabling it
+    should know the bill is paid per request. See
+    ``docs/optimize-benchmarks.md``.
     """
 
     fidelity = Fidelity.ALTERED

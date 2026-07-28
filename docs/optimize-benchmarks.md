@@ -550,6 +550,63 @@ which excludes the open-ended requests where a weaker model more plausibly
 degrades in ways no string match would catch. This is a floor on the risk, not
 a measurement of it.
 
+## `summarize_history`: it works, and it still costs more than doing nothing
+
+This stage also had **zero** live data, by design: `Optimizer` refuses to
+enable it without a caller-supplied summarizer, and the bench CLI supplied
+none — correctly, because a stub summarizer would have measured the stub.
+`--recall-audit` supplies a real one (a live `gpt-4o-mini` call) and runs a
+conversation with four load-bearing facts planted in the *first* exchange —
+a budget, a date, a decision, a compliance constraint — then eight filler
+exchanges to push them out of the `recent_turns=6` window, then asks each fact
+back. Three arms on identical requests, live 2026-07-29, $0.0015 across 30
+calls, reproduced four times:
+
+| arm | recalled | silently wrong | prompt tok | + summarizer | **total tok** |
+|---|---|---|---|---|---|
+| `full` (control) | 100% (4/4) | 0% | 466 | 0 | **466** |
+| `trim_history` | **0% (0/4)** | 0% | 165 | 0 | **165** |
+| `summarize_history` | **100% (4/4)** | 0% | 261 | 361 | **622** |
+
+**The stage does exactly what it claims.** Every fact `trim_history` lost, the
+summary preserved — 4 out of 4, verbatim in three cases and correctly
+paraphrased in the fourth. And it preserved them *accurately*: the silent-error
+column is zero, which is the column that matters most here, because a summary
+that misstates a budget figure is worse than one that drops it. `trim_history`'s
+four failures were all visible ones — it answered `NOT IN CONTEXT.` every time,
+which is the honest failure a caller can react to.
+
+**And it is still the wrong trade on this workload, because of the last
+column.** Summarizing spent **622 tokens to reach the same answer that sending
+the whole conversation reached for 466**. The prompt genuinely did get smaller
+(261 vs 466) — that is real, and it is the number a report showing only prompt
+tokens would have stopped at. It is also not the cost. The summarizer call
+reads all the dropped history and writes a summary, and that is 361 tokens
+nobody was spending before.
+
+**The reason is structural, not a tuning problem: the stage has no summary
+cache.** `SummarizeHistoryStage.before()` calls the summarizer unconditionally
+on every request — there is no memoization keyed on the dropped history, and
+the audit confirms it: 4 probes, 4 summarizer calls. So the summarizer re-reads
+the same aged-out turns on every single turn of a conversation. That makes its
+token cost scale with conversation length *just like the full history does*,
+which means the bounded-prompt advantage can never catch up. A summary computed
+once and reused across turns would change this arithmetic completely; the stage
+as shipped does not do that.
+
+**What this does not say.** One conversation shape, one length, one summarizer
+prompt, one model. In particular the crossover this measurement implies — that
+a cached summary would win, and an uncached one cannot — is an argument from
+the mechanism, not something measured here, and a longer conversation was not
+tried. What *is* measured is that at `recent_turns=6` on an 18-message history,
+paying for a summary lost to simply not optimizing at all.
+
+**The tool-call boundary holds**, checked live on every audit run across every
+cut point of a synthetic tool-calling conversation: no `tool` result was ever
+separated from the assistant message that called it. This is the invariant the
+stage shares with `trim_history`, which `tool_calling_chat` confirmed for
+trimming — now confirmed for summarizing rather than inherited from it.
+
 ## Overhead
 
 Our own cost per request, measured with the provider's time excluded:

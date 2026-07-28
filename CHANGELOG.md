@@ -23,6 +23,40 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **`summarize_history` has live evidence for the first time: it works, and it still loses.**
+  This stage had zero live data *by design* -- `Optimizer` refuses to enable it without a
+  caller-supplied summarizer, and the bench CLI supplied none, correctly, because a stub
+  summarizer would have measured the stub. New `--recall-audit` supplies a real live-calling one
+  and runs the workload ADR-015 specified: four load-bearing facts (a budget, a date, a decision,
+  a compliance constraint) planted in the *first* exchange, eight filler exchanges to push them
+  out of the `recent_turns=6` window, then each fact asked back. Three arms on identical
+  requests, live `gpt-4o-mini` 2026-07-29, $0.0015 across 30 calls, reproduced four times:
+  `summarize_history` recalled **4/4** where `trim_history` recalled **0/4**, with **zero silent
+  errors** -- no fact was misstated, which is the failure that would matter most, and
+  `trim_history`'s four misses were all visible (`NOT IN CONTEXT.`) rather than silent.
+- **And the total-token column reverses the verdict.** Summarizing spent **622 tokens to reach
+  the same answer sending the whole conversation reached for 466**. The prompt really did shrink
+  (261 vs 466) -- that is where a report showing only prompt tokens would have stopped, and it
+  would have been wrong. The summarizer call reads all the dropped history and writes a summary:
+  361 tokens nobody was spending before. The cause is structural and lives in the stage, not in
+  the workload: `SummarizeHistoryStage.before()` calls the summarizer **unconditionally on every
+  request**, with no memoization keyed on the dropped history (4 probes produced 4 summarizer
+  calls). So the same aged-out turns are re-summarized every turn, and the stage's cost scales
+  with conversation length exactly as the full prompt does -- the bounded-prompt advantage can
+  never catch up. A summary computed once and reused would change that arithmetic entirely; the
+  stage as shipped does not do that, and the class docstring now says so.
+- **The tool-call boundary is re-confirmed rather than inherited.** `tool_calling_chat` proved it
+  for `trim_history`; `SummarizeHistoryStage` asserts the same invariant in its docstring, and
+  the audit now checks it directly across every cut point of a synthetic tool-calling
+  conversation -- no `tool` result was ever separated from the assistant message that called it.
+- **One more grader bug, same family as the routing one.** `"March 14th"` failed to match
+  expected `"march 14"`, because the word-boundary check counts the ordinal suffix as part of the
+  token. It excluded the deadline probe as "control arm answered wrong" when the control had
+  answered it correctly. Fixed by listing both spellings -- the alternative was teaching the
+  matcher English ordinals -- and the exclusion mechanism is worth noting for working as
+  intended: it flagged the probe as unusable instead of quietly scoring it against the stage.
+  18 tests.
+
 - **`route_models` has live evidence for the first time, and it found a real regression.** This
   stage had *zero* live data: it was excluded even from the old `--aggressive` flag, and the A/B
   harness could not have measured it anyway (`ABResult` prices a whole arm at one flat rate, and

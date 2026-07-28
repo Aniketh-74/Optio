@@ -19,6 +19,7 @@ from optio_optimize.bench.providers import (
     SpendGuard,
     available_live_provider,
 )
+from optio_optimize.bench.recall import format_recall_report, run_recall_audit
 from optio_optimize.bench.routing import format_routing_report, run_routing_audit
 from optio_optimize.bench.workloads import WORKLOADS
 from optio_optimize.config import CHEAP_COUNTERPART, DEFAULT_SEMANTIC_THRESHOLD, OptimizeConfig
@@ -185,6 +186,18 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--recall-audit",
+        action="store_true",
+        help=(
+            "run the ADR-015 recall audit instead of the workload suite: a long "
+            "conversation with load-bearing facts planted in the first exchange and "
+            "aged out of the recent_turns window, asked back under three arms (full "
+            "history, trim_history, summarize_history with a real summarizer). "
+            "Reports what each arm recalled and, separately, what it got wrong "
+            "*without saying so*. Ignores --workload/--stage."
+        ),
+    )
+    parser.add_argument(
         "--semantic-threshold",
         type=float,
         default=DEFAULT_SEMANTIC_THRESHOLD,
@@ -243,6 +256,23 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(format_audit_report(report)))
         if guard is not None:
             print(f"spent ${guard.spent_usd:.4f} across {guard.calls} live calls")
+        return 0
+
+    if args.recall_audit:
+        if not args.live:
+            print(
+                "note: --recall-audit without --live uses SimulatedProvider, whose "
+                "'summaries' are hashed synthetic strings. It exercises the three-arm "
+                "plumbing and the tool-call boundary check; the recall numbers are "
+                "meaningless -- and a stub summarizer measuring the stub is the exact "
+                "trap ADR-015 names for this stage.\n"
+            )
+        recall_report = run_recall_audit(
+            provider, _build_live_summarizer(provider, args.cheap_model)
+        )
+        print("\n".join(format_recall_report(recall_report)))
+        if guard is not None:
+            print(f"\nspent ${guard.spent_usd:.4f} across {guard.calls} live calls")
         return 0
 
     if args.route_models_audit:

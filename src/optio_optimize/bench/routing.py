@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from optio_optimize.config import PRICING, OptimizeConfig
 from optio_optimize.optimizer import Optimizer
@@ -99,7 +99,23 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9. ]", " ", lowered)).strip()
 
 
-def grade(response: str, probe: RoutingProbe) -> bool:
+class Gradable(Protocol):
+    """Anything carrying a set of accepted answers.
+
+    :func:`grade` reads nothing else, so widening it to a protocol lets the
+    recall audit's probes reuse this matcher instead of being cast into a
+    ``RoutingProbe`` they are not. One matcher for both audits is also the
+    point: a grader bug found by one is fixed for the other, and both have now
+    found one.
+    """
+
+    @property
+    def expected(self) -> tuple[str, ...]:
+        """Accepted answers."""
+        ...
+
+
+def grade(response: str, probe: Gradable) -> bool:
     """Whether ``response`` answers ``probe`` correctly.
 
     Accepts an answer that *is* one of the expected strings, or that contains
