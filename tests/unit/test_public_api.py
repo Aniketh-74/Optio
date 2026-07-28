@@ -212,3 +212,54 @@ class TestRunContextSurface:
         # Off by default is an architectural decision, not a preference (ADR-003).
         assert config.quality_lane is False
         assert config.store_backend == "memory"
+
+
+class TestTheDocumentedBoundaryMatchesTheCode:
+    """README and CHANGELOG must name the same public API the package exports.
+
+    ADR-012 makes the top-level exports the entire supported surface, and both
+    documents enumerate them by name. An enumeration in prose rots: adding an
+    export without updating them leaves a user reading a list that is missing
+    something, and removing one leaves a documented name that no longer exists.
+    Either way the promise stops being true, and nothing else here would notice
+    -- the other tests in this file check the code against itself.
+    """
+
+    def _doc(self, name: str) -> str:
+        from pathlib import Path
+
+        return (Path(__file__).resolve().parents[2] / name).read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("document", ["README.md", "CHANGELOG.md"])
+    def test_every_export_is_named_in_the_document(self, document: str):
+        text = self._doc(document)
+        # Dunders are conventions rather than API a user imports; the docs
+        # describe the surface, not every attribute on the module object.
+        exported = [n for n in optio.__all__ if not n.startswith("__")]
+
+        missing = [name for name in exported if name not in text]
+        assert not missing, (
+            f"{document} does not mention {missing}, which optio exports. "
+            "ADR-012 makes the top-level exports the public API, so a name "
+            "missing from the docs is an undocumented promise."
+        )
+
+    def test_the_docs_do_not_promise_names_that_are_gone(self):
+        """A removed export must not linger in the README's import example.
+
+        The example is copy-pasteable, so a stale name there is code that
+        raises ImportError for the first thing a new user tries.
+        """
+        import re
+
+        text = self._doc("README.md")
+        # Every such line, not just the first: the README shows a minimal
+        # `from optio import instrument` in the quickstart and the full list
+        # under "What is public". Checking one match would silently skip the
+        # other -- and the full list is the one most likely to go stale.
+        matches = re.findall(r"^from optio import (.+)$", text, re.MULTILINE)
+        assert matches, "README no longer shows a top-level import example"
+
+        advertised = {name.strip() for line in matches for name in line.split(",") if name.strip()}
+        unknown = sorted(advertised - set(optio.__all__))
+        assert not unknown, f"README's import examples name {unknown}, which optio does not export"

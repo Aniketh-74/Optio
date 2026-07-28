@@ -6,13 +6,16 @@
 > implemented, on 99% coverage with 100% on the ledger and the fail-open guard. What "alpha"
 > means here, concretely:
 >
-> - **The adapters have not been tested against the real frameworks.** Matching logic is covered;
->   no adapter has been run against an actual LangGraph, CrewAI, OpenAI Agents SDK, or Claude
->   Agent SDK release ([R-TECH-3](IMPLEMENTATION.md)).
 > - **State is in-process only.** `store_backend="redis"` is rejected at setup rather than
 >   silently ignored ([ADR-005](docs/design/adr/)).
 > - **The signal names may still move.** They are pinned to OTel GenAI semconv 1.37.0, which is
 >   itself marked Development-stability upstream ([ADR-002](docs/design/adr/)).
+> - **Detector accuracy is measured against synthetic traffic.** The 0/1200 false-positive rate
+>   is a regression gate, not a claim about your agent ([docs/testing.md](docs/testing.md)).
+>
+> Each adapter *is* now verified against the real framework — a CI job per framework installs
+> LangGraph, CrewAI, the OpenAI Agents SDK and the Claude Agent SDK and runs the adapter against
+> genuine objects, including the cases it must refuse ([R-TECH-3](IMPLEMENTATION.md)).
 >
 > The fail-open guarantee is not provisional: it is a blocking CI gate on every commit.
 > See [IMPLEMENTATION.md](IMPLEMENTATION.md) for the full design and milestone plan.
@@ -168,6 +171,32 @@ Precedence: `instrument(...)` kwargs > `OPTIO_*` env vars > defaults.
 | `behavior_lane` | `OPTIO_BEHAVIOR_LANE` | `True` |
 | `quality_lane` | `OPTIO_QUALITY_LANE` | `False` (opt-in, ADR-003) |
 | `store_backend` | `OPTIO_STORE_BACKEND` | `memory` |
+
+## What is public
+
+The supported API is exactly what `optio` exports at the top level:
+
+```python
+from optio import instrument, meter, RunContext, Config, BudgetPolicy, current_run
+```
+
+…plus `optio.__version__` and `optio.GENAI_SEMCONV_VERSION`, the OTel GenAI semconv release the
+signal names are pinned to ([ADR-002](docs/design/adr/)). Read that one if you need to branch on
+which vocabulary a given install emits — it changes with a semconv bump, independently of
+`__version__`.
+
+Everything reachable only through a submodule — `optio.lanes.*`, `optio.runtime.*`,
+`optio.store.*`, `optio.adapters.*` — is **internal**, and may change in any release including a
+patch. Those modules are importable, documented and fully typed because contributors read them,
+not as a stability promise ([ADR-012](docs/design/adr/adr-012-the-public-api-is-the-top-level-package-only.md)).
+
+The signal names in [docs/signals.md](docs/signals.md) are the *other* half of the compatibility
+surface, and the stricter one: a Rego or Cedar policy matching `gen_ai.run.projected_cost` stops
+matching silently if the name moves, so renaming one is a breaking change even though no Python
+signature changed.
+
+If you need something only a submodule exposes, please open an issue — a real use case can be
+promoted to the top level deliberately.
 
 ## Development
 

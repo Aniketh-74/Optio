@@ -11,6 +11,14 @@ even when no Python signature moves, because downstream OPA, Cedar and AGT polic
 against those exact strings — a policy that silently stops matching is worse than one that
 fails to load.
 
+**The public API is exactly what `optio` exports at the top level** — `instrument`, `meter`,
+`RunContext`, `Config`, `BudgetPolicy`, `GENAI_SEMCONV_VERSION`, `current_run`. Everything
+reachable only through a submodule (`optio.lanes.*`, `optio.runtime.*`, `optio.store.*`,
+`optio.adapters.*`) is internal and may change in any release, including a patch, despite being
+importable, documented and typed ([ADR-012](docs/design/adr/adr-012-the-public-api-is-the-top-level-package-only.md)).
+If you need one of those, please open an issue rather than importing it — a real use case can
+be promoted to the top level deliberately.
+
 ## [Unreleased]
 
 Nothing yet.

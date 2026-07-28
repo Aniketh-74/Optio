@@ -13,9 +13,13 @@ Typical use::
 
     instrument(agent)
 
-This module is the entire supported surface. Importing from ``optio.runtime``,
-``optio.lanes``, or ``optio.store`` is unsupported -- those are internal
-and change without a major bump.
+This module is the entire supported surface: the public API is exactly the
+names in ``__all__`` below (ADR-012). Everything under ``optio.runtime``,
+``optio.lanes``, ``optio.store`` and ``optio.adapters`` is internal and may
+change in any release, including a patch -- their docstrings and type
+annotations are there for contributors, not as a stability promise. If you need
+something that is only reachable through a submodule, please open an issue so
+it can be promoted deliberately.
 
 Framework extras (``optio[langgraph]`` and friends) are deliberately *not*
 imported here: core import must stay dependency-light and fast (Section 11).
