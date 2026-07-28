@@ -148,6 +148,21 @@ def _rag_queries(count: int = 10, chunks: int = 8, model: str = "gpt-4o") -> lis
     return requests
 
 
+def _multi_turn_chat_long(model: str = "gpt-4o") -> list[LLMRequest]:
+    """A 50-turn version of ``multi_turn_chat``.
+
+    The 12-turn default is short enough that `trim_history`'s live result
+    (cost -8.4%, docs/optimize-benchmarks.md) could plausibly be a small-scale
+    artifact rather than a stable one -- the whole reason a sliding window can
+    fight a growing provider-side cache is a *scale* effect (ADR-013's own
+    reasoning), and IMPLEMENTATION.md's own problem statement describes
+    agentic workloads running 5-30x longer than a single-shot chat, a regime
+    12 turns doesn't reach. This exists to check the trend at 50, not to
+    replace the 12-turn figure already measured.
+    """
+    return _multi_turn_chat(turns=50, model=model)
+
+
 def _rag_queries_noisy(count: int = 10, chunks: int = 6, model: str = "gpt-4o") -> list[LLMRequest]:
     """Retrieval context with one genuinely irrelevant chunk mixed in.
 
@@ -335,6 +350,14 @@ WORKLOADS: dict[str, Workload] = {
         description="12-turn conversation resending full history each step",
         build=_multi_turn_chat,
         expectation="large prefix-cache benefit; history trimming once Phase 2 lands",
+        tags=("prefix_cache", "trim_history"),
+    ),
+    "multi_turn_chat_long": Workload(
+        name="multi_turn_chat_long",
+        description="50-turn conversation resending full history each step",
+        build=_multi_turn_chat_long,
+        expectation="checks whether trim_history's live cost win at 12 turns compounds, "
+        "plateaus, or reverses at scale",
         tags=("prefix_cache", "trim_history"),
     ),
     "rag_queries": Workload(

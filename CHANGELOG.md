@@ -23,6 +23,16 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **`multi_turn_chat_long`: does `trim_history`'s live win hold at scale?** The 12-turn
+  `multi_turn_chat` result (cost −8.4%) is short enough that it could plausibly have been a
+  small-scale artifact — ADR-013's own reasoning for why trimming can help or hurt is a scale
+  argument, and IMPLEMENTATION.md's problem statement describes agentic workloads running 5-30x
+  longer than single-shot chat, a regime 12 turns doesn't reach. Reran the same shape at 50 turns:
+  cost fell **26.4%**, more than triple the 12-turn figure — the win compounds, it doesn't
+  plateau or reverse. Mechanically, the untrimmed baseline's cost grows quadratically with
+  conversation length while the trimmed arm's per-call prompt size stays roughly constant past
+  `recent_turns`, so the relative saving widens with every additional turn. Live against
+  `gpt-4o-mini`, $0.0163 across 100 calls. See `docs/optimize-benchmarks.md`.
 - **`SimulatedProvider`'s automatic-cache model, recalibrated against a fresh live trace.**
   It previously reported `cached_input_tokens` as whatever token count the nearest message
   boundary past the 1024-token floor happened to land on — an arbitrary number, not a modelled

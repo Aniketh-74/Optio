@@ -19,6 +19,7 @@ provider caching behavior has already changed the reported figures once, see
 | Phase 3 (`ALTERED`-tier stages) | 2026-07-28 | $0.0041 |
 | `rag_queries_noisy` (`prune_retrieval`) | 2026-07-29 | $0.0029 |
 | `SimulatedProvider` cache-quantum calibration | 2026-07-29 | ~$0.001 (raw trace, not a bench run) |
+| `multi_turn_chat_long` (50-turn `trim_history`) | 2026-07-29 | $0.0163 |
 
 ## Live results (gpt-4o-mini, identical-output stages only)
 
@@ -131,6 +132,34 @@ can change the answer. `deduplicate` and `prune_retrieval` stayed byte-identical
 on their one live test each; that is encouraging but is one workload's worth of
 evidence, not a guarantee for every prompt shape -- measure your own traffic
 before leaning on it.
+
+## Does `trim_history`'s win hold at scale? (`multi_turn_chat_long`, 50 turns)
+
+12 turns is short enough that an 8.4% cost win could plausibly be a
+small-scale artifact -- ADR-013's own reasoning for why trimming can help or
+hurt is a *scale* argument (how much the untrimmed baseline's automatic-cache
+discount has grown versus how much smaller the trimmed prompt is), and
+IMPLEMENTATION.md's problem statement describes agentic workloads running
+5-30x longer than single-shot chat, a regime 12 turns doesn't reach.
+`multi_turn_chat_long` reruns the same shape at 50 turns to check the trend,
+not to replace the 12-turn figure.
+
+| turns | input ↓ | output ↓ | cost ↓ | quality |
+|---|---|---|---|---|
+| 12 | 7.3% | 35.0% | **8.4%** | 25% identical |
+| 50 | 34.1% | 26.8% | **26.4%** | 48% identical |
+
+**The win compounds, it doesn't plateau or reverse.** Cost reduction more
+than tripled going from 12 to 50 turns. This is the opposite of what the
+original simulated regression would have predicted extrapolated to more
+turns -- consistent with the 12-turn live correction, not a new surprise, but
+worth confirming rather than assuming the 12-turn number generalizes.
+Mechanically: the untrimmed baseline's cost grows quadratically with
+conversation length (`_multi_turn_chat`'s own docstring), while the trimmed
+arm's per-call prompt size stays roughly constant once the conversation
+exceeds `recent_turns` -- so the *relative* saving widens every additional
+turn, on top of the output-length effect already measured at 12 turns. Live
+against `gpt-4o-mini`, $0.0163 across 100 calls.
 
 ## `trim_history` and real tool calls
 
