@@ -451,3 +451,4 @@ class Pipeline:
         self.report.baseline_input_tokens += actual_input + saved_input
         self.report.baseline_output_tokens += response.output_tokens + saved_output
         self.report.provider_cached_tokens += response.cached_input_tokens
+        self.report.provider_written_tokens += response.cache_write_tokens

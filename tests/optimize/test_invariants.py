@@ -421,3 +421,41 @@ class TestTheFalsePositivesRealTrafficFound:
         original = _agent_loop(steps=2)
         stripped = tuple(m for m in original.messages if m.role != "system")
         assert SYSTEM_PROMPT_DROPPED in _transform_rules(original, original.with_messages(stripped))
+
+
+class TestTheLastUserRuleDoesNotFireOnLegitimateRewrites:
+    """The second false positive of exactly the same kind.
+
+    ``SYSTEM_PROMPT_DROPPED`` was already changed from identity to presence
+    because ``structured_output`` legitimately edits the system prompt. The
+    last-user rule kept the identity check, and two default-on stages rewrite
+    the final user turn: ``deduplicate`` strips repeated context out of it and
+    ``prune_retrieval`` drops retrieved passages from it. So the rule fired on
+    ordinary traffic while the library was behaving correctly -- and a checker
+    that cries wolf gets its next real finding ignored with the noise.
+    """
+
+    def test_a_rewritten_last_user_turn_is_not_a_dropped_one(self):
+        original = _request(
+            Message(role="user", content="summarize this: " + "context " * 50),
+        )
+        sent = _request(Message(role="user", content="summarize this: context"))
+        assert check_transform(original, sent) == ()
+
+    def test_dropping_every_user_turn_is_still_caught(self):
+        original = _request(
+            Message(role="system", content="be terse"),
+            Message(role="user", content="what is the total?"),
+            Message(role="assistant", content="working"),
+        )
+        sent = _request(
+            Message(role="system", content="be terse"),
+            Message(role="assistant", content="working"),
+        )
+        rules = [v.rule for v in check_transform(original, sent)]
+        assert LAST_USER_MESSAGE_DROPPED in rules
+
+    def test_the_rule_is_silent_when_there_was_no_user_turn_to_keep(self):
+        original = _request(Message(role="system", content="be terse"))
+        sent = _request(Message(role="system", content="be terse"))
+        assert check_transform(original, sent) == ()

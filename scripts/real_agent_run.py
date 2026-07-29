@@ -32,12 +32,22 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextvars
 import json
 import os
 import pathlib
 import sys
 from dataclasses import dataclass, field
 from typing import Any
+
+#: Which slot in ``Arm.pairs`` the call currently in flight belongs to.
+#:
+#: A ContextVar rather than an attribute on ``Arm`` because both interceptors are
+#: ``async`` and the outer one sets this before awaiting the inner. A plain
+#: attribute would be shared mutable state across any two calls that overlap;
+#: a ContextVar is copied per task, so each call reads the slot its own outer
+#: frame set.
+_SLOT: contextvars.ContextVar[int | None] = contextvars.ContextVar("optio_probe_slot", default=None)
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
@@ -237,6 +247,10 @@ class Arm:
     tool_calls: list[str] = field(default_factory=list)
     bodies: list[dict[str, Any]] = field(default_factory=list)
     originals: list[dict[str, Any]] = field(default_factory=list)
+    #: ``[original, sent_or_None]`` per call, paired when captured rather than
+    #: afterwards by index. ``None`` means the optimizer answered from cache, so
+    #: nothing was sent and there is no rewrite to check.
+    pairs: list[list[dict[str, Any] | None]] = field(default_factory=list)
     violations: list[str] = field(default_factory=list)
 
     @property
@@ -258,6 +272,9 @@ def _instrument(client: AsyncOpenAI, arm: Arm) -> AsyncOpenAI:
 
     async def counting(**kwargs: Any) -> Any:
         arm.bodies.append(kwargs)
+        slot = _SLOT.get()
+        if slot is not None and slot < len(arm.pairs):
+            arm.pairs[slot][1] = kwargs
         completion = await original(**kwargs)
         usage = getattr(completion, "usage", None)
         if usage is not None:
@@ -284,7 +301,12 @@ def _record_originals(client: AsyncOpenAI, arm: Arm) -> AsyncOpenAI:
 
     async def recording(**kwargs: Any) -> Any:
         arm.originals.append(kwargs)
-        return await original_create(**kwargs)
+        arm.pairs.append([kwargs, None])
+        token = _SLOT.set(len(arm.pairs) - 1)
+        try:
+            return await original_create(**kwargs)
+        finally:
+            _SLOT.reset(token)
 
     client.chat.completions.create = recording  # type: ignore[method-assign]
     return client
@@ -293,9 +315,16 @@ def _record_originals(client: AsyncOpenAI, arm: Arm) -> AsyncOpenAI:
 def _check_invariants(arm: Arm) -> None:
     """Run every captured rewrite past the invariant checker.
 
-    Pairs by index: the Nth request the agent made produced the Nth request
-    that went out, unless a cache served it, in which case there is no outgoing
-    request and nothing to compare -- ``zip`` stops at the shorter list.
+    Reads the pairs the interceptors built as they ran. It used to
+    ``zip(originals, bodies)`` instead, on the reasoning that the Nth request
+    the agent made produced the Nth request on the wire and that a cache hit
+    would simply truncate the shorter list. **That only holds if every hit is at
+    the end.** ``exact_cache`` is default-on, and a hit on call 2 of 5 shifts
+    every later pair by one -- comparing request 3 against body 4 and so on.
+    Each mismatched pair then fails a preservation rule, and the probe exits
+    claiming the library dropped the user's question when nothing of the sort
+    happened. A checker whose own bookkeeping invents violations is worse than
+    no checker.
 
     Imports the adapter's own kwargs translator rather than writing a second
     one. A second parser is exactly how the two would come to disagree about
@@ -305,9 +334,9 @@ def _check_invariants(arm: Arm) -> None:
     from optio_optimize.adapters.openai_agents import _request_from_kwargs
     from optio_optimize.invariants import check, check_transform
 
-    # strict=False on purpose: a cache hit produces an original with no
-    # outgoing body, so the two lists legitimately differ in length.
-    for index, (original, sent) in enumerate(zip(arm.originals, arm.bodies, strict=False)):
+    for index, (original, sent) in enumerate(arm.pairs):
+        if original is None or sent is None:
+            continue  # Served from cache: nothing went out, no rewrite to check.
         before, after = _request_from_kwargs(original), _request_from_kwargs(sent)
         for violation in (*check(after), *check_transform(before, after)):
             arm.violations.append(

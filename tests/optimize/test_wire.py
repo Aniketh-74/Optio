@@ -323,3 +323,75 @@ def test_anthropic_response_survives_missing_usage():
     response = response_from_anthropic_message(_NoUsage())
     assert response.input_tokens == 0
     assert response.output_tokens == 0
+
+
+class TestCacheWriteTokensAreAccountedAndPriced:
+    """Anthropic reports ``input_tokens`` excluding reads *and* writes.
+
+    Writes were left out of the total, which dropped the single most expensive
+    band of prompt tokens -- they carry a 1.25x premium, not a discount -- from
+    every Anthropic report. The error only ever ran in the direction that makes
+    this package's saving look larger, which is why no report ever looked wrong.
+    """
+
+    def test_writes_are_added_into_the_prompt_total(self):
+        from optio_optimize.wire import response_from_anthropic_message
+
+        class _Usage:
+            input_tokens = 200
+            cache_read_input_tokens = 0
+            cache_creation_input_tokens = 4_605
+            output_tokens = 50
+
+        class _Message:
+            usage = _Usage()
+            content: ClassVar[list[object]] = []
+            model = "claude-haiku-4-5"
+            stop_reason = "end_turn"
+
+        response = response_from_anthropic_message(_Message())
+        # 200 was what this reported for a turn that really billed 4,805.
+        assert response.input_tokens == 4_805
+        assert response.cache_write_tokens == 4_605
+
+    def test_a_write_costs_more_than_a_plain_input_token(self):
+        from optio_optimize.config import PRICING
+        from optio_optimize.savings import _cost
+
+        pricing = PRICING["claude-haiku-4-5"]
+        as_writes = _cost(pricing, 10_000, 0, 0, 10_000)
+        as_plain = _cost(pricing, 10_000, 0, 0, 0)
+        assert as_writes > as_plain
+        assert as_writes == pytest.approx(as_plain * 1.25)
+
+    def test_openai_writes_are_free_because_openai_does_not_charge_them(self):
+        from optio_optimize.config import PRICING
+        from optio_optimize.savings import _cost
+
+        pricing = PRICING["gpt-4o"]
+        assert pricing.cache_write_usd_per_m is None
+        assert _cost(pricing, 1_000, 0, 0, 1_000) == _cost(pricing, 1_000, 0, 0, 0)
+
+    def test_the_measured_anthropic_run_prices_out_at_fifty_percent(self):
+        """The published figure, recomputed from the run's own token counts.
+
+        Locks the arithmetic behind the number in ``caching.py`` and
+        ``docs/optimize-benchmarks.md``. It was first published as 53.7% with
+        the 5,487 writes priced at the base rate; correctly priced it is 50.1%.
+        The token counts never changed -- only what they cost.
+        """
+        from optio_optimize.config import PRICING
+        from optio_optimize.savings import _cost
+
+        pricing = PRICING["claude-haiku-4-5"]
+        off = _cost(pricing, 30_111, 1_623, 0, 0)
+        on = _cost(pricing, 30_113, 1_662, 23_023, 5_487)
+        assert (off - on) / off == pytest.approx(0.501, abs=0.001)
+
+    def test_writes_cannot_exceed_the_uncached_remainder(self):
+        """A provider reporting nonsense must not produce a negative band."""
+        from optio_optimize.config import PRICING
+        from optio_optimize.savings import _cost
+
+        pricing = PRICING["claude-haiku-4-5"]
+        assert _cost(pricing, 100, 0, 90, 500) >= 0

@@ -229,10 +229,20 @@ def check_transform(original: LLMRequest, sent: LLMRequest) -> tuple[Violation, 
 def _check_survivors(original: LLMRequest, sent: LLMRequest) -> list[Violation]:
     """The system prompt and the last user turn must both survive."""
     violations: list[Violation] = []
-    sent_identities = {_identity(m) for m in sent.messages}
 
+    # Presence, not identity -- the same correction the system rule below
+    # already carries, for the same reason and against different stages.
+    # `deduplicate` and `prune_retrieval` are both default-on and both legally
+    # rewrite the *last* user turn: one strips repeated context out of it, the
+    # other drops retrieved passages from it. An identity check calls each of
+    # those a dropped question, so the rule would fire on ordinary traffic while
+    # the library behaved correctly, and the next real violation would be
+    # ignored along with the noise.
+    #
+    # What this rule protects is that the model is still being asked something.
+    # A rewritten question satisfies that; no question at all does not.
     last_user = _last_index(original.messages, "user")
-    if last_user is not None and _identity(original.messages[last_user]) not in sent_identities:
+    if last_user is not None and not any(m.role == "user" for m in sent.messages):
         violations.append(Violation(LAST_USER_MESSAGE_DROPPED, last_user, "user"))
 
     # Presence, not identity. What this protects is PrefixCacheStage's

@@ -32,9 +32,21 @@ if TYPE_CHECKING:
 #: Scratch key under which the exact stage carries its key to ``after``.
 _KEY = "exact_cache_key"
 
-#: Minimum tokens before a prefix marker is worth placing. Providers impose
-#: their own floors (Anthropic 1024 for most models, 2048 for the smallest) and
-#: below those a marker is ignored, so requesting one is pure noise.
+#: Minimum tokens before a prefix marker is worth placing. Below a provider's
+#: floor the marker is ignored, so requesting one is pure noise.
+#:
+#: **One number cannot express this and 1024 is wrong in both directions.**
+#: Anthropic's floor is per-model, and as of 2026-07-30 spans a factor of eight:
+#: Opus 5 at 512, Sonnet 5 / Sonnet 4.6 / 4.5 / Opus 4.8 at 1,024, Opus 4.7 and
+#: Haiku 3.5 at 2,048, **Haiku 4.5 and Opus 4.6 / 4.5 at 4,096**. So this
+#: constant is too high for Opus 5 -- declining a breakpoint that would have
+#: worked -- and too low for four models, where it places one the provider
+#: silently discards while the stage's note claims a breakpoint.
+#:
+#: Left as one number deliberately: a per-model table changes what every
+#: Anthropic caller sends, and ADR-016 does not let one measurement carry that.
+#: The cost of being wrong is a marker that does nothing, never a wrong answer.
+#: ``docs/optimize-benchmarks.md`` records the full table.
 MIN_PREFIX_TOKENS = 1024
 
 
@@ -152,25 +164,26 @@ class PrefixCacheStage(Stage):
       conversation on ``claude-haiku-4-5`` through
       :func:`~optio_optimize.adapters.anthropic.wrap_anthropic_client`, this
       stage isolated: 23,023 of 30,113 input tokens served from cache (76.5%)
-      against 0 for the disabled arm, for a **53.7% cost reduction on
-      identical token counts** -- 30,111 versus 30,113 sent, which is noise.
-      The stage avoids no tokens at all and halves the bill by changing what
-      they cost. This figure replaces an earlier "roughly 30%" that had no run
-      behind it, and is the only correction in this package that moved a claim
-      *up*.
+      against 0 for the disabled arm, for a **50.1% cost reduction on identical
+      token counts** -- 30,111 versus 30,113 sent, which is noise. The stage
+      avoids no tokens at all and halves the bill by changing what they cost.
+      This replaces an earlier "roughly 30%" that had no run behind it.
 
-    **The floor is model-dependent and :data:`MIN_PREFIX_TOKENS` does not know
-    it.** 1024 is Anthropic's general minimum; the smallest models, Haiku among
-    them, require 2048. Below a model's real floor the provider ignores the
-    breakpoint, so this stage places a marker, reports the work in the savings
-    ledger, and buys nothing -- precisely the "work done for no effect" the
-    check below exists to prevent, just at the wrong threshold. The first run of
-    the measurement above hit exactly this: a 1,449-token prompt cleared the
-    constant, missed the model's floor, and reported zero cache reads in both
-    arms, which reads like "the stage does nothing" and meant "the stage was
-    never given a chance". Recorded in ``docs/optimize-benchmarks.md``; making
-    the floor model-aware changes behaviour for every Anthropic caller and is
-    not being done in passing.
+      **That number was first published as 53.7%, and the difference is a bug
+      this stage's own accounting had.** Cache *writes* -- 5,487 of them, the
+      tokens Anthropic charges a 1.25x premium to store -- were priced at the
+      base rate, because :class:`~optio_optimize.config.ModelPricing` had no
+      write rate at all. The measurement's token counts were right; only their
+      price was wrong, always in the direction that flatters this package.
+
+    **The floor is per-model and :data:`MIN_PREFIX_TOKENS` cannot express it.**
+    See that constant: Anthropic's minimum spans 512 to 4,096 depending on the
+    model, so a single 1024 both declines breakpoints that would work and places
+    breakpoints that are discarded. The first run of the measurement above hit
+    the second case: a 1,449-token prompt cleared the constant, missed Haiku
+    4.5's real 4,096 floor, and reported zero cache reads in both arms -- which
+    reads like "the stage does nothing" and meant "the stage was never given a
+    chance". Recorded in ``docs/optimize-benchmarks.md`` with the full table.
 
     Worth stating plainly because the benchmark got it wrong first: modelling
     only the explicit style credited this library with a 36.3% saving on

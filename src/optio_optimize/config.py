@@ -291,11 +291,19 @@ class ModelPricing:
             a tenth of the input rate; ``None`` means the provider does not
             discount, in which case the prefix stage reports no saving rather
             than an assumed one.
+        cache_write_usd_per_m: Price of *populating* the provider's cache. This
+            is the one rate here that is **higher** than the base input rate --
+            Anthropic charges 1.25x for the 5-minute TTL this package requests
+            (2x for the one-hour it does not) -- and the only one whose absence
+            flatters this library rather than penalizing it. ``None`` means
+            writes cost the base rate, which is correct for providers that
+            populate their cache for free (OpenAI).
     """
 
     input_usd_per_m: float
     output_usd_per_m: float
     cached_input_usd_per_m: float | None = None
+    cache_write_usd_per_m: float | None = None
 
 
 #: Prices for the models the router and reporter know about. Shares the
@@ -304,9 +312,14 @@ class ModelPricing:
 PRICING: dict[str, ModelPricing] = {
     "gpt-4o": ModelPricing(2.50, 10.00, 1.25),
     "gpt-4o-mini": ModelPricing(0.15, 0.60, 0.075),
-    "claude-opus-4": ModelPricing(15.00, 75.00, 1.50),
-    "claude-sonnet-4": ModelPricing(3.00, 15.00, 0.30),
-    "claude-haiku-4": ModelPricing(0.80, 4.00, 0.08),
+    # Every Anthropic row carries a cache-*write* rate at 1.25x its input rate,
+    # the published premium for the 5-minute TTL this package requests. OpenAI
+    # rows leave it None: OpenAI populates its cache for free, and stating an
+    # explicit 1.0x multiple would imply someone had checked a rate that does
+    # not exist.
+    "claude-opus-4": ModelPricing(15.00, 75.00, 1.50, 18.75),
+    "claude-sonnet-4": ModelPricing(3.00, 15.00, 0.30, 3.75),
+    "claude-haiku-4": ModelPricing(0.80, 4.00, 0.08, 1.00),
     # Haiku 4.5, added 2026-07-30 for the Anthropic prefix-cache measurement.
     # Both the alias and the dated id: callers write the alias, and the API
     # reports the dated one back on every response, so a table with only one of
@@ -316,8 +329,13 @@ PRICING: dict[str, ModelPricing] = {
     # overridable. The measurement that motivated the entry is a *token* count
     # (`cache_read_input_tokens`); the dollar figure derived from it is only as
     # current as this row.
-    "claude-haiku-4-5": ModelPricing(1.00, 5.00, 0.10),
-    "claude-haiku-4-5-20251001": ModelPricing(1.00, 5.00, 0.10),
+    #
+    # The fourth rate is the cache-write premium, and it was missing when this
+    # row was first added -- so the measurement it exists to price charged 5,487
+    # write tokens at 1.00 instead of 1.25 and reported a 53.7% saving where the
+    # true figure is 50.1%. An error in the direction that flatters the library.
+    "claude-haiku-4-5": ModelPricing(1.00, 5.00, 0.10, 1.25),
+    "claude-haiku-4-5-20251001": ModelPricing(1.00, 5.00, 0.10, 1.25),
     "gemini-2.0-flash": ModelPricing(0.10, 0.40, 0.025),
 }
 

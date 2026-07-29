@@ -64,6 +64,11 @@ class SavingsReport:
         actual_output_tokens: Likewise.
         provider_cached_tokens: Prompt tokens the provider served from *its*
             prefix cache. Discounted, not free, so tracked separately.
+        provider_written_tokens: Prompt tokens the provider charged a **premium**
+            to write into that cache. Tracked separately from the discounted
+            reads for the obvious reason and one less obvious one: it is the only
+            quantity here that makes this package's reported saving smaller, so
+            leaving it out could never be caught by a report that looked wrong.
         requests: How many requests contributed.
         short_circuits: How many never reached the provider.
         exact: Whether counts came from a real tokenizer.
@@ -75,6 +80,7 @@ class SavingsReport:
     actual_input_tokens: int = 0
     actual_output_tokens: int = 0
     provider_cached_tokens: int = 0
+    provider_written_tokens: int = 0
     requests: int = 0
     short_circuits: int = 0
     exact: bool = False
@@ -127,10 +133,18 @@ class SavingsReport:
             self.actual_input_tokens,
             self.actual_output_tokens,
             self.provider_cached_tokens,
+            self.provider_written_tokens,
         )
 
     def estimated_saved_usd(self, model: str) -> float | None:
-        """Money not spent, if the model's price is known."""
+        """Money not spent, if the model's price is known.
+
+        The baseline is priced with no cache activity at all -- neither reads nor
+        writes -- because the baseline is what the caller would have paid without
+        this package, and without a breakpoint Anthropic neither discounts nor
+        charges a premium. Pricing the baseline's writes too would cancel the
+        premium out of both sides and hide it.
+        """
         pricing = PRICING.get(model)
         if pricing is None:
             return None
@@ -140,6 +154,7 @@ class SavingsReport:
             self.actual_input_tokens,
             self.actual_output_tokens,
             self.provider_cached_tokens,
+            self.provider_written_tokens,
         )
         return baseline - actual
 
@@ -182,17 +197,41 @@ class SavingsReport:
         return lines
 
 
-def _cost(pricing: ModelPricing, input_tokens: int, output_tokens: int, cached: int) -> float:
-    """Return USD for a token usage against a price table."""
-    full_input = max(0, input_tokens - cached)
+def _cost(
+    pricing: ModelPricing,
+    input_tokens: int,
+    output_tokens: int,
+    cached: int,
+    written: int = 0,
+) -> float:
+    """Return USD for a token usage against a price table.
+
+    Prompt tokens fall into three price bands, not two. ``cached`` are reads and
+    cost roughly a tenth; ``written`` populate the cache and cost a *premium*;
+    everything else pays the base rate. Both are subsets of ``input_tokens``.
+
+    ``written`` defaults to ``0`` so callers with no write data are priced
+    exactly as before. That default is also the shape of the bug it fixes: with
+    writes silently folded into base-rate input, a cached Anthropic call looked
+    cheaper than it was, in the one direction that inflates this package's
+    headline saving.
+    """
+    written = max(0, min(written, max(0, input_tokens - cached)))
+    full_input = max(0, input_tokens - cached - written)
     cached_rate = (
         pricing.cached_input_usd_per_m
         if pricing.cached_input_usd_per_m is not None
         else pricing.input_usd_per_m
     )
+    write_rate = (
+        pricing.cache_write_usd_per_m
+        if pricing.cache_write_usd_per_m is not None
+        else pricing.input_usd_per_m
+    )
     return (
         full_input * pricing.input_usd_per_m / 1_000_000
         + cached * cached_rate / 1_000_000
+        + written * write_rate / 1_000_000
         + output_tokens * pricing.output_usd_per_m / 1_000_000
     )
 
@@ -207,6 +246,7 @@ def merge(reports: list[SavingsReport]) -> SavingsReport:
         merged.actual_input_tokens += report.actual_input_tokens
         merged.actual_output_tokens += report.actual_output_tokens
         merged.provider_cached_tokens += report.provider_cached_tokens
+        merged.provider_written_tokens += report.provider_written_tokens
         merged.requests += report.requests
         merged.short_circuits += report.short_circuits
         for name, saving in report.stages.items():

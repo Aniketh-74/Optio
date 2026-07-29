@@ -112,27 +112,47 @@ be promoted to the top level deliberately.
   class of unevidenced claim that credited this library with a 36.3% saving the live API measured at
   −1.8%. Measured 2026-07-30, six turns on `claude-haiku-4-5` through `wrap_anthropic_client` with
   the stage isolated (ADR-015 rule 2) and the *disabled* arm run first so residual server-side cache
-  favours the baseline: **23,023 of 30,113 input tokens served from cache against 0**, for a **53.7%
+  favours the baseline: **23,023 of 30,113 input tokens served from cache against 0**, for a **50.1%
   cost reduction on identical token counts** — 30,111 versus 30,113 sent is noise. The stage avoids
   no tokens whatever and halves the bill by changing what they cost. This is the only claim in the
   package a measurement has ever moved *up*.
 
+- **Cache-*write* tokens are counted and priced.** `LLMResponse.cache_write_tokens`,
+  `SavingsReport.provider_written_tokens`, and `ModelPricing.cache_write_usd_per_m`, because prompt
+  tokens fall into three price bands and this package modelled two. Writes are the band that costs
+  **more** than base input — 1.25× on Anthropic for the 5-minute TTL requested here — and they were
+  missing twice over: `wire.response_from_anthropic_message` left `cache_creation_input_tokens` out
+  of the prompt total altogether (200 reported against a true 4,805 on one measured turn), and even
+  once counted there was no rate to price them at.
+
+  Both errors ran in the same direction: they understate what a *cached* call cost, so they inflate
+  whatever saving `prefix_cache` appears to deliver. That is why neither was ever caught by a report
+  looking wrong — and it is why the figure above reads 50.1% rather than the 53.7% first published.
+  The token counts never changed; only their price did. `_cost` now takes `written` and the
+  arithmetic behind 50.1% is locked by a test.
+
 - **Pricing rows for `claude-haiku-4-5`,** without which the measurement above could report tokens
   but no cost. Both the alias and the dated id, since callers write one and the API returns the
-  other.
+  other. Every Anthropic row now carries its write rate; OpenAI rows leave it `None`, since OpenAI
+  populates its cache for free.
 
 ### Known issues
 
-- **`MIN_PREFIX_TOKENS = 1024` is wrong for the smallest Anthropic models, which require 2048.**
-  Below a model's real floor the provider silently ignores the `cache_control` breakpoint, so
-  `prefix_cache` places a marker, credits the work in the savings ledger, and buys nothing — exactly
-  the "work done for no effect" the threshold check exists to prevent, at the wrong threshold. This
-  is why the measurement above failed on its first attempt: a 1,449-token prompt cleared the
-  constant, missed the model's floor, and reported zero cache reads in *both* arms, which reads like
-  "the stage does nothing" and meant "the stage was never given a chance". Not fixed here because a
-  model-aware floor changes what every Anthropic caller sends, and ADR-016 does not let one
-  measurement carry that. Affects Haiku-class models with prompts between 1024 and 2048 tokens; the
-  cost is a marker that does nothing, never a wrong answer.
+- **`MIN_PREFIX_TOKENS = 1024` cannot express Anthropic's floor, which is per-model.** As of
+  2026-07-30 the published minimums span a factor of eight: 512 (Opus 5), 1,024 (Opus 4.8, Sonnet 5,
+  Sonnet 4.6/4.5), 2,048 (Opus 4.7, Haiku 3.5), **4,096 (Haiku 4.5, Opus 4.6/4.5)**. So one constant
+  is wrong in both directions — too high for Opus 5, where a breakpoint that would work is declined,
+  and too low for four models, where one is placed and silently discarded while the stage's note
+  claims success. Not fixed here because a model-aware floor changes what every Anthropic caller
+  sends, and ADR-016 does not let one measurement carry that. The cost of being wrong is a marker
+  that does nothing, never a wrong answer. `docs/optimize-benchmarks.md` carries the table.
+
+- **`cap_tool_results` does nothing on Anthropic.** It selects messages by `role == "tool"`, which
+  is OpenAI's protocol; Anthropic returns tool output as `role: "user"` carrying a `tool_result`
+  content block, and the text lives inside that block rather than in the message content this
+  package models. So the stage skips Anthropic tool traffic entirely — one of the highest-value
+  stages for agent loops, silently absent on one of two supported vendors. Fixing it means deciding
+  how block-nested text is exposed to stages, which is a design question rather than a patch.
 
 ### Fixed
 

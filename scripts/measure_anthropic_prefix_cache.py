@@ -30,15 +30,19 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 MODEL = "claude-haiku-4-5"
 
-#: Anthropic ignores a ``cache_control`` breakpoint below a per-model floor,
-#: and the floor is **2048 tokens on the smallest models** -- Haiku included --
-#: against 1024 elsewhere. The first version of this script used a 1,449-token
-#: prompt, cleared the 1024 that ``MIN_PREFIX_TOKENS`` encodes, and measured
-#: zero cache reads in both arms. That is a broken measurement, not a negative
-#: result, and it is the exact failure this constant now exists to prevent:
-#: below the floor the provider silently ignores the breakpoint, and a reader
-#: sees "the stage does nothing" where the truth is "the stage was never
-#: given a chance".
+#: Anthropic ignores a ``cache_control`` breakpoint below a per-model floor, and
+#: **that floor is 4,096 tokens on this model**. The published minimums span a
+#: factor of eight -- 512 on Opus 5, 1,024 on Sonnet 5 and Opus 4.8, 2,048 on
+#: Opus 4.7 and Haiku 3.5, 4,096 on Haiku 4.5 and Opus 4.6/4.5 -- so
+#: ``MIN_PREFIX_TOKENS = 1024`` is not a floor for anything in particular.
+#:
+#: The first version of this script used a 1,449-token prompt: above that
+#: constant, below this model's real floor, and it measured zero cache reads in
+#: both arms. That is a broken measurement, not a negative result, and it is the
+#: exact failure this length exists to prevent -- below the floor the provider
+#: silently ignores the breakpoint, and a reader sees "the stage does nothing"
+#: where the truth is "the stage was never given a chance". This was also
+#: recorded as a 2,048 floor for one commit, which is Haiku *3.5*'s.
 SYSTEM_PROMPT = "You are a meticulous claims adjuster. Follow these rules exactly. " + (
     "Consider precedent, documentation, and the policy schedule before answering. " * 300
 )
@@ -80,13 +84,13 @@ from optio_optimize.config import PRICING  # noqa: E402
 from optio_optimize.savings import _cost  # noqa: E402
 
 
-def run(*, prefix_cache: bool) -> tuple[int, int, int, float]:
+def run(*, prefix_cache: bool) -> tuple[int, int, int, int, float]:
     """Hold one conversation.
 
     Returns:
-        ``(input_tokens, cached_tokens, output_tokens, usd)``. Input includes
-        cache reads, matching what this package means by the field everywhere
-        else.
+        ``(input_tokens, cached_tokens, written_tokens, output_tokens, usd)``.
+        Input includes both cache reads and cache writes, matching what this
+        package means by the field everywhere else.
     """
     client = Anthropic()
     optimizer = Optimizer(
@@ -132,8 +136,11 @@ def run(*, prefix_cache: bool) -> tuple[int, int, int, float]:
     # means the prefix is changing between calls. Those are different bugs and
     # the totals alone cannot tell them apart.
     print(f"  [{'on ' if prefix_cache else 'off'}] cache writes: {created:,} tokens")
-    usd = _cost(PRICING[MODEL], totals[0], totals[2], totals[1])
-    return totals[0], totals[1], totals[2], usd
+    # Writes are passed to _cost, not folded into base input. They bill at 1.25x
+    # here, and the first version of this script omitted the argument -- pricing
+    # them at 1.00x and reporting 53.7% where the answer is 50.1%.
+    usd = _cost(PRICING[MODEL], totals[0], totals[2], totals[1], created)
+    return totals[0], totals[1], created, totals[2], usd
 
 
 if __name__ == "__main__":
@@ -143,12 +150,14 @@ if __name__ == "__main__":
     off = run(prefix_cache=False)
     on = run(prefix_cache=True)
 
-    print(f"\n{'arm':<10} {'input':>9} {'cached':>9} {'output':>8} {'cost':>10}")
-    print("-" * 50)
-    for label, (tokens_in, cached, tokens_out, usd) in (("off", off), ("on", on)):
-        print(f"{label:<10} {tokens_in:>9,} {cached:>9,} {tokens_out:>8,} ${usd:>9.5f}")
-    if off[3]:
-        print(f"\ncost reduction from prefix_cache: {(off[3] - on[3]) / off[3]:.1%}")
+    print(f"\n{'arm':<10} {'input':>9} {'cached':>9} {'written':>9} {'output':>8} {'cost':>10}")
+    print("-" * 60)
+    for label, (tokens_in, cached, written, tokens_out, usd) in (("off", off), ("on", on)):
+        print(
+            f"{label:<10} {tokens_in:>9,} {cached:>9,} {written:>9,} {tokens_out:>8,} ${usd:>9.5f}"
+        )
+    if off[4]:
+        print(f"\ncost reduction from prefix_cache: {(off[4] - on[4]) / off[4]:.1%}")
     print(f"cache-served input: off {off[1]:,}/{off[0]:,}, on {on[1]:,}/{on[0]:,}")
     print(
         "\nThe token counts are the measurement. The dollar figures are derived "

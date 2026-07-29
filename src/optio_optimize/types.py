@@ -128,6 +128,13 @@ class LLMResponse:
         cached_input_tokens: Prompt tokens served from the *provider's* prefix
             cache. Billed at a discount rather than free, which is why they are
             counted separately from tokens we avoided sending at all.
+        cache_write_tokens: Prompt tokens written *into* the provider's cache on
+            this call, included in ``input_tokens``. Anthropic charges these at a
+            **premium**, not a discount -- 1.25x the base input rate for the
+            5-minute TTL and 2x for the one-hour -- so a report that folds them
+            into ordinary input tokens understates what a cached call cost and
+            therefore overstates what caching saved. Always ``0`` for providers
+            that cache automatically without charging to populate it (OpenAI).
         model: The model that actually served the request, which is not
             necessarily the one requested -- the routing stage may have changed
             it, and reporting the requested model would make routing savings
@@ -142,6 +149,7 @@ class LLMResponse:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_input_tokens: int = 0
+    cache_write_tokens: int = 0
     model: str = ""
     finish_reason: str | None = None
     served_from: str | None = None
@@ -149,5 +157,11 @@ class LLMResponse:
 
     @property
     def billable_input_tokens(self) -> int:
-        """Prompt tokens charged at full rate."""
+        """Prompt tokens not served from the provider's cache.
+
+        Not the same as "charged at the base rate", which is what this said
+        before ``cache_write_tokens`` existed: a subset of these are cache
+        writes and carry a premium. Use :func:`~optio_optimize.savings._cost`
+        for money; this property is a token count.
+        """
         return max(0, self.input_tokens - self.cached_input_tokens)

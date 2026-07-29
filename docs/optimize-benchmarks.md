@@ -852,18 +852,43 @@ rule 2), disabled arm first so residual server-side cache favours the baseline:
 | arm | input | cache-served | cache writes | output | cost |
 |---|---|---|---|---|---|
 | `prefix_cache` off | 30,111 | 0 | 0 | 1,623 | $0.03823 |
-| `prefix_cache` on | 30,113 | **23,023** (76.5%) | 5,487 | 1,662 | **$0.01770** |
+| `prefix_cache` on | 30,113 | **23,023** (76.5%) | 5,487 | 1,662 | **$0.01907** |
 
-**53.7% cost reduction, on identical token counts.** The two arms sent the same
+**50.1% cost reduction, on identical token counts.** The two arms sent the same
 prompt — 30,111 against 30,113, a two-token difference that is noise — so the
-stage avoided no tokens whatsoever and cut the bill by more than half purely by
-changing the price of tokens that were sent anyway. That is the mechanism the
-stage has always claimed, measured for the first time.
+stage avoided no tokens whatsoever and cut the bill in half purely by changing
+the price of tokens that were sent anyway. That is the mechanism the stage has
+always claimed, measured for the first time.
 
 It also **beats its own docstring**, which said "roughly 30% of total spend on
 a long conversation". The claim has been corrected upward and now cites this
 run. Worth noting that the correction runs the opposite way to every other one
 in this document, all of which took a number down.
+
+### This number was published as 53.7% first, and that was an accounting bug
+
+The token counts above never changed. What changed is what they cost.
+
+Anthropic charges a **premium** to write into its cache — 1.25× the base input
+rate for the 5-minute TTL this package requests, 2× for the one-hour it does
+not — and `ModelPricing` had no write rate at all. So the 5,487 write tokens
+were billed at 1.00× in this table's first version, which put the `on` arm at
+$0.01770 and the reduction at 53.7%.
+
+Two distinct defects produced that, and both leaned the same way:
+
+- `wire.response_from_anthropic_message` omitted `cache_creation_input_tokens`
+  from the prompt total entirely. Anthropic reports `input_tokens` excluding
+  *both* reads and writes; only reads were added back. On this run's first turn
+  the library reported 200 prompt tokens against a true 4,805.
+- `ModelPricing` had no `cache_write_usd_per_m`, so even once counted, writes
+  priced at the base rate.
+
+Neither error could ever make a report look wrong, because both understate the
+cost of a *cached* call — that is, both inflate whatever saving `prefix_cache`
+appears to deliver. Cache reads are the only prompt-token band this document had
+ever modelled as differently-priced, and they are the cheap one. Fixed in both
+places, with the arithmetic behind 50.1% now locked by a test.
 
 ### The measurement failed once first, and the failure is the interesting part
 
@@ -871,12 +896,32 @@ The first attempt reported **zero cache reads in both arms** and a 0.4% cost
 difference — which reads exactly like "the stage does nothing". It was not a
 negative result. It was no test at all.
 
-`MIN_PREFIX_TOKENS = 1024` in `caching.py` is Anthropic's general floor, but
-**the smallest models require 2048**, and Haiku is one of them. The system
-prompt was 1,449 tokens: above the constant, below the model's real floor. The
-marker was placed, was reported in the savings ledger, went out on the wire
-correctly — and the provider ignored it. Lengthening the prompt to ~3,600
-tokens produced the table above.
+The system prompt was 1,449 tokens, above `MIN_PREFIX_TOKENS = 1024` and below
+the model's real floor. The marker was placed, was reported in the savings
+ledger, went out on the wire correctly — and the provider ignored it.
+Lengthening the prompt produced the table above.
+
+**The floor is per-model, and one constant cannot express it.** As of
+2026-07-30 Anthropic's published minimums span a factor of eight:
+
+| model | minimum cacheable prefix |
+|---|---|
+| Opus 5 | 512 |
+| Opus 4.8, Sonnet 5, Sonnet 4.6 / 4.5 | 1,024 |
+| Opus 4.7, Haiku 3.5 | 2,048 |
+| **Haiku 4.5**, Opus 4.6 / 4.5 | **4,096** |
+
+So `MIN_PREFIX_TOKENS = 1024` is wrong in *both* directions: too high for Opus
+5, where it declines a breakpoint that would have worked, and too low for four
+models, where it places one the provider discards while the stage's note claims
+success. This section originally recorded Haiku 4.5's floor as 2,048 — that is
+Haiku *3.5*'s, and the wrong figure shipped in a public docstring for one
+commit. The ~4,600-token prompt used above clears 4,096, so the measurement
+stands; it cleared the real floor by luck rather than by design.
+
+Left as one constant deliberately: a per-model table changes what every
+Anthropic caller sends, and ADR-016 does not let one measurement carry that. The
+cost of being wrong is a marker that does nothing, never a wrong answer.
 
 Two consequences worth carrying:
 

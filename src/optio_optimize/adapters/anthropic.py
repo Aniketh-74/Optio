@@ -214,12 +214,110 @@ def _message_from_param(param: Any) -> Message:
     Only ``role`` and text ``content`` are modelled; multimodal content blocks,
     ``tool_use``/``tool_result`` blocks and provider extensions ride through in
     ``extra[_RAW]`` and are restored verbatim unless a stage edits the text.
+
+    The text is *derived* from block content rather than blanked. An earlier
+    version set it to ``""`` for any list, which made
+    :func:`_param_from_message`'s "did a stage change this?" comparison
+    (``raw["content"] == message.content``) compare a list against ``""`` --
+    never equal, so every block-shaped message was rebuilt with empty content.
+    A ``tool_result`` turn went out as ``{"role": "user", "content": ""}``,
+    which is every tool-using Anthropic conversation, the exact composition
+    this module's docstring advertises.
     """
     if not isinstance(param, dict):
         return Message(role="user", content=str(param))
-    content = param.get("content")
-    text = content if isinstance(content, str) else ""
-    return Message(role=param.get("role", "user"), content=text, extra={_RAW: param})
+    return Message(
+        role=param.get("role", "user"),
+        content=_text_from_content(param.get("content")),
+        extra={_RAW: param},
+    )
+
+
+def _is_text_block(block: Any) -> bool:
+    """Is ``block`` a text content block, dict-shaped or SDK object?"""
+    if isinstance(block, dict):
+        return block.get("type") == "text"
+    return bool(getattr(block, "type", "") == "text")
+
+
+def _block_text(block: Any) -> str:
+    """The ``text`` of one text block, whichever shape it arrived in."""
+    if isinstance(block, dict):
+        return str(block.get("text", ""))
+    return str(getattr(block, "text", ""))
+
+
+def _text_from_content(content: Any) -> str:
+    """Concatenate the text a caller's ``content`` carries.
+
+    Handles all three shapes the SDK accepts: a plain string, a list of block
+    dicts, and a list of pydantic block objects echoed back from a previous
+    response. Non-text blocks contribute nothing, which is deliberate -- a
+    ``tool_use`` block's ``input`` is structured arguments, not prose, and
+    concatenating it into the text a stage may rewrite would invite a stage to
+    corrupt it.
+
+    Mirrors :func:`~optio_optimize.wire.response_from_anthropic_message`'s own
+    text extraction. Both read the same wire shape, and a second, subtly
+    different reading of it is how the two would come to disagree.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(_block_text(b) for b in content if _is_text_block(b))
+    return ""
+
+
+def _rewritten_content(original: Any, text: str) -> Any:
+    """Put a stage's new ``text`` back into ``original``'s shape.
+
+    A string, or a list holding exactly one text block, has one unambiguous
+    place for it. Anything else does not: with two text blocks there is no way
+    to know which one a stage meant to rewrite, and picking would silently
+    move the caller's words between blocks.
+
+    There the original content passes through unchanged -- ADR-013 rule 1's
+    fail-open applied to a shape rather than to an exception. That does mean a
+    stage's edit is dropped, so it is worth being precise about the cost: the
+    stages that rewrite non-system text (``cap_tool_results``, ``deduplicate``,
+    ``prune_retrieval``) report a token saving, and a dropped edit makes that
+    figure optimistic. Multiple text blocks in one message are rare and the
+    alternative is corrupting content, but this is the honest reason to prefer
+    the single-block path.
+    """
+    if not isinstance(original, list):
+        return text
+    indices = [i for i, block in enumerate(original) if _is_text_block(block)]
+    if len(indices) != 1:
+        return original
+    blocks = [_as_block_dict(b) or b for b in original]
+    only = blocks[indices[0]]
+    if not isinstance(only, dict):
+        return original
+    only["text"] = text
+    return blocks
+
+
+def _as_block_dict(block: Any) -> dict[str, Any] | None:
+    """Return ``block`` as a mutable dict, or ``None`` if it cannot be one.
+
+    Content blocks arrive as dicts from a caller writing params by hand, and as
+    pydantic objects when a previous response's ``content`` is appended to the
+    history verbatim -- which is what the SDK's own examples do. Both have to be
+    editable here, or a marker lands on the first shape and silently misses the
+    second.
+    """
+    if isinstance(block, dict):
+        return dict(block)
+    dump = getattr(block, "model_dump", None)
+    if callable(dump):
+        try:
+            dumped = dump(exclude_none=True)
+        except Exception:  # noqa: BLE001 - a foreign object must not break a call
+            return None
+        if isinstance(dumped, dict):
+            return dumped
+    return None
 
 
 def _param_from_message(message: Message) -> Any:
@@ -241,8 +339,15 @@ def _param_from_message(message: Message) -> Any:
     """
     raw = message.extra.get(_RAW)
     if isinstance(raw, dict):
-        unchanged = raw.get("content") == message.content
-        param = raw if unchanged else {**raw, "content": message.content}
+        original = raw.get("content")
+        # Compare against the text *derived* from the original, not against the
+        # original itself: for block content those are different types and the
+        # comparison could never hold, which is how every tool-using turn came
+        # to be rebuilt with empty content.
+        if _text_from_content(original) == message.content:
+            param = raw
+        else:
+            param = {**raw, "content": _rewritten_content(original, message.content)}
     else:
         param = {"role": message.role, "content": message.content}
 
@@ -258,12 +363,31 @@ def _with_cache_control(content: Any, text: str) -> list[dict[str, Any]]:
     string content is promoted to a one-element text block. An existing block
     list keeps every block it had and gains the marker on the last, which is
     where a breakpoint belongs: it caches everything above it.
+
+    Blocks are coerced through :func:`_as_block_dict` rather than marked only
+    when already dicts. The earlier ``isinstance(last, dict)`` guard fell
+    through silently for a pydantic block -- the shape you get by appending a
+    response's own ``content`` to the history, as the SDK's examples do -- so
+    the stage placed a marker, its note claimed a breakpoint, and nothing
+    reached the wire. That is the third appearance of this exact defect in this
+    package (``tools`` unsent, then ``cacheable`` unsent from this very path),
+    which is why the coercion lives in one named function.
     """
     if isinstance(content, list) and content:
-        blocks = [dict(b) if isinstance(b, dict) else b for b in content]
+        blocks: list[Any] = [_as_block_dict(b) or b for b in content]
         last = blocks[-1]
         if isinstance(last, dict):
             last["cache_control"] = dict(wire.EPHEMERAL_CACHE_CONTROL)
+        else:
+            # Un-coercible foreign object. Nothing correct is available: marking
+            # is impossible and dropping the block would delete content. The
+            # marker is lost, the request is intact, and the caller pays the
+            # undiscounted rate they would have paid without this package.
+            _log.warning(
+                "optio_optimize: could not place a cache breakpoint on a %s "
+                "content block; the request is unaffected and uncached",
+                type(last).__name__,
+            )
         return blocks
     return [
         {
@@ -274,6 +398,35 @@ def _with_cache_control(content: Any, text: str) -> list[dict[str, Any]]:
     ]
 
 
+def _system_block_from_message(message: Message) -> dict[str, Any]:
+    """Rebuild one Anthropic system block, keeping the caller's own fields.
+
+    Built from ``extra[_RAW]`` for the same reason turns are, and the reason is
+    sharper here. This path previously used
+    :func:`~optio_optimize.wire.anthropic_system_and_turns`, which composes a
+    block from text alone -- so a caller who had set their own
+    ``cache_control`` with ``ttl: "1h"`` had it replaced by a bare text block.
+    They had paid Anthropic's 2x write premium for a one-hour cache and this
+    package silently downgraded them to no cache at all: a cost *regression*
+    caused by a cost-reduction library, which is the one outcome it must never
+    produce.
+
+    An existing ``cache_control`` is therefore never overwritten. The marker
+    :class:`~optio_optimize.stages.caching.PrefixCacheStage` places is a
+    default, not an override -- the caller's own breakpoint is better
+    information than this package's guess, and it is a wider TTL as often as
+    not.
+    """
+    raw = message.extra.get(_RAW)
+    block: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+    block.setdefault("type", "text")
+    if str(block.get("text", "")) != message.content:
+        block["text"] = message.content
+    if message.cacheable and "cache_control" not in block:
+        block["cache_control"] = dict(wire.EPHEMERAL_CACHE_CONTROL)
+    return block
+
+
 def _kwargs_from_request(sent: LLMRequest, original: dict[str, Any]) -> dict[str, Any]:
     """Rebuild ``create(**kwargs)`` from the request the stages left behind.
 
@@ -281,7 +434,7 @@ def _kwargs_from_request(sent: LLMRequest, original: dict[str, Any]) -> dict[str
     models (``top_p``, ``metadata``, ``extra_headers``, ...), and overrides only
     what a stage could plausibly have changed.
     """
-    system_blocks, _ = wire.anthropic_system_and_turns(sent)
+    system_blocks = [_system_block_from_message(m) for m in sent.messages if m.role == "system"]
     kwargs = dict(original)
     kwargs["model"] = sent.model
     kwargs["messages"] = [_param_from_message(m) for m in sent.messages if m.role != "system"]
