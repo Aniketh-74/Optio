@@ -367,3 +367,152 @@ class TestBothClientsAgree:
         asynchronous = AsyncAnthropic(api_key="test", http_client=httpx.AsyncClient())
         assert _is_async(asynchronous.messages.create) is True
         assert _is_async(sync.messages.create) is False
+
+
+class TestBlockContentSurvivesTheRoundTrip:
+    """Every one of these passed before the defect they cover was fixed.
+
+    The adapter modelled block content as the empty string, so
+    ``_param_from_message``'s "did a stage change the text?" check compared a
+    list against ``""`` -- never equal -- and rebuilt every block-shaped message
+    as ``{"role": ..., "content": ""}``. That is every tool-using Anthropic
+    conversation, and the full suite of 1,366 tests did not have one.
+    """
+
+    def test_a_tool_result_turn_reaches_the_wire_intact(self, sync_client, fake):
+        wrap_anthropic_client(sync_client, exact_cache=False)
+        blocks = [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "42 orders"}]
+        sync_client.messages.create(
+            **_kwargs(
+                messages=[
+                    {"role": "user", "content": "how many orders?"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "tool_use", "id": "toolu_1", "name": "count", "input": {}}
+                        ],
+                    },
+                    {"role": "user", "content": blocks},
+                ]
+            )
+        )
+        sent = fake.requests[0]["messages"]
+        assert sent[1]["content"] == [
+            {"type": "tool_use", "id": "toolu_1", "name": "count", "input": {}}
+        ]
+        assert sent[2]["content"] == blocks
+
+    def test_an_image_block_is_not_flattened(self, sync_client, fake):
+        wrap_anthropic_client(sync_client, exact_cache=False)
+        image = {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="},
+        }
+        blocks = [image, {"type": "text", "text": "?"}]
+        sync_client.messages.create(**_kwargs(messages=[{"role": "user", "content": blocks}]))
+        assert fake.requests[0]["messages"][0]["content"] == blocks
+
+    def test_text_is_still_readable_by_stages(self):
+        """A stage must see the prose, or every text-rewriting stage no-ops."""
+        from optio_optimize.adapters.anthropic import _message_from_param
+
+        message = _message_from_param(
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me look. "},
+                    {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
+                    {"type": "text", "text": "One moment."},
+                ],
+            }
+        )
+        assert message.content == "Let me look. One moment."
+
+    def test_a_rewritten_single_text_block_keeps_its_siblings(self):
+        """The common assistant shape: one text block beside a tool_use."""
+        from optio_optimize.adapters.anthropic import _message_from_param, _param_from_message
+
+        tool_use = {"type": "tool_use", "id": "t1", "name": "f", "input": {"a": 1}}
+        message = _message_from_param(
+            {"role": "assistant", "content": [{"type": "text", "text": "long"}, tool_use]}
+        )
+        rewritten = _param_from_message(message.with_content("short"))
+        assert rewritten["content"] == [{"type": "text", "text": "short"}, tool_use]
+
+    def test_ambiguous_content_passes_through_rather_than_guessing(self):
+        """Two text blocks: no way to know which a stage meant. Fail open."""
+        from optio_optimize.adapters.anthropic import _message_from_param, _param_from_message
+
+        original = [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]
+        message = _message_from_param({"role": "user", "content": original})
+        assert _param_from_message(message.with_content("z"))["content"] == original
+
+    def test_an_untouched_turn_is_the_very_same_object(self):
+        """Identity, not equality: nothing was rebuilt, so nothing can be lost."""
+        from optio_optimize.adapters.anthropic import _message_from_param, _param_from_message
+
+        raw = {"role": "user", "content": [{"type": "text", "text": "hi"}], "custom": "kept"}
+        assert _param_from_message(_message_from_param(raw)) is raw
+
+
+class TestTheCallersOwnCacheControlIsNotClobbered:
+    """A cost-reduction library must never cause a cost regression."""
+
+    def test_a_one_hour_ttl_on_a_system_block_survives(self, sync_client, fake):
+        wrap_anthropic_client(sync_client, exact_cache=False)
+        system = [
+            {
+                "type": "text",
+                "text": "You are terse." * 400,
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            }
+        ]
+        sync_client.messages.create(**_kwargs(system=system, messages=_growing_chat(12)))
+        # The caller paid Anthropic's 2x write premium for an hour of cache.
+        # Replacing it with the 5-minute default, or with a bare text block,
+        # spends their money and then discards what it bought.
+        assert fake.requests[0]["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+    def test_a_plain_system_string_still_gets_a_marker(self, sync_client, fake):
+        wrap_anthropic_client(sync_client, exact_cache=False)
+        # One turn on purpose. With a longer conversation the stable prefix ends
+        # on a *turn* and the system block correctly carries no marker -- the
+        # first version of this test used 12 turns and failed for that reason,
+        # asserting the stage's behaviour rather than this function's.
+        sync_client.messages.create(**_kwargs(system="You are terse. " * 400))
+        assert fake.requests[0]["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_an_unmodelled_system_block_field_is_preserved(self):
+        from optio_optimize.adapters.anthropic import _system_block_from_message
+        from optio_optimize.types import Message
+
+        block = {"type": "text", "text": "sys", "citations": [{"type": "char_location"}]}
+        rebuilt = _system_block_from_message(
+            Message(role="system", content="sys", extra={"_raw": block})
+        )
+        assert rebuilt["citations"] == [{"type": "char_location"}]
+
+
+class TestTheMarkerReachesNonDictBlocks:
+    """Appending a response's own content to the history is what the SDK's
+    examples do, and it yields pydantic blocks rather than dicts. The marker
+    used to fall through silently for exactly that shape -- the third time this
+    package placed a field it never sent."""
+
+    def test_a_pydantic_text_block_can_carry_a_breakpoint(self):
+        from anthropic.types import TextBlock
+
+        from optio_optimize.adapters.anthropic import _with_cache_control
+
+        blocks = _with_cache_control([TextBlock(type="text", text="hello")], "hello")
+        assert blocks[-1]["cache_control"] == {"type": "ephemeral"}
+        assert blocks[-1]["text"] == "hello"
+
+    def test_an_uncoercible_block_warns_and_keeps_the_content(self, caplog):
+        from optio_optimize.adapters.anthropic import _with_cache_control
+
+        opaque = object()
+        with caplog.at_level("WARNING", logger="optio_optimize"):
+            blocks = _with_cache_control([opaque], "text")
+        assert blocks == [opaque]  # content intact; only the discount is lost
+        assert "cache breakpoint" in caplog.text

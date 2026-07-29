@@ -34,18 +34,18 @@ from optio_optimize.types import LLMResponse
 if TYPE_CHECKING:
     from optio_optimize.types import LLMRequest
 
-#: Request fields that are deliberately never put on the wire, with the reason.
-#: Checked by a test against :class:`~optio_optimize.types.LLMRequest`'s own
-#: field list, so adding a field to the request type fails the suite until
-#: someone decides which side of this line it belongs on. That is the same
-#: guard :func:`~optio_optimize.cache.request_key` applies to the cache key, and
-#: for the same reason: a new field that is silently not sent is invisible.
 #: Anthropic's only cache-control type. Named so the three places that emit it
 #: -- system blocks, marked turns, and the adapter's raw-param path -- cannot
 #: drift apart on a literal. Copy it at each use: a shared mutable dict living
 #: on several request bodies is a bug waiting for someone to edit one of them.
 EPHEMERAL_CACHE_CONTROL = {"type": "ephemeral"}
 
+#: Request fields that are deliberately never put on the wire, with the reason.
+#: Checked by a test against :class:`~optio_optimize.types.LLMRequest`'s own
+#: field list, so adding a field to the request type fails the suite until
+#: someone decides which side of this line it belongs on. That is the same
+#: guard :func:`~optio_optimize.cache.request_key` applies to the cache key, and
+#: for the same reason: a new field that is silently not sent is invisible.
 UNSENT_FIELDS: dict[str, str] = {
     "extra": "provider transport details, merged by each adapter rather than named here",
     "thinking_budget": (
@@ -252,11 +252,17 @@ def anthropic_body(
 def response_from_anthropic_message(message: Any) -> LLMResponse:
     """Normalize an Anthropic message into this package's response model.
 
-    ``input_tokens`` is reported by Anthropic *excluding* cache reads, so the
-    cached count is added back to make the field mean what it means everywhere
-    else here: total prompt tokens, of which some were discounted. Getting that
-    wrong in one place would make batched, synchronous and adapter totals
-    silently incomparable.
+    ``input_tokens`` is reported by Anthropic *excluding* both cache reads and
+    cache writes, so **both** are added back to make the field mean what it
+    means everywhere else here: total prompt tokens, of which some were
+    discounted and some carried a premium. Getting that wrong in one place would
+    make batched, synchronous and adapter totals silently incomparable.
+
+    Writes were omitted at first, and the omission was not symmetric: it dropped
+    the most expensive band of prompt tokens from the total, so a cached call
+    reported a fraction of its real cost and every prefix-cache saving derived
+    from it came out too high. On the first turn of the run behind this
+    package's 53.7% figure it reported 200 tokens against a true 4,805.
 
     Attribute access rather than isinstance narrowing, because the two callers
     receive structurally identical objects from different SDK code paths --
@@ -270,6 +276,7 @@ def response_from_anthropic_message(message: Any) -> LLMResponse:
     """
     usage = getattr(message, "usage", None)
     cached = int(getattr(usage, "cache_read_input_tokens", 0) or 0) if usage else 0
+    written = int(getattr(usage, "cache_creation_input_tokens", 0) or 0) if usage else 0
     text = "".join(
         str(getattr(block, "text", ""))
         for block in getattr(message, "content", [])
@@ -277,9 +284,10 @@ def response_from_anthropic_message(message: Any) -> LLMResponse:
     )
     return LLMResponse(
         content=text,
-        input_tokens=(int(getattr(usage, "input_tokens", 0)) + cached) if usage else 0,
+        input_tokens=(int(getattr(usage, "input_tokens", 0)) + cached + written) if usage else 0,
         output_tokens=int(getattr(usage, "output_tokens", 0)) if usage else 0,
         cached_input_tokens=cached,
+        cache_write_tokens=written,
         model=str(getattr(message, "model", "")),
         finish_reason=getattr(message, "stop_reason", None),
     )
