@@ -63,6 +63,41 @@ be promoted to the top level deliberately.
   and fails unless each is demonstrably on the wire or named in `wire.UNSENT_FIELDS` with a reason,
   the same guard `request_key` applies to the cache key.
 
+- **`wrap_anthropic_client`: one line to optimize an Anthropic client, sync or async.** Until now
+  the only real-SDK integration was OpenAI, so "plug and play" meant "plug and play if you use one
+  vendor" — and Anthropic is the vendor where these stages are worth the most, because its prefix
+  caching does nothing at all without the marker `prefix_cache` places. Wraps
+  `client.messages.create` in place and returns the same client, so existing call sites are
+  untouched.
+
+  Two silent defects surfaced while building it, and both initially looked like success.
+  `inspect.iscoroutinefunction` returns `False` for *both* Anthropic clients, because the SDK
+  decorates `create` — so `AsyncAnthropic` took the synchronous branch, the un-awaited coroutine was
+  handed back, and `await` ran it as an ordinary unoptimized call. **Eight of eleven tests passed
+  that way**: an adapter doing nothing while reporting success. Fixed with `inspect.unwrap`.
+  Separately, the `cacheable` marker reached the wire through `wire.py` but not through the
+  adapter's raw-parameter path: the stage marked the message, the savings ledger recorded the work,
+  and the field was never sent — the same shape as the `tools` omission above, one function over.
+
+- **`optio_optimize.invariants`: rules that hold whatever the stages do.** Two entry points for two
+  different kinds of rule, and the distinction is the point. `check(request)` enforces what is true
+  of *any* request — a tool result must follow the call it answers, something must be answerable.
+  `check_transform(original, sent)` enforces what is true of a *rewrite*: the last user message
+  still present, the system prompt still present, message order unchanged, no tool invented, no
+  called tool removed. The first kind a provider will reject for you. **The second kind nobody
+  enforces at all** — a request that quietly lost the user's question is well-formed, accepted, and
+  billed, which is exactly how `trim_history`'s defect below survived 1,304 tests.
+
+  A `Violation` carries `(rule, message_index, role)` and never prompt content, because violations
+  are printed and reach CI logs (§10).
+
+  Pointing it at real traffic immediately produced **20 violations on a demonstrably clean run** —
+  two false positives, both worth recording. Tool calls were read from `extra["tool_calls"]` while
+  adapters store them under `extra["_raw"]`; and the system-prompt rule compared identity, so
+  `structured_output` editing the system prompt read as dropping it. A checker that cries wolf on
+  clean traffic is worse than no checker, because the next real violation gets ignored along with
+  the noise.
+
 ### Changed
 
 - **`Pipeline.execute` is now `prepare` + `complete`.** Batch needs the two halves of a request
@@ -71,6 +106,33 @@ be promoted to the top level deliberately.
   divergence showing up as batch and synchronous calls being optimized differently for reasons
   nobody could see. Behaviour is unchanged; `execute` and `aexecute` are now two calls around the
   provider instead of inline loops.
+
+- **`prefix_cache`'s Anthropic claim is measured, and it was understated.** The docstring called the
+  marker worth "roughly 30% of total spend on a long conversation" with no run behind it — the same
+  class of unevidenced claim that credited this library with a 36.3% saving the live API measured at
+  −1.8%. Measured 2026-07-30, six turns on `claude-haiku-4-5` through `wrap_anthropic_client` with
+  the stage isolated (ADR-015 rule 2) and the *disabled* arm run first so residual server-side cache
+  favours the baseline: **23,023 of 30,113 input tokens served from cache against 0**, for a **53.7%
+  cost reduction on identical token counts** — 30,111 versus 30,113 sent is noise. The stage avoids
+  no tokens whatever and halves the bill by changing what they cost. This is the only claim in the
+  package a measurement has ever moved *up*.
+
+- **Pricing rows for `claude-haiku-4-5`,** without which the measurement above could report tokens
+  but no cost. Both the alias and the dated id, since callers write one and the API returns the
+  other.
+
+### Known issues
+
+- **`MIN_PREFIX_TOKENS = 1024` is wrong for the smallest Anthropic models, which require 2048.**
+  Below a model's real floor the provider silently ignores the `cache_control` breakpoint, so
+  `prefix_cache` places a marker, credits the work in the savings ledger, and buys nothing — exactly
+  the "work done for no effect" the threshold check exists to prevent, at the wrong threshold. This
+  is why the measurement above failed on its first attempt: a 1,449-token prompt cleared the
+  constant, missed the model's floor, and reported zero cache reads in *both* arms, which reads like
+  "the stage does nothing" and meant "the stage was never given a chance". Not fixed here because a
+  model-aware floor changes what every Anthropic caller sends, and ADR-016 does not let one
+  measurement carry that. Affects Haiku-class models with prompts between 1024 and 2048 tokens; the
+  cost is a marker that does nothing, never a wrong answer.
 
 ### Fixed
 

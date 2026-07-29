@@ -20,6 +20,9 @@ provider caching behavior has already changed the reported figures once, see
 | `rag_queries_noisy` (`prune_retrieval`) | 2026-07-29 | $0.0029 |
 | `SimulatedProvider` cache-quantum calibration | 2026-07-29 | ~$0.001 (raw trace, not a bench run) |
 | `multi_turn_chat_long` (50-turn `trim_history`) | 2026-07-29 | $0.0163 |
+| Real Agents SDK agent (`scripts/real_agent_run.py`, 4 scenarios) | 2026-07-29 | ~$0.013 |
+| Batch dispatch (OpenAI, submission + retrieval) | 2026-07-29 | ~$0.0005 |
+| Anthropic `prefix_cache`, isolated (`claude-haiku-4-5`) | 2026-07-30 | ~$0.12 |
 
 ## Live results (gpt-4o-mini, identical-output stages only)
 
