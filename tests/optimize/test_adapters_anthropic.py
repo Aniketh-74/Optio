@@ -1,0 +1,282 @@
+"""wrap_anthropic_client against the real anthropic SDK types, not stand-ins.
+
+Same construction as ``test_adapters_openai_agents.py``: a genuine client with
+its HTTP transport mocked, so the request this package builds and the response
+it parses are real SDK shapes validated by the SDK's own pydantic models. No
+network, no API key, no spend.
+
+``asyncio.run`` rather than a pytest-asyncio plugin, matching
+``test_pipeline_async.py`` -- nothing here needs an event-loop fixture, and a
+plugin would be a dev dependency bought for syntax.
+
+This adapter matters more than its size suggests. ``PrefixCacheStage`` is
+described in its own source as the largest lossless saving in the package, and
+on OpenAI it contributes exactly zero -- automatic caching lands on both A/B
+arms, which is why a simulated 36.3% corrected to -1.8% live. Anthropic caches
+nothing without an explicit ``cache_control`` breakpoint, and this adapter is
+the only path by which the marker our pipeline places becomes that field.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+from typing import TYPE_CHECKING, Any
+
+import pytest
+
+pytest.importorskip("anthropic")
+
+import httpx
+from anthropic import Anthropic, AsyncAnthropic
+
+from optio_optimize import Optimizer
+from optio_optimize.adapters.anthropic import wrap_anthropic_client
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+pytestmark = pytest.mark.optimize
+
+
+class _FakeAnthropic:
+    """Records every request body and answers deterministically."""
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+        self.reply = "hello there"
+        self.cache_read = 0
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-haiku-4-5",
+                "content": [{"type": "text", "text": self.reply}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "cache_read_input_tokens": self.cache_read,
+                },
+            },
+        )
+
+
+@pytest.fixture
+def fake() -> _FakeAnthropic:
+    return _FakeAnthropic()
+
+
+@pytest.fixture
+def async_client(fake: _FakeAnthropic) -> Iterator[AsyncAnthropic]:
+    transport = httpx.MockTransport(fake.handler)
+    yield AsyncAnthropic(api_key="test", http_client=httpx.AsyncClient(transport=transport))
+
+
+@pytest.fixture
+def sync_client(fake: _FakeAnthropic) -> Iterator[Anthropic]:
+    transport = httpx.MockTransport(fake.handler)
+    yield Anthropic(api_key="test", http_client=httpx.Client(transport=transport))
+
+
+def _kwargs(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "model": "claude-haiku-4-5",
+        "max_tokens": 256,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    base.update(overrides)
+    return base
+
+
+def _content_blocks(messages: list[dict[str, Any]]) -> list[Any]:
+    """Every content block across a turn list, skipping plain-string contents."""
+    blocks: list[Any] = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            blocks.extend(content)
+    return blocks
+
+
+def _growing_chat(turns: int = 10) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "q0"}]
+    for turn in range(turns):
+        messages.append({"role": "assistant", "content": f"a{turn}"})
+        messages.append({"role": "user", "content": f"q{turn + 1}"})
+    return messages
+
+
+class TestItStillWorks:
+    def test_a_real_call_returns_the_providers_own_content(self, async_client, fake):
+        wrap_anthropic_client(async_client)
+        reply = asyncio.run(async_client.messages.create(**_kwargs()))
+        assert reply.content[0].text == "hello there"
+        assert reply.usage.input_tokens == 100
+
+    def test_the_system_prompt_reaches_the_wire_as_a_block(self, async_client, fake):
+        wrap_anthropic_client(async_client)
+        asyncio.run(async_client.messages.create(**_kwargs(system="You are terse.")))
+        assert fake.requests[0]["system"] == [{"type": "text", "text": "You are terse."}]
+
+    def test_unmodelled_kwargs_survive_untouched(self, async_client, fake):
+        wrap_anthropic_client(async_client)
+        asyncio.run(async_client.messages.create(**_kwargs(top_p=0.5, metadata={"user_id": "u1"})))
+        body = fake.requests[0]
+        assert body["top_p"] == 0.5
+        assert body["metadata"] == {"user_id": "u1"}
+
+
+class TestThePrefixMarkerBecomesCacheControl:
+    def test_a_long_conversation_gets_a_cache_control_breakpoint(self, async_client, fake):
+        # The entire reason this adapter exists. PrefixCacheStage only places a
+        # marker above MIN_PREFIX_TOKENS (1024), so the prompt must be big.
+        #
+        # The breakpoint lands on the last message of the stable prefix, which
+        # here is a *turn* rather than the system block -- and a breakpoint on a
+        # turn caches everything above it, system prompt included. Asserting
+        # "the system block carries it" would have been asserting my assumption
+        # rather than the stage's contract.
+        wrap_anthropic_client(async_client, prefix_cache=True, exact_cache=False)
+        asyncio.run(
+            async_client.messages.create(
+                **_kwargs(
+                    system="You are a careful assistant. " * 400,
+                    messages=[
+                        {"role": "user", "content": "q1"},
+                        {"role": "assistant", "content": "a1"},
+                        {"role": "user", "content": "q2"},
+                    ],
+                )
+            )
+        )
+        body = fake.requests[0]
+        marked = [
+            block
+            for block in (*body["system"], *_content_blocks(body["messages"]))
+            if isinstance(block, dict) and "cache_control" in block
+        ]
+        assert marked, "the marker our pipeline placed never reached the wire"
+        assert marked[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_the_breakpoint_holds_back_the_newest_turn(self, async_client, fake):
+        # Marking right up to the newest message would invalidate the cached
+        # prefix on the very next call -- the classic way to get zero benefit
+        # while believing the feature is on.
+        wrap_anthropic_client(async_client, prefix_cache=True, exact_cache=False)
+        asyncio.run(
+            async_client.messages.create(
+                **_kwargs(
+                    system="You are a careful assistant. " * 400,
+                    messages=[
+                        {"role": "user", "content": "q1"},
+                        {"role": "assistant", "content": "a1"},
+                        {"role": "user", "content": "q2"},
+                    ],
+                )
+            )
+        )
+        last = fake.requests[0]["messages"][-1]
+        assert last["content"] == "q2", "the newest turn was marked and will invalidate itself"
+
+    def test_a_short_prompt_gets_no_breakpoint(self, async_client, fake):
+        # Below the provider's floor a marker is ignored, so placing one would
+        # show up in reports as work done for no effect.
+        wrap_anthropic_client(async_client, prefix_cache=True, exact_cache=False)
+        asyncio.run(async_client.messages.create(**_kwargs(system="short")))
+        assert "cache_control" not in fake.requests[0]["system"][0]
+
+
+class TestStagesReachTheWire:
+    def test_a_long_conversation_sends_fewer_messages(self, async_client, fake):
+        wrap_anthropic_client(
+            async_client,
+            exact_cache=False,
+            prefix_cache=False,
+            trim_history=True,
+            recent_turns=4,
+        )
+        messages = _growing_chat()
+        asyncio.run(async_client.messages.create(**_kwargs(messages=messages)))
+
+        sent = fake.requests[0]["messages"]
+        assert len(sent) < len(messages)
+        assert sent[0]["content"] == "q0", "the opening question is the task; never history"
+
+    def test_tools_are_translated_into_anthropic_shape(self, async_client, fake):
+        wrap_anthropic_client(async_client, exact_cache=False)
+        asyncio.run(
+            async_client.messages.create(
+                **_kwargs(
+                    tools=[
+                        {"name": "search", "description": "d", "input_schema": {"type": "object"}}
+                    ]
+                )
+            )
+        )
+        assert fake.requests[0]["tools"][0]["name"] == "search"
+
+
+class TestCacheHonesty:
+    def test_a_second_identical_call_makes_no_real_request(self, async_client, fake):
+        wrap_anthropic_client(async_client, exact_cache=True)
+        kwargs = _kwargs(temperature=0.0)
+        asyncio.run(async_client.messages.create(**kwargs))
+        asyncio.run(async_client.messages.create(**kwargs))
+        assert len(fake.requests) == 1
+
+    def test_the_cache_hits_usage_is_zeroed_not_the_originals(self, async_client, fake):
+        # Returning the stored object would re-bill the original call's usage on
+        # every hit, making a cache that saves money look like one that spends
+        # it repeatedly. The OpenAI adapter documents the same defect.
+        wrap_anthropic_client(async_client, exact_cache=True)
+        kwargs = _kwargs(temperature=0.0)
+        first = asyncio.run(async_client.messages.create(**kwargs))
+        second = asyncio.run(async_client.messages.create(**kwargs))
+        assert first.usage.input_tokens == 100
+        assert second.usage.input_tokens == 0
+        assert second.content[0].text == first.content[0].text
+
+
+class TestFailOpen:
+    def test_an_unmodellable_request_still_reaches_the_provider(self, async_client, fake):
+        # Fail-open (ADR-013 rule 1) promises the call still happens -- not that
+        # *some* exception occurs, which `pytest.raises(Exception)` would accept
+        # from any bug anywhere. Assert the promise: content this package does
+        # not model (a block list rather than a string) goes out and the caller
+        # gets the provider's own answer.
+        optimizer = Optimizer()
+        wrap_anthropic_client(async_client, optimizer=optimizer)
+
+        reply = asyncio.run(
+            async_client.messages.create(
+                **_kwargs(messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}])
+            )
+        )
+
+        assert reply.content[0].text == "hello there"
+        assert len(fake.requests) == 1
+
+    def test_a_streaming_call_bypasses_the_wrapper(self, async_client, fake):
+        # Wrapped exactly once. Wrapping twice would satisfy the assertion
+        # below because the outer wrapper never saw the call -- a different
+        # fact from the one under test.
+        optimizer = Optimizer()
+        wrap_anthropic_client(async_client, optimizer=optimizer)
+
+        # The mock transport returns JSON rather than SSE, so the SDK's stream
+        # parser will object. Beside the point: what matters is that the
+        # request reached the real client and that no stage ran.
+        with contextlib.suppress(Exception):
+            asyncio.run(async_client.messages.create(**_kwargs(stream=True)))
+
+        assert len(fake.requests) == 1, "the streaming call never reached the client"
+        assert fake.requests[0]["stream"] is True
+        assert optimizer.report.requests == 0, "a streaming call went through the pipeline"
