@@ -348,3 +348,76 @@ class TestAgainstTheRealStage:
 
         assert check_transform(original, result.request) == ()
         assert check(result.request) == ()
+
+
+class TestTheFalsePositivesRealTrafficFound:
+    """Both of these fired on a run where the library did nothing wrong.
+
+    A checker that cries wolf gets switched off, which costs more than the
+    rules are worth -- so the cases that made it cry are pinned here.
+    """
+
+    @staticmethod
+    def _raw_style_loop() -> LLMRequest:
+        """The shape a framework adapter produces: everything under extra['_raw'].
+
+        ``wire.openai_messages`` lifts tool_calls to ``extra['tool_calls']``;
+        the adapters keep the caller's whole param under ``extra['_raw']`` so
+        they can hand back untouched what this package does not model. Reading
+        only the first convention made every tool-calling assistant look like
+        an empty unattached message and every tool result look orphaned.
+        """
+        call = {"id": "c1", "type": "function", "function": {"name": "search"}}
+        return LLMRequest(
+            model="gpt-4o",
+            messages=(
+                Message(role="system", content="sys"),
+                Message(role="user", content="go"),
+                Message(
+                    role="assistant",
+                    content="",
+                    extra={"_raw": {"role": "assistant", "content": None, "tool_calls": [call]}},
+                ),
+                Message(
+                    role="tool",
+                    content="ok",
+                    extra={"_raw": {"role": "tool", "content": "ok", "tool_call_id": "c1"}},
+                ),
+            ),
+            temperature=0.0,
+        )
+
+    def test_raw_style_tool_calls_are_recognised(self):
+        assert check(self._raw_style_loop()) == ()
+
+    def test_raw_style_called_tools_count_as_called(self):
+        original = replace(self._raw_style_loop(), tools=(_SEARCH, _LOOKUP))
+        pruned = replace(original, tools=(_LOOKUP,))
+        assert CALLED_TOOL_REMOVED in _transform_rules(original, pruned)
+
+    def test_a_rewritten_system_prompt_is_not_a_dropped_one(self):
+        # StructuredOutputStage appends an instruction to the system message and
+        # is on by default. An identity check called that a dropped prompt, on
+        # every call of every run.
+        original = _agent_loop(steps=2)
+        edited = list(original.messages)
+        edited[0] = edited[0].with_content("You are a support agent. Reply with JSON.")
+        assert SYSTEM_PROMPT_DROPPED not in _transform_rules(
+            original, original.with_messages(tuple(edited))
+        )
+
+    def test_an_inserted_system_prompt_is_not_a_violation(self):
+        # The same stage inserts one when the caller had none.
+        original = LLMRequest(
+            model="gpt-4o",
+            messages=(Message(role="user", content="go"),),
+            temperature=0.0,
+        )
+        added = (Message(role="system", content="Reply with JSON."), *original.messages)
+        assert check_transform(original, original.with_messages(added)) == ()
+
+    def test_removing_the_only_system_prompt_still_fires(self):
+        # The rule must not have been weakened into uselessness.
+        original = _agent_loop(steps=2)
+        stripped = tuple(m for m in original.messages if m.role != "system")
+        assert SYSTEM_PROMPT_DROPPED in _transform_rules(original, original.with_messages(stripped))

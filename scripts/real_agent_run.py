@@ -173,6 +173,52 @@ INSTRUCTIONS = (
 )
 
 
+@dataclass(frozen=True)
+class Scenario:
+    """One agent task, chosen to bend the message list into a new shape."""
+
+    name: str
+    task: str
+    why: str
+
+
+#: Four shapes, not four tasks. Each bends the message list somewhere the
+#: fixtures in this repo never did -- which is the entire lesson of 2026-07-29,
+#: when the first real agent run found a defect 1,304 tests had missed because
+#: every fixture was a tidy alternating chat.
+SCENARIOS: tuple[Scenario, ...] = (
+    Scenario(
+        name="support",
+        task=TASK,
+        why="four tools in sequence; the shape that found the trim_history defect",
+    ),
+    Scenario(
+        name="parallel",
+        task=(
+            "Check inventory for SKUs WID-100, WID-103 and WID-109 at the same time, "
+            "then say which are in stock. Answer in one sentence."
+        ),
+        why="several tool results in a row, so a cut can land inside the run",
+    ),
+    Scenario(
+        name="empty_result",
+        task=(
+            "Find orders for nobody@example.com. If there are none, say so plainly "
+            "in one sentence and do not invent an order."
+        ),
+        why="a tool returning an empty payload, which no fixture here has produced",
+    ),
+    Scenario(
+        name="long_loop",
+        task=(
+            "For each of ORD-5000, ORD-5003, ORD-5006 and ORD-5009, fetch the full "
+            "detail and report the order total. Then give the sum. Be terse."
+        ),
+        why="~15 steps, so trimming and capping both engage repeatedly",
+    ),
+)
+
+
 # ---------------------------------------------------------------------------
 # Measurement
 # ---------------------------------------------------------------------------
@@ -190,6 +236,8 @@ class Arm:
     answer: str = ""
     tool_calls: list[str] = field(default_factory=list)
     bodies: list[dict[str, Any]] = field(default_factory=list)
+    originals: list[dict[str, Any]] = field(default_factory=list)
+    violations: list[str] = field(default_factory=list)
 
     @property
     def cost_usd(self) -> float:
@@ -224,13 +272,59 @@ def _instrument(client: AsyncOpenAI, arm: Arm) -> AsyncOpenAI:
     return client
 
 
-async def run_arm(label: str, optimizer: Optimizer | None) -> Arm:
+def _record_originals(client: AsyncOpenAI, arm: Arm) -> AsyncOpenAI:
+    """Capture each request as the agent built it, before any stage runs.
+
+    Wrapped *outside* the optimizer, where ``_instrument`` sits inside it. The
+    preservation rules need both sides: a conversation with no user message is
+    not by itself wrong -- a caller may legitimately send one -- and only the
+    before-and-after pair shows that the library created it.
+    """
+    original_create = client.chat.completions.create
+
+    async def recording(**kwargs: Any) -> Any:
+        arm.originals.append(kwargs)
+        return await original_create(**kwargs)
+
+    client.chat.completions.create = recording  # type: ignore[method-assign]
+    return client
+
+
+def _check_invariants(arm: Arm) -> None:
+    """Run every captured rewrite past the invariant checker.
+
+    Pairs by index: the Nth request the agent made produced the Nth request
+    that went out, unless a cache served it, in which case there is no outgoing
+    request and nothing to compare -- ``zip`` stops at the shorter list.
+
+    Imports the adapter's own kwargs translator rather than writing a second
+    one. A second parser is exactly how the two would come to disagree about
+    what a request is, which is the failure that made a whole benchmark run
+    measure nothing when ``tools`` went unsent from one of two sites.
+    """
+    from optio_optimize.adapters.openai_agents import _request_from_kwargs
+    from optio_optimize.invariants import check, check_transform
+
+    # strict=False on purpose: a cache hit produces an original with no
+    # outgoing body, so the two lists legitimately differ in length.
+    for index, (original, sent) in enumerate(zip(arm.originals, arm.bodies, strict=False)):
+        before, after = _request_from_kwargs(original), _request_from_kwargs(sent)
+        for violation in (*check(after), *check_transform(before, after)):
+            arm.violations.append(
+                f"call {index + 1}: {violation.rule} at message {violation.message_index}"
+            )
+
+
+async def run_arm(label: str, scenario: Scenario, optimizer: Optimizer | None) -> Arm:
     """Run the agent once, optimized or not."""
     arm = Arm(label=label)
     client = AsyncOpenAI()
+    # Order matters: _instrument sits closest to the network and sees what went
+    # out; _record_originals sits outermost and sees what the agent asked for.
     _instrument(client, arm)
     if optimizer is not None:
         wrap_openai_client(client, optimizer)
+    _record_originals(client, arm)
 
     agent = Agent(
         name="support",
@@ -239,13 +333,14 @@ async def run_arm(label: str, optimizer: Optimizer | None) -> Arm:
         model=OpenAIChatCompletionsModel(model=MODEL, openai_client=client),
         model_settings=ModelSettings(),
     )
-    result = await Runner.run(agent, TASK, max_turns=12)
+    result = await Runner.run(agent, scenario.task, max_turns=20)
     arm.answer = str(result.final_output)
     for item in result.new_items:
         raw = getattr(item, "raw_item", None)
         name = getattr(raw, "name", None)
         if name:
             arm.tool_calls.append(str(name))
+    _check_invariants(arm)
     return arm
 
 
@@ -276,6 +371,18 @@ def report(arms: list[Arm]) -> None:
         print(f"\n[{arm.label}] tools: {arm.tool_calls}")
         print(f"[{arm.label}] answer: {arm.answer.strip()[:400]}")
 
+    failed = [arm for arm in arms if arm.violations]
+    for arm in failed:
+        print(f"\n[{arm.label}] INVARIANT VIOLATIONS:")
+        for violation in arm.violations:
+            print(f"    {violation}")
+    if failed:
+        raise SystemExit(
+            "\nThe library broke a rule it must not break. This is the check that "
+            "would have caught the 2026-07-29 trim_history defect on the spot, "
+            "rather than after four runs and a wire dump."
+        )
+
 
 async def main() -> None:
     """Run the requested arms and print the comparison."""
@@ -291,41 +398,69 @@ async def main() -> None:
         action="store_true",
         help="print the message list of every provider call, as sent",
     )
+    parser.add_argument(
+        "--scenario",
+        default="support",
+        help=f"one of {', '.join(s.name for s in SCENARIOS)}, or 'all'",
+    )
     args = parser.parse_args()
 
     if not os.environ.get("OPENAI_API_KEY"):
         raise SystemExit("OPENAI_API_KEY is not set")
 
+    if args.scenario == "all":
+        chosen = SCENARIOS
+    else:
+        chosen = tuple(s for s in SCENARIOS if s.name == args.scenario)
+        if not chosen:
+            raise SystemExit(
+                f"unknown scenario {args.scenario!r}; "
+                f"choose from {', '.join(s.name for s in SCENARIOS)} or 'all'"
+            )
+
     disabled = frozenset(n for n in args.disable.split(",") if n)
-    arms: list[Arm] = []
-    if args.arm in {"off", "both"}:
-        arms.append(await run_arm("unoptimized", None))
-    optimizer: Optimizer | None = None
-    if args.arm in {"on", "both"}:
-        optimizer = Optimizer(disabled_stages=disabled)
-        arms.append(await run_arm(f"optimized{'-' + args.disable if disabled else ''}", optimizer))
+    suffix = f"-{args.disable}" if disabled else ""
+    everything: list[Arm] = []
 
-    if args.dump:
-        for arm in arms:
-            print(f"\n===== {arm.label}: what went on the wire =====")
-            for index, body in enumerate(arm.bodies):
-                print(f"  call {index + 1}: {len(body.get('messages') or [])} messages")
-                for message in body.get("messages") or []:
-                    content = message.get("content")
-                    text = content if isinstance(content, str) else repr(content)
-                    marker = "  <-- TOOL_CALLS" if message.get("tool_calls") else ""
-                    print(
-                        f"    {message.get('role'):<10} {len(text or ''):>6} chars  "
-                        f"{(text or '')[:70]!r}{marker}"
-                    )
+    for scenario in chosen:
+        print(f"\n######## scenario: {scenario.name} -- {scenario.why}")
+        arms: list[Arm] = []
+        if args.arm in {"off", "both"}:
+            arms.append(await run_arm("unoptimized", scenario, None))
+        optimizer: Optimizer | None = None
+        if args.arm in {"on", "both"}:
+            optimizer = Optimizer(disabled_stages=disabled)
+            arms.append(await run_arm(f"optimized{suffix}", scenario, optimizer))
 
-    report(arms)
-    if optimizer is not None:
-        print()
-        for line in optimizer.report.summary_lines(MODEL):
-            print(line)
-        for finding in optimizer.findings:
-            print(f"finding: {finding}")
+        if args.dump:
+            _dump(arms)
+        report(arms)
+        if optimizer is not None:
+            print()
+            for line in optimizer.report.summary_lines(MODEL):
+                print(line)
+            for finding in optimizer.findings:
+                print(f"finding: {finding}")
+        everything.extend(arms)
+
+    total = sum(arm.cost_usd for arm in everything)
+    print(f"\ntotal spend across {len(chosen)} scenario(s): ${total:.5f}")
+
+
+def _dump(arms: list[Arm]) -> None:
+    """Print the message list of every provider call, as sent."""
+    for arm in arms:
+        print(f"\n===== {arm.label}: what went on the wire =====")
+        for index, body in enumerate(arm.bodies):
+            print(f"  call {index + 1}: {len(body.get('messages') or [])} messages")
+            for message in body.get("messages") or []:
+                content = message.get("content")
+                text = content if isinstance(content, str) else repr(content)
+                marker = "  <-- TOOL_CALLS" if message.get("tool_calls") else ""
+                print(
+                    f"    {message.get('role'):<10} {len(text or ''):>6} chars  "
+                    f"{(text or '')[:70]!r}{marker}"
+                )
 
 
 if __name__ == "__main__":
