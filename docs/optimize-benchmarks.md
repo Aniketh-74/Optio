@@ -690,6 +690,61 @@ unchanged against 24 of 50, because it keeps more context between cuts. That
 reframes the option as a cost-versus-fidelity dial rather than a free win, which
 is not how it is usually presented.
 
+## Fixing what the measurements found
+
+Two of the three losses above turned out to be mechanical rather than inherent.
+
+### `concision`: the instruction was evicting more than it cost
+
+The stage appended its sentence to the **system prompt** — the exact region a
+provider's prefix cache covers. That does not merely add the instruction's
+tokens; it shifts everything below the edit out of the provider's 128-token
+block alignment, so already-cached content falls back to full rate.
+
+`multi_turn_chat`, 12 requests, full-rate input tokens:
+
+| placement | input | cached | **full-rate** |
+|---|---|---|---|
+| baseline (stage off) | 19,242 | 16,640 | **2,602** |
+| appended to system prompt | 19,446 | 16,384 | **3,062** |
+| appended to last message | 19,446 | 17,152 | **2,294** |
+
+The instruction is 204 tokens either way. On the system prompt it moved **460**
+tokens into the full-rate column, because 256 tokens of already-cached prompt
+were evicted — the eviction cost more than the instruction did. On the tail
+message it evicts nothing, because the last message was never cacheable.
+
+**The stage is now roughly cost-neutral where it has nothing to do, which is the
+correct behaviour and is not evidence that it helps.** It stays off: no workload
+here produces a padded reply, so the case it exists for remains unmeasured.
+
+### `trim_history`: a front cut discards the cheapest and most valuable context
+
+Two earlier measurements point the same way and neither is obvious alone:
+
+* The provider's cached region is `system + oldest turns` — it matches the
+  longest common prefix, and the oldest turns are the part that never changes.
+  87% of `multi_turn_chat`'s prompt was served from cache before trimming
+  touched it.
+* The recall audit found load-bearing facts — a budget, a deadline, a decision —
+  stated in the *first* exchange and never repeated. `trim_history` recovered
+  **0 of 4**.
+
+So a front cut throws away the tokens that were already billing at half rate
+*and* the ones most likely to matter, in one move. `anchor_turns` keeps both
+ends and takes the middle instead. Live, `multi_turn_chat_long` at 50 turns:
+
+| mode | input ↓ | cost ↓ | identical replies |
+|---|---|---|---|
+| slide (`anchor_turns=0`) | 34.1% | **26.3%** | 25/50 |
+| anchored (`anchor_turns=2`) | 31.7% | 16.8% | **50/50** |
+
+**Anchoring trades about nine points of saving for every reply matching the
+unoptimized baseline.** It does not make trimming free — it converts a quality
+loss into a smaller, visible cost. Off by default, because changing what every
+existing caller sends on one good measurement of one workload is what ADR-016
+exists to prevent.
+
 ## Overhead
 
 Our own cost per request, measured with the provider's time excluded:

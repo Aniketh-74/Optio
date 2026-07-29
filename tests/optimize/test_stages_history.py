@@ -19,9 +19,18 @@ from optio_optimize.types import LLMRequest, Message
 pytestmark = pytest.mark.optimize
 
 
-def _ctx(*, recent_turns: int = 6, compact_at_tokens: int | None = None) -> StageContext:
+def _ctx(
+    *,
+    recent_turns: int = 6,
+    compact_at_tokens: int | None = None,
+    anchor_turns: int = 0,
+) -> StageContext:
     return StageContext(
-        config=OptimizeConfig(recent_turns=recent_turns, compact_at_tokens=compact_at_tokens),
+        config=OptimizeConfig(
+            recent_turns=recent_turns,
+            compact_at_tokens=compact_at_tokens,
+            anchor_turns=anchor_turns,
+        ),
         counter=HeuristicCounter(),
     )
 
@@ -305,3 +314,91 @@ class TestAppendThenCompact:
     def test_a_non_positive_threshold_is_rejected(self) -> None:
         with pytest.raises(OptimizeConfigError, match="must be positive"):
             OptimizeConfig(compact_at_tokens=0)
+
+
+class TestAnchoredTrimming:
+    """``anchor_turns``: keep the oldest turns, drop the middle.
+
+    Motivated by two of this project's own measurements pointing the same way.
+    The provider's cached region is ``system + oldest turns`` -- 87% of
+    ``multi_turn_chat``'s prompt was served from cache before trimming touched
+    it -- and the recall audit found load-bearing facts stated in the first
+    exchange and never repeated, of which plain trimming recovered 0 of 4. A
+    front cut discards the cheapest and the most valuable context at once.
+
+    Live on ``multi_turn_chat_long``: sliding saved 26.3% of cost with 25/50
+    replies unchanged; anchoring saved 16.8% with **50/50** unchanged.
+    """
+
+    def test_the_oldest_turns_survive_the_cut(self) -> None:
+        stage = TrimHistoryStage()
+        request = _chat(turns=20)
+        original = request.messages
+
+        result = stage.before(request, _ctx(recent_turns=6, anchor_turns=2))
+        kept = result.request.messages
+
+        assert original[1] in kept, "the opening user message was dropped"
+        assert original[2] in kept, "the opening reply was dropped"
+
+    def test_the_recent_turns_still_survive(self) -> None:
+        stage = TrimHistoryStage()
+        request = _chat(turns=20)
+
+        result = stage.before(request, _ctx(recent_turns=6, anchor_turns=2))
+
+        assert request.messages[-1] in result.request.messages
+
+    def test_the_middle_is_what_goes(self) -> None:
+        stage = TrimHistoryStage()
+        request = _chat(turns=20)
+
+        result = stage.before(request, _ctx(recent_turns=6, anchor_turns=2))
+
+        # question 5 sits in neither the opening pair nor the last six messages.
+        assert not any("question 5" in m.content for m in result.request.messages)
+
+    def test_the_gap_is_declared_rather_than_hidden(self) -> None:
+        # A model shown the opening of a conversation followed by a much later
+        # exchange, with no sign anything is missing, will try to reconcile the
+        # jump. One line is cheap insurance.
+        stage = TrimHistoryStage()
+
+        result = stage.before(_chat(turns=20), _ctx(recent_turns=6, anchor_turns=2))
+
+        assert any("omitted" in m.content for m in result.request.messages)
+
+    def test_a_plain_slide_declares_no_gap(self) -> None:
+        # Without an anchor the conversation reads as though it started later,
+        # which is coherent on its own and needs no marker.
+        stage = TrimHistoryStage()
+
+        result = stage.before(_chat(turns=20), _ctx(recent_turns=6, anchor_turns=0))
+
+        assert not any("omitted" in m.content for m in result.request.messages)
+
+    def test_it_still_saves_tokens(self) -> None:
+        stage = TrimHistoryStage()
+
+        anchored = stage.before(_chat(turns=20), _ctx(recent_turns=6, anchor_turns=2))
+        slid = stage.before(_chat(turns=20), _ctx(recent_turns=6, anchor_turns=0))
+
+        assert anchored.saved_input_tokens > 0
+        assert anchored.saved_input_tokens < slid.saved_input_tokens, (
+            "anchoring keeps more than sliding, so it must claim less"
+        )
+
+    def test_a_conversation_too_short_to_anchor_is_left_alone(self) -> None:
+        stage = TrimHistoryStage()
+        request = _chat(turns=4)  # 8 history messages, window 6 + anchor 2
+
+        assert stage.before(request, _ctx(recent_turns=6, anchor_turns=2)).note == ""
+
+    def test_the_default_is_still_a_plain_sliding_window(self) -> None:
+        # Anchoring changes what every caller sends. One good measurement on
+        # one workload is not grounds for that (ADR-016).
+        assert OptimizeConfig().anchor_turns == 0
+
+    def test_a_negative_anchor_is_rejected(self) -> None:
+        with pytest.raises(OptimizeConfigError, match="cannot be negative"):
+            OptimizeConfig(anchor_turns=-1)

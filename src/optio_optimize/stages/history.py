@@ -16,10 +16,23 @@ from typing import TYPE_CHECKING
 
 from optio_optimize.stages.base import Fidelity, Stage, StageResult
 from optio_optimize.tokens import count_message, count_request
+from optio_optimize.types import Message
 
 if TYPE_CHECKING:
     from optio_optimize.stages.base import StageContext
     from optio_optimize.types import LLMRequest
+
+
+#: Stands in for the turns an anchored cut removed. Without it the model sees
+#: the opening of a conversation followed by a much later exchange and no sign
+#: that anything is missing, which invites it to invent the connection. One
+#: line is cheap insurance against that.
+_ELISION = Message(
+    role="system",
+    content=(
+        "[earlier turns omitted to stay within budget; the opening and the recent turns are shown]"
+    ),
+)
 
 
 class TrimHistoryStage(Stage):
@@ -62,6 +75,32 @@ class TrimHistoryStage(Stage):
     now confirmed a second time. Simulated figures in this package should be
     read as a reason to run ``--live`` on your own traffic, never as the
     number to ship.
+
+    **Anchoring: keep the oldest turns and drop the middle.** With
+    ``anchor_turns`` set, the cut takes the middle of the conversation instead
+    of its front. Two independent measurements motivate it and neither is
+    obvious alone: the provider's cached region is ``system + oldest turns``
+    (87% of ``multi_turn_chat``'s prompt was served from cache before trimming
+    touched it), and the recall audit found load-bearing facts stated in the
+    *first* exchange and never repeated, of which plain trimming recovered 0
+    of 4. A front cut therefore discards the cheapest and the most valuable
+    context in one move.
+
+    Measured live, ``multi_turn_chat_long`` at 50 turns, ``gpt-4o-mini``:
+
+    ==========================  ==============  ================
+    mode                        cost reduction  identical replies
+    ==========================  ==============  ================
+    slide (``anchor_turns=0``)  26.3%           25/50
+    anchored (``anchor_turns=2``) 16.8%         **50/50**
+    ==========================  ==============  ================
+
+    So anchoring trades roughly nine points of saving for *every* reply
+    matching the unoptimized baseline. It does not make trimming free; it
+    converts a quality loss into a smaller, visible cost. Off by default
+    (``anchor_turns=0``) because that is a change to what every existing
+    caller sends, and one good measurement on one workload is not grounds for
+    it -- see ADR-016.
 
     **Never starts the kept window on an orphaned tool result.** A ``tool``
     role message is, by every major provider's protocol, always the direct
@@ -126,7 +165,8 @@ class TrimHistoryStage(Stage):
 
         history = messages[boundary:]
         keep = ctx.config.recent_turns
-        if len(history) <= keep:
+        anchor = ctx.config.anchor_turns
+        if len(history) <= keep + anchor:
             return self.declines(request)
 
         cut = len(history) - keep
@@ -136,16 +176,55 @@ class TrimHistoryStage(Stage):
         # the assistant that issued them stays paired with all of them.
         while cut > 0 and history[cut].role == "tool":
             cut -= 1
-        if cut == 0:
+        if cut <= anchor:
             # Extending all the way back to the start of history means no cut
             # point is safe -- the whole thing is one tool exchange. Trimming
             # nothing is correct here, not a bug.
             return self.declines(request)
 
-        dropped, kept = history[:cut], history[cut:]
+        # The anchor keeps the *oldest* turns and drops the middle instead of
+        # the front. Two measurements point the same way and neither is
+        # obvious on its own:
+        #
+        # * The provider's cached region is `system + oldest turns` -- it
+        #   matches the longest common prefix, and the oldest turns are the
+        #   part that never changes. A front cut therefore discards precisely
+        #   the tokens that were already billing at half rate, and shifts
+        #   everything below it out of the provider's 128-token block
+        #   alignment. Measured: 87% of `multi_turn_chat`'s prompt was served
+        #   from cache before trimming touched it.
+        # * The recall audit found load-bearing facts -- a budget, a deadline,
+        #   a decision -- stated in the *first* exchange and never repeated.
+        #   `trim_history` recalled 0 of 4 of them; those are exactly the turns
+        #   a front cut removes first.
+        #
+        # So a front cut throws away the cheapest and the most valuable
+        # context in the same move. Anchoring keeps both ends and takes the
+        # middle, where the filler is.
+        anchored = history[:anchor]
+        dropped, kept = history[anchor:cut], history[cut:]
+
+        # A cut that now starts on an orphaned tool result is the same hazard
+        # the front cut already guards against, one boundary further in.
+        while dropped and kept and kept[0].role == "tool":
+            dropped, kept = dropped[:-1], (dropped[-1], *kept)
+        if not dropped:
+            return self.declines(request)
+
         saved = sum(count_message(m, ctx.counter, request.model) for m in dropped)
+        gap = (
+            (_ELISION,)
+            if anchored
+            # The marker is only needed when a gap is actually created. A pure
+            # front cut leaves a conversation that reads as though it started
+            # later, which is coherent; an anchored cut leaves one that jumps,
+            # and a model told nothing was removed will try to reconcile the
+            # jump instead of accepting it.
+            else ()
+        )
         return StageResult(
-            request=request.with_messages(messages[:boundary] + kept),
+            request=request.with_messages(messages[:boundary] + anchored + gap + kept),
             saved_input_tokens=saved,
-            note=f"dropped {len(dropped)} of {len(history)} turns",
+            note=f"dropped {len(dropped)} of {len(history)} turns"
+            + (f", anchored on the first {len(anchored)}" if anchored else ""),
         )

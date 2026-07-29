@@ -23,6 +23,26 @@ be promoted to the top level deliberately.
 
 ### Fixed
 
+- **`concision`'s instruction was evicting more cache than it cost.** It appended to the *system
+  prompt* — the exact region a provider's prefix cache covers — so it did not merely add its own
+  204 tokens, it shifted everything below the edit out of OpenAI's 128-token block alignment and
+  knocked 256 tokens of already-cached prompt back to full rate. Measured on `multi_turn_chat`,
+  full-rate input: 2,602 baseline → **3,062** with the instruction on the system prompt →
+  **2,294** with it on the last message. The last message changes every request anyway, so
+  nothing there was cacheable and nothing below it can be displaced. The stage is now roughly
+  cost-neutral on a workload where it has nothing to do, which is correct behaviour and is *not*
+  evidence that it helps — it stays off, because no workload here produces a padded reply.
+- **`trim_history` cut from the front, which discards the cheapest and most valuable context at
+  once.** Two earlier measurements point the same way: the provider's cached region is
+  `system + oldest turns` (87% of `multi_turn_chat` was cache-served before trimming touched it),
+  and the recall audit found load-bearing facts stated in the first exchange and never repeated,
+  of which trimming recovered 0 of 4. New `anchor_turns` keeps both ends and takes the middle.
+  Live on `multi_turn_chat_long` at 50 turns: sliding saved 26.3% of cost with 25/50 replies
+  unchanged; anchoring saved 16.8% with **50/50** unchanged. It converts a quality loss into a
+  smaller, visible cost rather than making trimming free. Defaults to `0` — unchanged shipped
+  behaviour — because one good measurement on one workload is not grounds for changing what every
+  caller sends (ADR-016). An elision marker declares the gap, since a model shown a conversation's
+  opening followed by a much later exchange will otherwise try to reconcile the jump.
 - **The live benchmark harness was not sending tool schemas at all.** `OpenAIProvider` forwarded
   messages, `max_tokens`, `temperature` and `response_format` — and not `tools`. So `mcp_agent`,
   the workload built specifically to measure tool cost, sent zero tools: `minify_tools` reported

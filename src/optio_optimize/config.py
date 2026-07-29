@@ -33,6 +33,19 @@ DEFAULT_LATENCY_BUDGET_MS = 100.0
 #: most of the value in recent history is.
 DEFAULT_RECENT_TURNS = 6
 
+#: Oldest turns an anchored trim keeps. **Zero: the shipped behaviour is
+#: unchanged**, because changing what every existing caller's prompt looks
+#: like on a hypothesis is what ADR-016 exists to prevent -- and the hypothesis
+#: here is a good one, which is exactly when that rule is easiest to break.
+#:
+#: The suggested setting when turning it on is ``2``: one user message and one
+#: reply, the opening exchange where a task statement, a budget figure or a
+#: constraint gets stated and then never repeated. Small on purpose -- the
+#: anchor is billed on every request, and its whole argument is that it sits
+#: inside the region a provider already serves from cache, so it should be
+#: nearly free where it works at all.
+DEFAULT_ANCHOR_TURNS = 0
+
 #: Similarity above which a semantic cache entry counts as a hit -- against
 #: whatever :data:`~optio_optimize.stages.semantic_cache.SimilarityFn` the
 #: stage is given, cosine or otherwise. 0.97 is deliberately severe. Public
@@ -93,6 +106,12 @@ class OptimizeConfig:
         chain_of_draft: Ask for shorthand reasoning rather than prose.
             Lossy: it changes how the model reasons, not how it presents.
         recent_turns: Turns kept verbatim by trimming and summarization.
+        anchor_turns: Oldest turns trimming must keep, dropping the middle
+            instead of the front. The cached region a provider serves is
+            ``system + oldest turns``, and the recall audit found the facts
+            that matter stated in the first exchange -- so a front cut
+            discards the cheapest and most valuable context at once. ``0``
+            restores the plain sliding window.
         compact_at_tokens: Hold trimming until the prompt reaches this size,
             then cut in one go ("append-then-compact"). ``None`` trims every
             turn. The trade is a stable prompt head -- and so a live provider
@@ -156,6 +175,7 @@ class OptimizeConfig:
     chain_of_draft: bool = False
 
     recent_turns: int = DEFAULT_RECENT_TURNS
+    anchor_turns: int = DEFAULT_ANCHOR_TURNS
     compact_at_tokens: int | None = None
     max_tool_result_tokens: int = DEFAULT_MAX_TOOL_RESULT_TOKENS
     semantic_threshold: float = DEFAULT_SEMANTIC_THRESHOLD
@@ -171,6 +191,11 @@ class OptimizeConfig:
         Raises:
             OptimizeConfigError: On any invalid or incoherent setting.
         """
+        if self.anchor_turns < 0:
+            raise OptimizeConfigError(
+                f"anchor_turns cannot be negative, got {self.anchor_turns}. "
+                "Use 0 for a plain sliding window."
+            )
         if self.recent_turns < 1:
             raise OptimizeConfigError(
                 f"recent_turns must be at least 1, got {self.recent_turns}. "

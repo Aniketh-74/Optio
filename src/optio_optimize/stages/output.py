@@ -185,6 +185,20 @@ class ConcisionStage(Stage):
     who *want* the follow-up offer -- consumer chat products often do -- should
     leave this off, which is why it is a named stage rather than folded into
     another.
+
+    **Still off by default, and the live numbers say why.** On
+    ``multi_turn_chat`` the model already answers in about twelve tokens: there
+    is no preamble, no self-summary, no follow-up offer, and so nothing for
+    this stage to remove. Placing the instruction on the tail message made it
+    roughly cost-neutral there -- full-rate input 2,602 -> 2,294 against a
+    baseline of 2,602, where the system-prompt placement had pushed it to
+    3,062 -- which is the right behaviour for a stage with nothing to do, and
+    is not evidence that it helps. On ``unique_questions`` the prompts are one
+    line long, so the instruction alone more than doubles the input.
+
+    **Nothing in this suite measures the case this stage exists for**, because
+    no workload here produces a padded reply. Until one does, the published
+    30-50% figure remains the paper's and not this library's.
     """
 
     fidelity = Fidelity.SHAPED
@@ -210,17 +224,31 @@ class ConcisionStage(Stage):
 
     def before(self, request: LLMRequest, ctx: StageContext) -> StageResult:
         """Add the anti-scaffolding instruction to a free-form chat request."""
-        if request.response_format is not None or request.tools:
+        if request.response_format is not None or request.tools or not request.messages:
             return self.declines(request)
         if any(self.INSTRUCTION in m.content for m in request.messages):
             return self.declines(request)
 
         messages = list(request.messages)
         instruction_cost = ctx.counter.count_text(self.INSTRUCTION, request.model)
-        if messages and messages[0].role == "system":
-            messages[0] = messages[0].with_content(f"{messages[0].content}\n{self.INSTRUCTION}")
-        else:
-            messages.insert(0, Message(role="system", content=self.INSTRUCTION))
+
+        # **Appended to the last message, never to the system prompt**, and the
+        # difference is worth more than the instruction costs.
+        #
+        # The system prompt is the region a provider's prefix cache actually
+        # covers. Editing it does not merely add the instruction's tokens -- it
+        # shifts every token below the edit out of the provider's 128-token
+        # block alignment, so previously-cached content falls back to full
+        # rate. Measured live on `multi_turn_chat`: appending to the system
+        # message added 204 tokens of instruction and moved **460** tokens into
+        # the full-rate column, because 256 tokens of already-cached prompt
+        # were evicted. The eviction cost more than the instruction did.
+        #
+        # The last message changes on every request anyway, so nothing there
+        # was ever cacheable and nothing below it can be displaced. The
+        # instruction also lands nearer the generation point, which is where
+        # models follow an output-format instruction most reliably.
+        messages[-1] = messages[-1].with_content(f"{messages[-1].content}\n\n{self.INSTRUCTION}")
 
         return StageResult(
             request=request.with_messages(tuple(messages)),
