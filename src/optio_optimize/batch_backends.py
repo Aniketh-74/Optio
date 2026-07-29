@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from optio_optimize.batch import BatchState
 from optio_optimize.types import LLMResponse
-from optio_optimize.wire import anthropic_body, openai_body
+from optio_optimize.wire import anthropic_body, openai_body, response_from_anthropic_message
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -272,7 +272,7 @@ class AnthropicBatchBackend:
             kind = str(getattr(result, "type", "errored"))
             message = getattr(result, "message", None)
             if kind == "succeeded" and message is not None:
-                responses[custom_id] = _response_from_anthropic_message(message)
+                responses[custom_id] = response_from_anthropic_message(message)
             else:
                 # The result *type* only -- `succeeded`, `errored`, `canceled`,
                 # `expired`. Same reasoning as the OpenAI backend: an error body
@@ -330,30 +330,4 @@ def _response_from_openai_body(body: dict[str, Any]) -> LLMResponse:
         cached_input_tokens=int(details.get("cached_tokens", 0) or 0),
         model=str(body.get("model", "")),
         finish_reason=choices[0].get("finish_reason"),
-    )
-
-
-def _response_from_anthropic_message(message: Any) -> LLMResponse:
-    """Normalize an Anthropic message from a batch result.
-
-    ``input_tokens`` is reported *excluding* cache reads, so the cached count is
-    added back to make the field mean the same thing it means everywhere else in
-    this package: total prompt tokens, of which some were discounted. The
-    synchronous adapter does the same, and getting it wrong in one place would
-    make batched and synchronous totals silently incomparable.
-    """
-    usage = getattr(message, "usage", None)
-    cached = int(getattr(usage, "cache_read_input_tokens", 0) or 0) if usage else 0
-    text = "".join(
-        str(getattr(block, "text", ""))
-        for block in getattr(message, "content", [])
-        if getattr(block, "type", "") == "text"
-    )
-    return LLMResponse(
-        content=text,
-        input_tokens=(int(getattr(usage, "input_tokens", 0)) + cached) if usage else 0,
-        output_tokens=int(getattr(usage, "output_tokens", 0)) if usage else 0,
-        cached_input_tokens=cached,
-        model=str(getattr(message, "model", "")),
-        finish_reason=getattr(message, "stop_reason", None),
     )

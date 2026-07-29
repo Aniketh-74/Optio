@@ -279,34 +279,54 @@ def _rules(request: LLMRequest) -> set[str]:
 
 class TestAWellFormedRequestPasses:
     def test_a_plain_chat(self):
-        assert check(_request(
-            Message(role="system", content="terse"),
-            Message(role="user", content="hi"),
-        )) == ()
+        assert (
+            check(
+                _request(
+                    Message(role="system", content="terse"),
+                    Message(role="user", content="hi"),
+                )
+            )
+            == ()
+        )
 
     def test_a_real_agent_loop(self):
-        assert check(_request(
-            Message(role="system", content="terse"),
-            Message(role="user", content="do the thing"),
-            _calls("c1"),
-            _result("c1"),
-        )) == ()
+        assert (
+            check(
+                _request(
+                    Message(role="system", content="terse"),
+                    Message(role="user", content="do the thing"),
+                    _calls("c1"),
+                    _result("c1"),
+                )
+            )
+            == ()
+        )
 
     def test_parallel_tool_calls(self):
-        assert check(_request(
-            Message(role="user", content="do two things"),
-            _calls("c1", "c2"),
-            _result("c1"),
-            _result("c2"),
-        )) == ()
+        assert (
+            check(
+                _request(
+                    Message(role="user", content="do two things"),
+                    _calls("c1", "c2"),
+                    _result("c1"),
+                    _result("c2"),
+                )
+            )
+            == ()
+        )
 
     def test_a_call_still_awaiting_its_result(self):
         # Mid-loop this is normal: the call has been made, the result has not
         # come back. Only the tool-result-to-call direction is checkable.
-        assert check(_request(
-            Message(role="user", content="go"),
-            _calls("c1"),
-        )) == ()
+        assert (
+            check(
+                _request(
+                    Message(role="user", content="go"),
+                    _calls("c1"),
+                )
+            )
+            == ()
+        )
 
 
 class TestAbsoluteRules:
@@ -649,9 +669,7 @@ class TestPreservationRules:
     def test_dropping_the_system_prompt_is_flagged(self):
         original = _agent_loop()
         stripped = tuple(m for m in original.messages if m.role != "system")
-        assert SYSTEM_PROMPT_DROPPED in _transform_rules(
-            original, original.with_messages(stripped)
-        )
+        assert SYSTEM_PROMPT_DROPPED in _transform_rules(original, original.with_messages(stripped))
 
     def test_reordering_surviving_messages_is_flagged(self):
         original = _agent_loop(steps=2)
@@ -678,7 +696,9 @@ class TestPreservationRules:
 
     def test_adding_a_tool_is_flagged(self):
         original = replace(_agent_loop(), tools=(_SEARCH,))
-        assert TOOLS_ADDED in _transform_rules(original, replace(original, tools=(_SEARCH, _LOOKUP)))
+        assert TOOLS_ADDED in _transform_rules(
+            original, replace(original, tools=(_SEARCH, _LOOKUP))
+        )
 
     def test_pruning_an_uncalled_tool_passes(self):
         original = replace(_agent_loop(steps=0), tools=(_SEARCH, _LOOKUP))
@@ -700,7 +720,9 @@ class TestPreservationRules:
             tools=(_SEARCH, _LOOKUP),
             temperature=0.0,
         )
-        assert CALLED_TOOL_REMOVED in _transform_rules(original, replace(original, tools=(_SEARCH,)))
+        assert CALLED_TOOL_REMOVED in _transform_rules(
+            original, replace(original, tools=(_SEARCH,))
+        )
 
 
 def _damaged_drop_user(original: LLMRequest) -> LLMRequest:
@@ -1096,9 +1118,7 @@ class TestItStillWorks:
 
 class TestThePrefixMarkerBecomesCacheControl:
     @pytest.mark.asyncio
-    async def test_a_long_system_prompt_gets_a_cache_control_breakpoint(
-        self, async_client, fake
-    ):
+    async def test_a_long_system_prompt_gets_a_cache_control_breakpoint(self, async_client, fake):
         # The entire reason this adapter exists. PrefixCacheStage only places a
         # marker above MIN_PREFIX_TOKENS (1024), so the prompt must be big.
         wrap_anthropic_client(async_client, prefix_cache=True, exact_cache=False)
@@ -1417,7 +1437,9 @@ def _request_from_kwargs(kwargs: dict[str, Any]) -> LLMRequest:
         messages=tuple(messages),
         max_tokens=kwargs.get("max_tokens") if isinstance(kwargs.get("max_tokens"), int) else None,
         tools=tuple(kwargs.get("tools") or ()),
-        temperature=kwargs["temperature"] if isinstance(kwargs.get("temperature"), (int, float)) else None,
+        temperature=kwargs["temperature"]
+        if isinstance(kwargs.get("temperature"), (int, float))
+        else None,
         stop=tuple(kwargs.get("stop_sequences") or ()),
     )
 
@@ -1462,9 +1484,7 @@ def _kwargs_from_request(sent: LLMRequest, original: dict[str, Any]) -> dict[str
     system_blocks, turns = wire.anthropic_system_and_turns(sent)
     kwargs = dict(original)
     kwargs["model"] = sent.model
-    kwargs["messages"] = [
-        _param_from_message(m) for m in sent.messages if m.role != "system"
-    ]
+    kwargs["messages"] = [_param_from_message(m) for m in sent.messages if m.role != "system"]
     if system_blocks:
         kwargs["system"] = system_blocks
     elif "system" in kwargs:
@@ -1634,7 +1654,8 @@ class TestBothClientsAgree:
         # send different bodies for the same input, this catches it.
         sync_fake, async_fake = _FakeAnthropic(), _FakeAnthropic()
         sync = Anthropic(
-            api_key="test", http_client=httpx.Client(transport=httpx.MockTransport(sync_fake.handler))
+            api_key="test",
+            http_client=httpx.Client(transport=httpx.MockTransport(sync_fake.handler)),
         )
         asynchronous = AsyncAnthropic(
             api_key="test",
@@ -1750,7 +1771,9 @@ def _check_invariants(arm: Arm) -> None:
     for index, (original, sent) in enumerate(zip(arm.originals, arm.bodies)):
         before, after = _request_from_kwargs(original), _request_from_kwargs(sent)
         for violation in (*check(after), *check_transform(before, after)):
-            arm.violations.append(f"call {index + 1}: {violation.rule} at message {violation.message_index}")
+            arm.violations.append(
+                f"call {index + 1}: {violation.rule} at message {violation.message_index}"
+            )
 ```
 
 Call it at the end of `run_arm`, just before `return arm`:
@@ -1940,9 +1963,9 @@ MODEL = "claude-haiku-4-5-20251001"
 #: models, so the system prompt must clear that floor for the stage to do
 #: anything at all. A measurement below the floor would report "no benefit"
 #: and mean "no test".
-SYSTEM_PROMPT = (
-    "You are a meticulous claims adjuster. Follow these rules exactly. "
-) + ("Consider precedent, documentation, and the policy schedule before answering. " * 120)
+SYSTEM_PROMPT = ("You are a meticulous claims adjuster. Follow these rules exactly. ") + (
+    "Consider precedent, documentation, and the policy schedule before answering. " * 120
+)
 
 TURNS = [
     "Is water damage from a burst pipe covered?",

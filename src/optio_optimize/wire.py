@@ -29,6 +29,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from optio_optimize.types import LLMResponse
+
 if TYPE_CHECKING:
     from optio_optimize.types import LLMRequest
 
@@ -211,3 +213,39 @@ def anthropic_body(
     if request.stop:
         body["stop_sequences"] = list(request.stop)
     return body
+
+
+def response_from_anthropic_message(message: Any) -> LLMResponse:
+    """Normalize an Anthropic message into this package's response model.
+
+    ``input_tokens`` is reported by Anthropic *excluding* cache reads, so the
+    cached count is added back to make the field mean what it means everywhere
+    else here: total prompt tokens, of which some were discounted. Getting that
+    wrong in one place would make batched, synchronous and adapter totals
+    silently incomparable.
+
+    Attribute access rather than isinstance narrowing, because the two callers
+    receive structurally identical objects from different SDK code paths --
+    a batch result entry's ``.message`` and a live ``messages.create`` return.
+
+    Args:
+        message: An ``anthropic.types.Message`` or a batch result's message.
+
+    Returns:
+        The normalized response.
+    """
+    usage = getattr(message, "usage", None)
+    cached = int(getattr(usage, "cache_read_input_tokens", 0) or 0) if usage else 0
+    text = "".join(
+        str(getattr(block, "text", ""))
+        for block in getattr(message, "content", [])
+        if getattr(block, "type", "") == "text"
+    )
+    return LLMResponse(
+        content=text,
+        input_tokens=(int(getattr(usage, "input_tokens", 0)) + cached) if usage else 0,
+        output_tokens=int(getattr(usage, "output_tokens", 0)) if usage else 0,
+        cached_input_tokens=cached,
+        model=str(getattr(message, "model", "")),
+        finish_reason=getattr(message, "stop_reason", None),
+    )
