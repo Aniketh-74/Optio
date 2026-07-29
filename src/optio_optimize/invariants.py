@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from optio_optimize.types import LLMRequest, Message
 
@@ -54,6 +54,33 @@ EMPTY_CONTENT_UNATTACHED = "empty_content_unattached"
 
 #: Nothing but system messages. There is no question to answer.
 NO_ANSWERABLE_MESSAGE = "no_answerable_message"
+
+#: The library removed the caller's last user message. In a chat the first user
+#: turn is a stale question; in an agent loop it is *the task*, and every
+#: message after it is the agent's own tool traffic. Providers accept a
+#: conversation with no user message, so this fails silently: the model infers
+#: a task from the evidence and answers a question nobody asked. Measured on
+#: 2026-07-29 -- the trimmed arm cost *more* than the correct one, because a
+#: model that has lost the question writes longer.
+LAST_USER_MESSAGE_DROPPED = "last_user_message_dropped"
+
+#: The library removed a system message. ``PrefixCacheStage`` depends on the
+#: system prompt being present on every call.
+SYSTEM_PROMPT_DROPPED = "system_prompt_dropped"
+
+#: Surviving messages came back in a different relative order. No stage claims
+#: to reorder messages -- ``reorder_context`` moves blocks *inside* one
+#: message's content.
+MESSAGE_ORDER_CHANGED = "message_order_changed"
+
+#: The library added a tool the caller did not supply. Stages may remove and
+#: minify; inventing a capability is not something any of them claim.
+TOOLS_ADDED = "tools_added"
+
+#: The library removed a tool the conversation shows the agent already calling.
+#: ``PruneToolsStage``'s stated promise; unverified against a real loop until
+#: this rule existed.
+CALLED_TOOL_REMOVED = "called_tool_removed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,3 +178,129 @@ def _identity(message: Message) -> tuple[Any, ...]:
     so ``is`` comparison finds nothing.
     """
     return (message.role, message.content, message.name)
+
+
+def check_transform(original: LLMRequest, sent: LLMRequest) -> tuple[Violation, ...]:
+    """Return every preservation rule broken between ``original`` and ``sent``.
+
+    The rules here cannot be expressed about a single request. A caller whose
+    history legitimately opens with an assistant message is not malformed, and
+    the library is right to pass it through untouched -- it is wrong to
+    *create* one. Only the pair distinguishes those.
+
+    Args:
+        original: The request as the caller supplied it.
+        sent: The request after every stage ran.
+
+    Returns:
+        Violations; empty when the rewrite preserved everything it must.
+    """
+    violations: list[Violation] = []
+    violations.extend(_check_survivors(original, sent))
+    violations.extend(_check_order(original, sent))
+    violations.extend(_check_tools(original, sent))
+    return tuple(violations)
+
+
+def _check_survivors(original: LLMRequest, sent: LLMRequest) -> list[Violation]:
+    """The system prompt and the last user turn must both survive."""
+    violations: list[Violation] = []
+    sent_identities = {_identity(m) for m in sent.messages}
+
+    last_user = _last_index(original.messages, "user")
+    if last_user is not None and _identity(original.messages[last_user]) not in sent_identities:
+        violations.append(Violation(LAST_USER_MESSAGE_DROPPED, last_user, "user"))
+
+    for index, message in enumerate(original.messages):
+        if message.role == "system" and _identity(message) not in sent_identities:
+            violations.append(Violation(SYSTEM_PROMPT_DROPPED, index, "system"))
+    return violations
+
+
+def _check_order(original: LLMRequest, sent: LLMRequest) -> list[Violation]:
+    """Messages that survived must appear in their original relative order.
+
+    Only survivors are compared. Inserting a message -- ``TrimHistoryStage``'s
+    elision marker, ``StructuredOutputStage``'s system message -- is allowed,
+    and so is rewriting one, which makes it a non-survivor under
+    :func:`_identity` and simply drops out of the comparison.
+
+    **A subsequence walk, not an index lookup.** The obvious implementation
+    builds ``{identity: index}`` and compares positions, and it is wrong,
+    because message identities are not unique: in an agent loop every
+    tool-calling assistant message is ``("assistant", "", None)`` and every
+    terse tool result carries the same text. A dict keeps only the last index
+    of each, so an untouched request reads as reordered. Caught by this
+    module's own "an untouched request passes" test on the first run.
+
+    Walking instead means two byte-identical messages are interchangeable,
+    which is also the right answer: swapping them changes nothing a provider
+    or a model could observe.
+    """
+    messages = original.messages
+    cursor = 0
+    for message in sent.messages:
+        identity = _identity(message)
+        found = next(
+            (i for i in range(cursor, len(messages)) if _identity(messages[i]) == identity),
+            None,
+        )
+        if found is not None:
+            cursor = found + 1
+        elif any(_identity(m) == identity for m in messages[:cursor]):
+            # Present in the original, but only *before* where we have already
+            # walked to -- so it moved backwards past a message that survived.
+            return [Violation(MESSAGE_ORDER_CHANGED)]
+        # Otherwise it is not in the original at all: an inserted message,
+        # which is allowed and does not advance the cursor.
+    return []
+
+
+def _check_tools(original: LLMRequest, sent: LLMRequest) -> list[Violation]:
+    """Tools may be removed or minified, never added; called ones must stay."""
+    violations: list[Violation] = []
+    before, after = _tool_names(original.tools), _tool_names(sent.tools)
+
+    if after - before:
+        violations.append(Violation(TOOLS_ADDED))
+    for name in _called_tool_names(original.messages) & before:
+        if name not in after:
+            violations.append(Violation(CALLED_TOOL_REMOVED))
+    return violations
+
+
+def _tool_names(tools: Iterable[dict[str, Any]]) -> frozenset[str]:
+    """Tool names, reading both the OpenAI-nested and Anthropic-flat shapes."""
+    names: set[str] = set()
+    for tool in tools:
+        function = tool.get("function")
+        source = function if isinstance(function, dict) else tool
+        name = source.get("name")
+        if isinstance(name, str):
+            names.add(name)
+    return frozenset(names)
+
+
+def _called_tool_names(messages: Sequence[Message]) -> frozenset[str]:
+    """Names of tools the conversation shows the agent already invoking."""
+    names: set[str] = set()
+    for message in messages:
+        raw = message.extra.get("tool_calls")
+        if not isinstance(raw, (list, tuple)):
+            continue
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            function = entry.get("function")
+            name = function.get("name") if isinstance(function, dict) else entry.get("name")
+            if isinstance(name, str):
+                names.add(name)
+    return frozenset(names)
+
+
+def _last_index(messages: Sequence[Message], role: str) -> int | None:
+    """Index of the last message with ``role``, or ``None``."""
+    for index in range(len(messages) - 1, -1, -1):
+        if messages[index].role == role:
+            return index
+    return None
