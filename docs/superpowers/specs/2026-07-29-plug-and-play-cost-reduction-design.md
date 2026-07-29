@@ -79,7 +79,7 @@ that a reader of one can read the other.
 ```python
 from optio_optimize.adapters.anthropic import wrap_anthropic_client
 
-wrap_anthropic_client(client)   # client.messages.create is now optimized
+wrap_anthropic_client(client)  # client.messages.create is now optimized
 ```
 
 Decisions:

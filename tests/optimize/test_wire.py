@@ -16,7 +16,8 @@ fails this file until someone decides which it is.
 
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import dataclass, fields
+from typing import Any, ClassVar
 
 import pytest
 
@@ -252,3 +253,73 @@ def test_routing_model_overrides_the_request_model():
     # bill against what the backend actually submits to.
     body = openai_body(_full_request(), "gpt-4o")
     assert body["model"] == "gpt-4o"
+
+
+# --------------------------------------------------------------------------
+# Anthropic response translation.
+# --------------------------------------------------------------------------
+
+
+# Dataclasses rather than hand-written __init__s: the translator reads these by
+# attribute, so a structural stand-in is enough, and a dataclass gives mypy a
+# typed constructor for free. The same shape test_batch_backends.py uses.
+@dataclass
+class _Usage:
+    input_tokens: int = 300
+    output_tokens: int = 40
+    cache_read_input_tokens: int = 100
+
+
+@dataclass
+class _Block:
+    text: str
+    type: str = "text"
+
+
+@dataclass
+class _Msg:
+    content: list[Any]
+    usage: _Usage | None
+    model: str = "claude-haiku-4-5"
+    stop_reason: str = "end_turn"
+
+
+def test_anthropic_response_adds_cache_reads_into_input_tokens():
+    # Anthropic reports input_tokens EXCLUDING cache reads. Everywhere else in
+    # this package input_tokens means "total prompt tokens, some discounted",
+    # so getting this wrong in one place makes batched, synchronous and
+    # adapter totals silently incomparable.
+    from optio_optimize.wire import response_from_anthropic_message
+
+    response = response_from_anthropic_message(_Msg([_Block("hi")], _Usage()))
+
+    assert response.input_tokens == 400
+    assert response.cached_input_tokens == 100
+    assert response.billable_input_tokens == 300
+    assert response.content == "hi"
+    assert response.finish_reason == "end_turn"
+
+
+def test_anthropic_response_joins_only_text_blocks():
+    from optio_optimize.wire import response_from_anthropic_message
+
+    class _ToolBlock:
+        type = "tool_use"
+        text = "SHOULD NOT APPEAR"
+
+    message = _Msg([_Block("part one "), _ToolBlock(), _Block("part two")], _Usage())
+    assert response_from_anthropic_message(message).content == "part one part two"
+
+
+def test_anthropic_response_survives_missing_usage():
+    from optio_optimize.wire import response_from_anthropic_message
+
+    class _NoUsage:
+        content: ClassVar[list[_Block]] = [_Block("hi")]
+        usage = None
+        model = "claude-haiku-4-5"
+        stop_reason = "end_turn"
+
+    response = response_from_anthropic_message(_NoUsage())
+    assert response.input_tokens == 0
+    assert response.output_tokens == 0
