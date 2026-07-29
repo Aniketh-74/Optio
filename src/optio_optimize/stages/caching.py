@@ -147,9 +147,30 @@ class PrefixCacheStage(Stage):
       nothing there -- it costs nothing either, but a user should not expect a
       discount they were already getting.
     * *Explicit* (Anthropic): nothing is cached without a ``cache_control``
-      breakpoint. The marker this stage places is the difference between a ~90%
-      input discount and none, worth roughly 30% of total spend on a long
-      conversation.
+      breakpoint. The marker this stage places is the difference between a
+      discounted prefix and none. **Measured live 2026-07-30**, six-turn
+      conversation on ``claude-haiku-4-5`` through
+      :func:`~optio_optimize.adapters.anthropic.wrap_anthropic_client`, this
+      stage isolated: 23,023 of 30,113 input tokens served from cache (76.5%)
+      against 0 for the disabled arm, for a **53.7% cost reduction on
+      identical token counts** -- 30,111 versus 30,113 sent, which is noise.
+      The stage avoids no tokens at all and halves the bill by changing what
+      they cost. This figure replaces an earlier "roughly 30%" that had no run
+      behind it, and is the only correction in this package that moved a claim
+      *up*.
+
+    **The floor is model-dependent and :data:`MIN_PREFIX_TOKENS` does not know
+    it.** 1024 is Anthropic's general minimum; the smallest models, Haiku among
+    them, require 2048. Below a model's real floor the provider ignores the
+    breakpoint, so this stage places a marker, reports the work in the savings
+    ledger, and buys nothing -- precisely the "work done for no effect" the
+    check below exists to prevent, just at the wrong threshold. The first run of
+    the measurement above hit exactly this: a 1,449-token prompt cleared the
+    constant, missed the model's floor, and reported zero cache reads in both
+    arms, which reads like "the stage does nothing" and meant "the stage was
+    never given a chance". Recorded in ``docs/optimize-benchmarks.md``; making
+    the floor model-aware changes behaviour for every Anthropic caller and is
+    not being done in passing.
 
     Worth stating plainly because the benchmark got it wrong first: modelling
     only the explicit style credited this library with a 36.3% saving on

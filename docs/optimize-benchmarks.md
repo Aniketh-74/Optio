@@ -833,6 +833,62 @@ Worth recording, because these were the live-fire risks:
 - The adapter round-tripped real `tool_calls`/`tool_call_id` pairs through
   three- and four-step loops.
 
+## `prefix_cache` on Anthropic: the first measurement it has ever had
+
+`PrefixCacheStage` describes itself as the largest lossless saving in the
+package, and until 2026-07-30 that rested on a vendor's published discount
+rather than a run. On OpenAI the stage is worth nothing — automatic caching
+lands on both A/B arms, which is how a simulated 36.3% became a live −1.8%. So
+Anthropic is the only place it can pay, and until `wrap_anthropic_client`
+shipped there was no way for a user to reach it outside the benchmark module.
+
+Measured live on `claude-haiku-4-5`, six-turn conversation over a stable
+system prompt, `prefix_cache` isolated with every other stage off (ADR-015
+rule 2), disabled arm first so residual server-side cache favours the baseline:
+
+| arm | input | cache-served | cache writes | output | cost |
+|---|---|---|---|---|---|
+| `prefix_cache` off | 30,111 | 0 | 0 | 1,623 | $0.03823 |
+| `prefix_cache` on | 30,113 | **23,023** (76.5%) | 5,487 | 1,662 | **$0.01770** |
+
+**53.7% cost reduction, on identical token counts.** The two arms sent the same
+prompt — 30,111 against 30,113, a two-token difference that is noise — so the
+stage avoided no tokens whatsoever and cut the bill by more than half purely by
+changing the price of tokens that were sent anyway. That is the mechanism the
+stage has always claimed, measured for the first time.
+
+It also **beats its own docstring**, which said "roughly 30% of total spend on
+a long conversation". The claim has been corrected upward and now cites this
+run. Worth noting that the correction runs the opposite way to every other one
+in this document, all of which took a number down.
+
+### The measurement failed once first, and the failure is the interesting part
+
+The first attempt reported **zero cache reads in both arms** and a 0.4% cost
+difference — which reads exactly like "the stage does nothing". It was not a
+negative result. It was no test at all.
+
+`MIN_PREFIX_TOKENS = 1024` in `caching.py` is Anthropic's general floor, but
+**the smallest models require 2048**, and Haiku is one of them. The system
+prompt was 1,449 tokens: above the constant, below the model's real floor. The
+marker was placed, was reported in the savings ledger, went out on the wire
+correctly — and the provider ignored it. Lengthening the prompt to ~3,600
+tokens produced the table above.
+
+Two consequences worth carrying:
+
+- **A zero-read result must be diagnosed, not believed.** The script now prints
+  `cache_creation_input_tokens` separately, because reads-0/writes-0 means the
+  breakpoint was ignored while reads-0/writes-positive means the prefix is
+  changing between calls. Those are different bugs and the totals cannot tell
+  them apart.
+- **`MIN_PREFIX_TOKENS` is wrong for Haiku-class models** and is recorded here
+  as an open defect rather than fixed in passing. Below 2048 on those models the
+  stage places a marker, reports the work, and buys nothing — "work done for no
+  effect", which is the outcome the stage's own comment says it exists to avoid.
+  Making the floor model-aware changes behaviour for every Anthropic caller and
+  deserves its own measured decision.
+
 ## Batch dispatch: a weaker class of evidence, stated as such (ADR-017)
 
 Every number above this line is an A/B run: the same workload twice, once with a
