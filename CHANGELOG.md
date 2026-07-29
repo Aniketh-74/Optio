@@ -21,7 +21,65 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`semantic_cache` stored entries under text no lookup could ever produce, so its hit rate was
+  silently zero whenever any later stage rewrote the prompt.** `before` looked up the request as
+  it received it; `after` re-derived the key from the request *as sent* -- every later stage's
+  rewrites included. The two only agreed when every message-rewriting stage happened to decline,
+  which is why the defect survived a live audit and a dedicated unit-test file: the workloads that
+  exercised the cache had no schema for `structured_output`, no surplus history for `trim_history`,
+  and no duplicate blocks for `deduplicate`, so nothing between the lookup and the provider ever
+  touched the messages. Adding `concision`, which fires on any plain chat request, took the
+  adversarial audit's collision count from several to zero in one commit and exposed it.
+  `before` now carries the text it looked up through `ctx.scratch`, which is what `exact_cache`
+  has always done. Pinned by a pipeline test parameterized over both cache stages, and the
+  parameterization is the point -- the one that was correct and the one that was not are now held
+  to the same contract. Verified by re-introducing the old `after` in memory: 1 provider call with
+  the fix, 2 without.
+- **`--strict-fidelity` ran two SHAPED stages inside the arm that exists to prove output is
+  byte-identical**, and reported 6 divergent responses on `mcp_agent` rather than failing. The
+  flag turned the reshaping stages off through a hand-written list of their names, which was
+  complete when written and stopped being complete the moment `minify_tools` and
+  `cap_tool_results` landed. It now derives the set from each stage's own declared `Fidelity`
+  through a new `Optimizer.stages` accessor, so a stage added tomorrow is excluded without anyone
+  remembering to exclude it. Stages named explicitly on the command line stay exempt, so
+  `--isolate` can still measure the single `ALTERED` stage it was asked to.
+
 ### Added
+
+- **Tool cost, the largest evidenced gap in this package, is now addressable.** Anthropic's
+  published figure for deferring tool loading is an 85% token reduction with MCP-evaluation
+  accuracy rising 49% -> 74%, and until now nothing here touched `request.tools` at all -- two
+  stages read the field only to decline. Three new stages: `minify_tools` (SHAPED, on by default)
+  strips `title`/`$schema`/`$id`/`$comment` wherever they appear, which is text the model never
+  reads; `cap_tool_results` (SHAPED, on by default) bounds a single tool result at 2000 tokens
+  with an explicit truncation notice; `prune_tools` (ALTERED, off by default) drops tools sharing
+  no vocabulary with the conversation, never one already called, and never below three.
+- **A workload that can measure any of that.** Every existing workload sends `tools=()`, so under
+  ADR-016's third test no claim about the three stages above could ship. `mcp_agent` carries ten
+  MCP-shaped schemas -- the generated form, with a `title` on every property -- across ten steps,
+  with one deliberately oversized tool result at step 3 so the run contains the shape
+  `cap_tool_results` exists for. Simulated: `cap_tool_results` 7,831 tokens, `minify_tools` 3,240.
+- **`concision`, and it ships off despite being SHAPED.** The stage suppresses the three habits
+  the field literature puts at 30-50% of chat output tokens: restating the question, summarizing
+  its own reply, offering follow-ups. It also spends input tokens on every request to do it, and
+  only a live run can see the other half of that trade. The adversarial `unique_questions`
+  workload measured the visible half alone at **-14.8% token reduction** -- a cost *increase*.
+  Defaulting it on because a published figure says 30-50% is exactly what ADR-016 forbids.
+- **[ADR-016](docs/design/adr/adr-016-the-in-scope-test-for-a-cost-technique.md): the in-scope
+  test for a cost technique.** The boundary between what this package implements and what it
+  merely recommends had twice been drawn on *effort* -- "that needs a queue", "that needs a team"
+  -- which is a reason for a caller to decline a technique and never a reason for a library to,
+  since absorbing that work is what a library is for. Effort is retired as a test and replaced by
+  three: expressible against the normalized types, requiring no infrastructure the caller must
+  operate, and measurable by the bench harness. Includes the full classification of the field's
+  techniques, including the seven that stay out and why.
+- **`LLMRequest` gains `stop` and `thinking_budget`,** both included in the exact-cache key. A
+  stop sequence halts generation mid-answer and cannot be compensated for the way `max_tokens`
+  is, since a completion stopped at a delimiter reports `finish_reason="stop"` exactly as a
+  finished one does. No stage *sets* `stop`: a correct stop sequence is a fact about the caller's
+  output format, and a stage that guessed would silently truncate answers.
 
 - **`summarize_history` has live evidence for the first time: it works, and it still loses.**
   This stage had zero live data *by design* -- `Optimizer` refuses to enable it without a

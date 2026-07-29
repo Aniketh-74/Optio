@@ -41,6 +41,11 @@ DEFAULT_MAX_ENTRIES = 128
 #: reasoning: model outputs do not spoil, but the world they describe does.
 DEFAULT_TTL_SECONDS = 3600.0
 
+#: Scratch key under which ``before`` carries the text it looked up, so
+#: ``after`` stores the entry under the same text rather than under whatever
+#: later stages rewrote the request into. See :meth:`SemanticCacheStage.before`.
+_LOOKUP_TEXT = "semantic_cache_lookup_text"
+
 
 @dataclass(frozen=True, slots=True)
 class _Entry:
@@ -133,6 +138,18 @@ class SemanticCacheStage(Stage):
         if not request.is_deterministic:
             return self.declines(request)
 
+        # Carried to `after` rather than recomputed there. `after` receives the
+        # request *as sent* -- every later stage's rewrites included -- so
+        # recomputing would store an entry under text no lookup will ever
+        # produce, and the cache would silently never hit again. `concision`
+        # made that concrete: it appends an instruction to plain chat requests,
+        # which took this stage's hit rate to zero on workloads it had been
+        # serving. `ExactCacheStage` has always stashed its key for the same
+        # reason; this stage did not, and the defect was latent only because
+        # every other message-rewriting stage happened to decline on the
+        # workloads that exercised it.
+        ctx.scratch[_LOOKUP_TEXT] = _prompt_text(request)
+
         threshold = ctx.config.semantic_threshold
         match = self._best_match(_prompt_text(request), request.model, threshold)
         if match is None:
@@ -152,10 +169,12 @@ class SemanticCacheStage(Stage):
         """Store a fresh, real response for future near-matches."""
         if response.served_from is not None or not request.is_deterministic:
             return
+        stored = ctx.scratch.get(_LOOKUP_TEXT)
+        text = stored if isinstance(stored, str) else _prompt_text(request)
         with self._lock:
             self._entries.append(
                 _Entry(
-                    text=_prompt_text(request),
+                    text=text,
                     model=request.model,
                     response=response,
                     stored_at=time.monotonic(),

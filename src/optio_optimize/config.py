@@ -20,6 +20,7 @@ from dataclasses import dataclass, fields
 from typing import Any
 
 from optio_optimize.errors import OptimizeConfigError
+from optio_optimize.stages.tools import DEFAULT_MAX_TOOL_RESULT_TOKENS
 
 #: Whole-pipeline latency ceiling in milliseconds (ADR-013 rule 4). Deliberately
 #: not SC-5's 5 ms: that budget exists because optio is pure overhead, whereas a
@@ -62,9 +63,19 @@ class OptimizeConfig:
             fitted; it can truncate one that would have run longer.
         structured_output: Prefer JSON schemas over free prose where the caller
             supplied one.
+        concision: Suppress chat scaffolding -- restatement, self-summary,
+            follow-up offers. Costs a one-sentence instruction in input to
+            save output billed at several times the rate.
+        minify_tools: Strip annotation-only keys from tool schemas. Removes
+            nothing the model reads.
+        cap_tool_results: Bound how many tokens one tool result may add. An
+            oversized payload is billed again on every later turn, so the
+            ceiling protects the rest of the conversation, not just this call.
         trim_history: Drop old turns beyond the recent window.
         deduplicate: Remove repeated identical context blocks.
         prune_retrieval: Drop retrieved chunks that do not earn their tokens.
+        prune_tools: Drop tools unrelated to the conversation. **Lossy**: a
+            wrongly-pruned tool is a capability the agent silently loses.
         summarize_history: Replace old turns with a model-written summary.
             Lossy: costs a small model call, and the summary is not the history.
         route_models: Send easy steps to a cheaper model. Lossy.
@@ -73,6 +84,7 @@ class OptimizeConfig:
             prompt. Off by default; see :data:`DEFAULT_SEMANTIC_THRESHOLD`.
         compress_prompt: Drop low-information tokens from the prompt. Lossy.
         recent_turns: Turns kept verbatim by trimming and summarization.
+        max_tool_result_tokens: Ceiling applied by ``cap_tool_results``.
         semantic_threshold: Similarity required for a semantic cache hit.
         latency_budget_ms: Whole-pipeline ceiling.
         context_limit: Model context window, when the caller knows it.
@@ -96,19 +108,34 @@ class OptimizeConfig:
     prefix_cache: bool = True
     adaptive_max_tokens: bool = True
     structured_output: bool = True
+    minify_tools: bool = True
 
     # Bounded-risk -- on by default, they drop context rather than invent it.
     trim_history: bool = True
     deduplicate: bool = True
     prune_retrieval: bool = True
+    cap_tool_results: bool = True
+
+    # Off by default despite being SHAPED, because the saving is unproven.
+    # `concision` spends input tokens on every request to save output tokens on
+    # some, and only a live run can see the second half of that trade. The
+    # adversarial `unique_questions` workload measured the visible half alone:
+    # -14.8% token reduction, i.e. a cost *increase*, because twelve short
+    # prompts each grew by a one-sentence instruction and the simulator returns
+    # a fixed-length completion no instruction can shorten. Turning it on by
+    # default on the strength of a published 30-50% figure is exactly what
+    # ADR-016 says not to do; it flips only if `--live` says it should.
+    concision: bool = False
 
     # Lossy -- off by default (ADR-013).
     summarize_history: bool = False
     route_models: bool = False
     semantic_cache: bool = False
     compress_prompt: bool = False
+    prune_tools: bool = False
 
     recent_turns: int = DEFAULT_RECENT_TURNS
+    max_tool_result_tokens: int = DEFAULT_MAX_TOOL_RESULT_TOKENS
     semantic_threshold: float = DEFAULT_SEMANTIC_THRESHOLD
     latency_budget_ms: float = DEFAULT_LATENCY_BUDGET_MS
     context_limit: int | None = None
@@ -144,6 +171,11 @@ class OptimizeConfig:
             raise OptimizeConfigError(
                 f"latency_budget_ms must be positive, got {self.latency_budget_ms}"
             )
+        if self.max_tool_result_tokens < 1:
+            raise OptimizeConfigError(
+                f"max_tool_result_tokens must be at least 1, got {self.max_tool_result_tokens}. "
+                "Zero would erase every tool result rather than bounding it."
+            )
         if self.context_limit is not None and self.context_limit < 1:
             raise OptimizeConfigError(f"context_limit must be positive, got {self.context_limit}")
         if self.route_models and not self.cheap_model:
@@ -163,6 +195,7 @@ class OptimizeConfig:
             "route_models": self.route_models,
             "semantic_cache": self.semantic_cache,
             "compress_prompt": self.compress_prompt,
+            "prune_tools": self.prune_tools,
         }
         return tuple(sorted(name for name, on in candidates.items() if on))
 

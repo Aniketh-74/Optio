@@ -1,8 +1,9 @@
 """Stage registry and pipeline ordering.
 
 Order is a correctness property, not a preference, so it lives here rather than
-being left to the caller. The sequence below is derived from four rules --
-a fourth joined the original three once the ``ALTERED``-tier stages landed:
+being left to the caller. The sequence below is derived from five rules --
+the fourth joined the original three once the ``ALTERED``-tier stages landed,
+and the fifth once tool schemas became something a stage rewrites:
 
 1. **Cheapest exit first.** A cache hit makes every later stage's work wasted,
    so lookups run before any transformation -- ``exact_cache`` before
@@ -23,6 +24,12 @@ a fourth joined the original three once the ``ALTERED``-tier stages landed:
    nothing" trap ``config.py`` exists to prevent. Trimming still runs
    afterward as a backstop; by then the window is already within
    ``recent_turns`` and it correctly declines.
+5. **``minify_tools`` precedes ``prune_tools``.** Both rewrite ``tools``, and
+   running the lossless one first means the lossy one scores and reports
+   against schemas that are already as small as they can safely be -- so its
+   claimed saving is what pruning itself bought, not what minifying had
+   already banked. Reversed, the same tokens would be counted twice, once by
+   each stage, and the report would overstate the pair.
 
 Getting this wrong is subtle rather than loud: marking a prefix before trimming
 still *works*, it just silently never hits the provider cache. The same is true
@@ -37,11 +44,20 @@ from optio_optimize.stages.base import Stage, StageContext, StageResult
 from optio_optimize.stages.caching import ExactCacheStage, PrefixCacheStage
 from optio_optimize.stages.compress import CompressPromptStage
 from optio_optimize.stages.history import TrimHistoryStage
-from optio_optimize.stages.output import AdaptiveMaxTokensStage, StructuredOutputStage
+from optio_optimize.stages.output import (
+    AdaptiveMaxTokensStage,
+    ConcisionStage,
+    StructuredOutputStage,
+)
 from optio_optimize.stages.retrieval import DeduplicateStage, PruneRetrievalStage
 from optio_optimize.stages.routing import RouteModelsStage
 from optio_optimize.stages.semantic_cache import SemanticCacheStage
 from optio_optimize.stages.summarize import SummarizeHistoryStage
+from optio_optimize.stages.tools import (
+    CapToolResultsStage,
+    MinifyToolsStage,
+    PruneToolsStage,
+)
 
 if TYPE_CHECKING:
     from optio_optimize.config import OptimizeConfig
@@ -50,11 +66,15 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AdaptiveMaxTokensStage",
+    "CapToolResultsStage",
     "CompressPromptStage",
+    "ConcisionStage",
     "DeduplicateStage",
     "ExactCacheStage",
+    "MinifyToolsStage",
     "PrefixCacheStage",
     "PruneRetrievalStage",
+    "PruneToolsStage",
     "RouteModelsStage",
     "SemanticCacheStage",
     "Stage",
@@ -98,8 +118,13 @@ def build_stages(
 
     # 2. Output-side shaping. Independent of prompt size, so position is free;
     #    placed before trimming to keep the prompt-shrinking stages adjacent.
+    #    structured_output and concision are mutually exclusive by their own
+    #    guards -- one requires a schema or tools, the other declines when
+    #    either is present -- so their relative order is free too.
     if config.structured_output:
         stages.append(StructuredOutputStage())
+    if config.concision:
+        stages.append(ConcisionStage())
     if config.adaptive_max_tokens:
         stages.append(AdaptiveMaxTokensStage())
 
@@ -124,8 +149,14 @@ def build_stages(
         stages.append(DeduplicateStage())
     if config.prune_retrieval:
         stages.append(PruneRetrievalStage())
+    if config.cap_tool_results:
+        stages.append(CapToolResultsStage(max_tokens=config.max_tool_result_tokens))
+    if config.minify_tools:
+        stages.append(MinifyToolsStage())
     if config.compress_prompt:
         stages.append(CompressPromptStage())
+    if config.prune_tools:
+        stages.append(PruneToolsStage())
 
     # 5. Prefix marking. Must be last so it sees the final message list.
     if config.prefix_cache:

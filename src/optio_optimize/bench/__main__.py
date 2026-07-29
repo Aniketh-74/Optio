@@ -392,16 +392,6 @@ def main(argv: list[str] | None = None) -> int:
         summarize_history="summarize_history" in stages,
         route_models="route_models" in stages,
         cheap_model=cheap_model,
-        # Under --strict-fidelity, drop the reshaping stages so the run is a
-        # clean test of the identical-output promise. trim_history, dedup and
-        # pruning are SHAPED too (they change what the prompt says, not just
-        # its price) and default on, so they need the same treatment or this
-        # flag stops proving what it claims to.
-        structured_output=not others_off,
-        adaptive_max_tokens=not others_off,
-        trim_history=not others_off,
-        deduplicate=not others_off,
-        prune_retrieval=not others_off,
         # exact_cache and prefix_cache are lossless and default on. Under
         # --isolate they still have to go: exact_cache resolving a repeat
         # before compress_prompt ever sees it is precisely how the earlier
@@ -409,6 +399,28 @@ def main(argv: list[str] | None = None) -> int:
         exact_cache=not args.isolate,
         prefix_cache=not args.isolate,
     )
+
+    from optio_optimize.optimizer import Optimizer
+    from optio_optimize.stages.base import Fidelity
+
+    if others_off:
+        # Which stages reshape output is **derived from their own declared
+        # fidelity**, never enumerated here. A hand-written list of the SHAPED
+        # stages is complete exactly until the next one lands, and this flag's
+        # entire job is to be complete: `minify_tools` and `cap_tool_results`
+        # shipped SHAPED and default-on, were absent from the list that used to
+        # live here, and so ran inside the identical-only arm -- which reported
+        # 6 divergent responses in the run that is supposed to prove there are
+        # none. Anything the caller named explicitly is exempt, so --isolate can
+        # still run the one ALTERED stage it was asked to measure.
+        probe = Optimizer(config, summarizer=summarizer)
+        reshaping = frozenset(
+            stage.name
+            for stage in probe.stages
+            if stage.fidelity is not Fidelity.IDENTICAL and stage.name not in stages
+        )
+        config = replace(config, disabled_stages=config.disabled_stages | reshaping)
+
     if args.isolate:
         print(f"isolated run: {', '.join(sorted(stages))} only, every other stage off.\n")
 
@@ -416,11 +428,8 @@ def main(argv: list[str] | None = None) -> int:
     # with `structured_output` on and demanding identical responses would fail
     # every JSON workload for doing exactly what it was asked to do -- which is
     # what the first version of this check did.
-    from optio_optimize.optimizer import Optimizer
-    from optio_optimize.stages.base import Fidelity
-
     active = Optimizer(config, summarizer=summarizer)
-    shaping = [s.name for s in active._pipeline.stages if s.fidelity is not Fidelity.IDENTICAL]
+    shaping = [s.name for s in active.stages if s.fidelity is not Fidelity.IDENTICAL]
     strict = not shaping
     if shaping:
         print(f"note: {', '.join(shaping)} may reshape replies; divergence is expected.")

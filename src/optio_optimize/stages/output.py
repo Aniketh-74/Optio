@@ -3,7 +3,12 @@
 Input tokens get most of the attention because prompts are visibly large, but
 output tokens are billed at three to five times the input rate on every major
 provider. A 200-token reduction in output is worth more than a 600-token
-reduction in input on GPT-4o. These two stages are where that leverage is.
+reduction in input on GPT-4o. These three stages are where that leverage is.
+
+Two of them work by *adding* input tokens to remove output ones. That is a good
+trade at a 4-6x price ratio and a bad one if the added instruction grows, which
+is why both instructions are a single sentence and why the cost of each is
+netted off the saving it claims rather than reported gross.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from optio_optimize.stages.base import Fidelity, Stage, StageResult
+from optio_optimize.types import Message
 
 if TYPE_CHECKING:
     from optio_optimize.stages.base import StageContext
@@ -141,8 +147,6 @@ class StructuredOutputStage(Stage):
         if messages and messages[0].role == "system":
             messages[0] = messages[0].with_content(f"{messages[0].content}\n{self.INSTRUCTION}")
         else:
-            from optio_optimize.types import Message
-
             messages.insert(0, Message(role="system", content=self.INSTRUCTION))
 
         # Typical preamble suppressed, minus what the instruction costs. A
@@ -153,6 +157,75 @@ class StructuredOutputStage(Stage):
             request=request.with_messages(tuple(messages)),
             saved_output_tokens=net,
             note="preamble suppressed",
+        )
+
+
+class ConcisionStage(Stage):
+    """Suppress the conversational scaffolding around a chat reply.
+
+    Chat-tuned models wrap an answer in three habits the caller is billed for
+    and rarely wants: restating the question, summarizing the reply they just
+    wrote, and offering follow-up help. The field literature puts this at
+    **30-50% of output tokens in chat products**, and output is billed at four
+    to six times the input rate on most frontier models -- which is what makes
+    a fifteen-token instruction a good trade against it.
+
+    That trade is the entire design constraint here, and it is why
+    :attr:`INSTRUCTION` is one sentence. The instruction is paid on every
+    request, in input tokens, whether or not the model was going to pad the
+    reply. A paragraph explaining *how* to be concise would be self-defeating
+    in a way that is genuinely easy to miss, because the cost lands in a
+    different column from the saving.
+
+    Declines when a schema or tools are present:
+    :class:`StructuredOutputStage` already covers that case with a stricter
+    instruction, and stacking both would pay twice for one effect.
+
+    ``SHAPED``. The answer survives; the packaging around it does not. Callers
+    who *want* the follow-up offer -- consumer chat products often do -- should
+    leave this off, which is why it is a named stage rather than folded into
+    another.
+    """
+
+    fidelity = Fidelity.SHAPED
+
+    #: Appended to the system prompt. Names the three specific habits rather
+    #: than saying "be concise", which models reliably interpret as license to
+    #: shorten the *answer* -- the one part that should not shrink.
+    INSTRUCTION = "Do not restate the question, summarize your own reply, or offer further help."
+
+    #: Conservative estimate of scaffolding suppressed per reply, in output
+    #: tokens, before the instruction's own input cost is netted off. Lower
+    #: than :class:`StructuredOutputStage`'s equivalent on purpose: that stage
+    #: suppresses a known wrapper around a known structure, while this one
+    #: suppresses a habit whose size varies with the model and the question.
+    #: The live A/B suite is the authority on the real figure; this is what the
+    #: report says until it runs.
+    ESTIMATED_SCAFFOLDING_TOKENS = 25
+
+    @property
+    def name(self) -> str:
+        """Stable identifier."""
+        return "concision"
+
+    def before(self, request: LLMRequest, ctx: StageContext) -> StageResult:
+        """Add the anti-scaffolding instruction to a free-form chat request."""
+        if request.response_format is not None or request.tools:
+            return self.declines(request)
+        if any(self.INSTRUCTION in m.content for m in request.messages):
+            return self.declines(request)
+
+        messages = list(request.messages)
+        instruction_cost = ctx.counter.count_text(self.INSTRUCTION, request.model)
+        if messages and messages[0].role == "system":
+            messages[0] = messages[0].with_content(f"{messages[0].content}\n{self.INSTRUCTION}")
+        else:
+            messages.insert(0, Message(role="system", content=self.INSTRUCTION))
+
+        return StageResult(
+            request=request.with_messages(tuple(messages)),
+            saved_output_tokens=max(0, self.ESTIMATED_SCAFFOLDING_TOKENS - instruction_cost),
+            note="chat scaffolding suppressed",
         )
 
 

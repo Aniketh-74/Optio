@@ -21,8 +21,11 @@ pinned by a test below:
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
+from optio_optimize import Optimizer
 from optio_optimize.bench import WORKLOADS, SimulatedProvider, compare
 from optio_optimize.bench.providers import SpendGuard
 from optio_optimize.config import OptimizeConfig
@@ -32,17 +35,31 @@ from optio_optimize.tokens import HeuristicCounter
 
 pytestmark = pytest.mark.optimize
 
-#: Only the stages that promise byte-identical output. trim_history, dedup and
-#: pruning are SHAPED (Phase 2, ADR-013) -- on by default, but they change what
-#: the prompt says, not just its price, so they are excluded here for the same
-#: reason structured_output and adaptive_max_tokens are.
-IDENTICAL_ONLY = OptimizeConfig(
-    structured_output=False,
-    adaptive_max_tokens=False,
-    trim_history=False,
-    deduplicate=False,
-    prune_retrieval=False,
-)
+
+def _identical_only() -> OptimizeConfig:
+    """Config running only the stages that promise byte-identical output.
+
+    **Derived from each stage's declared fidelity, never listed by name.** The
+    hand-written list this replaced grew to five entries and was still wrong:
+    it predated `minify_tools` and `cap_tool_results`, both SHAPED and both on
+    by default, so both ran inside the arm whose entire purpose is to prove
+    that nothing here reshapes a reply. `mcp_agent` failed this test on its
+    first run and was right to -- it is the first workload carrying tools, so
+    it is the first one on which those two stages do anything.
+
+    The identical list existed in the bench CLI behind `--strict-fidelity` and
+    was wrong in the same way at the same time. Two lists that have to be kept
+    correct in parallel is the argument for deriving both.
+    """
+    base = OptimizeConfig()
+    reshaping = frozenset(
+        stage.name for stage in Optimizer(base).stages if stage.fidelity is not Fidelity.IDENTICAL
+    )
+    return replace(base, disabled_stages=reshaping)
+
+
+#: Only the stages that promise byte-identical output.
+IDENTICAL_ONLY = _identical_only()
 
 
 class TestIdenticalStagesReallyAreIdentical:

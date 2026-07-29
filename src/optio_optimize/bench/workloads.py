@@ -271,6 +271,126 @@ def _tool_calling_chat(turns: int = 10, model: str = "gpt-4o") -> list[LLMReques
     return requests
 
 
+#: Tool families an MCP-connected agent typically carries. Each becomes a
+#: schema in the generated shape real bridges emit -- a ``title`` on every
+#: property, a ``$schema`` header, and a description written for a docs page
+#: rather than for a token budget. That shape is the point: a hand-written
+#: schema has little for ``minify_tools`` to remove, and measuring only
+#: hand-written ones would report that the stage does nothing while real
+#: OpenAPI- and MCP-derived tools carry the waste on every turn.
+_TOOL_FAMILIES = (
+    ("search_documents", "Search the indexed document corpus", "query", "top_k"),
+    ("fetch_record", "Retrieve a single record by its identifier", "record_id", "fields"),
+    ("compute_metric", "Compute a named metric over a reporting period", "name", "period"),
+    ("compare_periods", "Compare two reporting periods and return the delta", "a", "b"),
+    ("list_tickets", "List support tickets matching a filter", "status", "assignee"),
+    ("send_notification", "Send a notification to a channel", "channel", "body"),
+    ("run_query", "Execute a read-only analytical query", "sql", "timeout_seconds"),
+    ("summarize_thread", "Summarize a conversation thread", "thread_id", "max_words"),
+    ("translate_text", "Translate text between languages", "text", "target_language"),
+    ("classify_intent", "Classify a message into a product intent", "message", "taxonomy"),
+)
+
+
+def _mcp_tool(name: str, description: str, *params: str) -> dict[str, object]:
+    """One tool in the shape an MCP bridge or OpenAPI generator emits."""
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": (
+                f"{description}. This tool is provided by the platform integration layer "
+                f"and should be used whenever the user's request calls for it. Arguments "
+                f"are validated before dispatch and errors are returned as structured "
+                f"payloads rather than raised."
+            ),
+            "parameters": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": f"{name}_arguments",
+                "type": "object",
+                "properties": {
+                    param: {
+                        "type": "string",
+                        "title": param.replace("_", " ").title(),
+                        "description": f"The {param.replace('_', ' ')} to use.",
+                    }
+                    for param in params
+                },
+                "required": list(params),
+            },
+        },
+    }
+
+
+def _mcp_agent(steps: int = 10, model: str = "gpt-4o") -> list[LLMRequest]:
+    """An agent carrying a full MCP tool library, with oversized tool results.
+
+    The workload that makes tool cost visible at all. Every other workload in
+    this suite sends ``tools=()``, so before this existed the three stages in
+    ``stages/tools.py`` could not be measured -- which under ADR-016's third
+    test means no claim about them could ship.
+
+    Two costs are exercised, and they behave differently:
+
+    * **Schemas**, resent verbatim on all ten steps. ``minify_tools`` and
+      ``prune_tools`` target these, and because the prefix is identical every
+      turn it is also exactly the region a provider prefix cache covers -- so
+      a saving here may be smaller in money than in tokens, the same gap
+      ``prefix_cache``'s own live correction turned on.
+    * **Results**, which enter the history once and are then billed on every
+      later step. One deliberately oversized payload lands at step 3, so the
+      run contains the shape ``cap_tool_results`` exists for: a single tool
+      response that quietly raises the price of the whole remaining
+      conversation.
+    """
+    tools = tuple(_mcp_tool(*family) for family in _TOOL_FAMILIES)
+    requests: list[LLMRequest] = []
+    history: list[Message] = [_msg("system", _SYSTEM_PROMPT)]
+
+    for step in range(steps):
+        history.append(_msg("user", f"Step {step}: look up record {step} and report the total."))
+        requests.append(
+            LLMRequest(model=model, messages=tuple(history), tools=tools, temperature=0.0)
+        )
+
+        call_id = f"call_{step}"
+        history.append(
+            Message(
+                role="assistant",
+                content="",
+                extra={
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": "fetch_record",
+                                "arguments": f'{{"record_id": "{step}"}}',
+                            },
+                        }
+                    ]
+                },
+            )
+        )
+        # Step 3 returns a runaway payload: a query that matched far more rows
+        # than the agent needed. Every step after this one pays for it.
+        payload = (
+            "\n".join(
+                f'{{"row": {row}, "record": "{step}", "status": "ok", "total": {row * 7}}}'
+                for row in range(400)
+            )
+            if step == 3
+            else f'{{"record": "{step}", "status": "ok", "total": {step * 7}}}'
+        )
+        history.append(
+            Message(
+                role="tool", content=payload, name="fetch_record", extra={"tool_call_id": call_id}
+            )
+        )
+        history.append(_msg("assistant", f"Record {step} is fine; total {step * 7}."))
+    return requests
+
+
 def _retry_storm(attempts: int = 15, model: str = "gpt-4o") -> list[LLMRequest]:
     """The same request repeated after transient failures.
 
@@ -388,6 +508,14 @@ WORKLOADS: dict[str, Workload] = {
         expectation="every request must stay provider-valid: trim_history must never "
         "orphan a tool result from its assistant tool_calls message",
         tags=("trim_history", "tool_safety"),
+    ),
+    "mcp_agent": Workload(
+        name="mcp_agent",
+        description="10 steps carrying 10 MCP-shaped tool schemas, one oversized tool result",
+        build=_mcp_agent,
+        expectation="the only workload that can measure tool cost at all: minify_tools and "
+        "cap_tool_results should both fire, prune_tools only when enabled",
+        tags=("minify_tools", "cap_tool_results", "prune_tools"),
     ),
     "retry_storm": Workload(
         name="retry_storm",

@@ -66,6 +66,17 @@ class LLMRequest:
         tools: Tool/function schemas, in the provider's own shape.
         temperature: Sampling temperature; ``0`` makes exact caching sound.
         response_format: Structured-output schema, if any.
+        stop: Sequences that halt generation. Output tokens are billed as they
+            are produced, so a model that keeps writing past the answer is
+            billed for every word of it -- a stop sequence is the only
+            mechanism that stops the meter mid-completion rather than
+            capping it in advance the way ``max_tokens`` does.
+        thinking_budget: Ceiling on reasoning tokens, for models that expose
+            one. Separate from ``max_tokens`` because reasoning tokens are
+            billed at the output rate while never appearing in the output: a
+            model can spend twenty thousand of them on a question whose
+            visible answer is two hundred, which no ``max_tokens`` value
+            constrains.
         extra: Everything else, passed through untouched.
     """
 
@@ -75,11 +86,24 @@ class LLMRequest:
     tools: tuple[dict[str, Any], ...] = ()
     temperature: float | None = None
     response_format: dict[str, Any] | None = None
+    stop: tuple[str, ...] = ()
+    thinking_budget: int | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def with_messages(self, messages: tuple[Message, ...]) -> LLMRequest:
         """Return a copy carrying a different conversation."""
         return replace(self, messages=messages)
+
+    def with_tools(self, tools: tuple[dict[str, Any], ...]) -> LLMRequest:
+        """Return a copy carrying a different tool set.
+
+        Args:
+            tools: Replacement schemas, in the provider's own shape.
+
+        Returns:
+            A new request; the original is unchanged.
+        """
+        return replace(self, tools=tools)
 
     @property
     def is_deterministic(self) -> bool:

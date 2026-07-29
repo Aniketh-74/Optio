@@ -165,3 +165,17 @@ class Optimizer:
         that the library "does nothing".
         """
         return tuple(s.name for s in self._pipeline.stages)
+
+    @property
+    def stages(self) -> tuple[Stage, ...]:
+        """The active stages themselves, in execution order.
+
+        Exposed because :attr:`stage_names` is not enough to answer the one
+        question the benchmark has to ask before it can claim anything: *which
+        of these promise byte-identical output.* Deriving that from each
+        stage's own :attr:`~optio_optimize.stages.base.Stage.fidelity` is the
+        only way the answer stays right when a stage is added -- the
+        hand-written list that used to encode it in the bench CLI was already
+        wrong by two stages when it was replaced.
+        """
+        return tuple(self._pipeline.stages)

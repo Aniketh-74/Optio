@@ -235,6 +235,70 @@ class TestTheLatencyBudgetIsEnforced:
         assert len(calls) == 1, "the provider call must happen regardless of the budget"
 
 
+class TestACachingStageKeysConsistentlyAcrossBeforeAndAfter:
+    """A cache must write under the same text it reads under.
+
+    ``after`` receives the request **as sent** -- every later stage's rewrites
+    included -- while ``before`` saw it as the earlier stages left it. A stage
+    that recomputes its key in ``after`` therefore stores entries under text no
+    lookup will ever produce, and its hit rate silently drops to zero. Not
+    hypothetically: ``semantic_cache`` did exactly this, and the defect stayed
+    invisible for as long as every message-rewriting stage happened to decline
+    on the workloads that exercised it. Adding ``concision``, which fires on
+    any plain chat request, took the audit's collision count from several to
+    none in one commit.
+
+    ``exact_cache`` was always correct here -- it stashes its key in
+    ``ctx.scratch`` during ``before`` -- so these tests pin the contract for
+    both rather than for the one that broke.
+    """
+
+    @staticmethod
+    def _optimizer(stage_name: str) -> Optimizer:
+        """An optimizer with one cache stage and one later message rewriter."""
+        return Optimizer(
+            exact_cache=stage_name == "exact_cache",
+            semantic_cache=stage_name == "semantic_cache",
+            prefix_cache=False,
+            structured_output=False,
+            adaptive_max_tokens=False,
+            trim_history=False,
+            deduplicate=False,
+            prune_retrieval=False,
+            cap_tool_results=False,
+            minify_tools=False,
+            concision=True,  # the later stage that rewrites messages
+        )
+
+    @pytest.mark.parametrize("stage_name", ["exact_cache", "semantic_cache"])
+    def test_a_repeat_still_hits_when_a_later_stage_rewrites_the_prompt(
+        self, stage_name: str
+    ) -> None:
+        calls: list[LLMRequest] = []
+        optimizer = self._optimizer(stage_name)
+        request = _request("what is the capital of France")
+
+        optimizer.call(request, _provider(calls))
+        optimizer.call(request, _provider(calls))
+
+        assert len(calls) == 1, (
+            f"{stage_name} missed on an identical repeat: it stored the entry under the "
+            "rewritten prompt and looked it up under the original"
+        )
+
+    @pytest.mark.parametrize("stage_name", ["exact_cache", "semantic_cache"])
+    def test_the_rewriting_stage_really_did_change_the_prompt(self, stage_name: str) -> None:
+        # Without this the test above passes trivially if `concision` stops
+        # firing -- it would be checking that a cache hits when nothing
+        # interfered, which is not the property at issue.
+        calls: list[LLMRequest] = []
+        self._optimizer(stage_name).call(
+            _request("what is the capital of France"), _provider(calls)
+        )
+
+        assert calls[0].messages != _request("what is the capital of France").messages
+
+
 class TestDisablingWorks:
     def test_a_disabled_pipeline_is_a_pass_through(self) -> None:
         calls: list[LLMRequest] = []

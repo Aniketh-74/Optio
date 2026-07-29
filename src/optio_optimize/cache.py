@@ -177,6 +177,15 @@ def request_key(request: LLMRequest) -> str:
     * ``tools`` — a different toolset changes what the model may do.
     * ``temperature`` — though only ``0`` is ever cached, see below.
     * ``response_format`` — a schema changes the shape of the reply.
+    * ``stop`` — a stop sequence halts generation mid-answer, so two otherwise
+      identical requests with different stop sequences have genuinely different
+      replies. Unlike ``max_tokens`` this cannot be compensated for by checking
+      ``finish_reason``: a completion that stopped at a delimiter reports
+      ``"stop"`` exactly as a naturally-finished one does, so a shared entry
+      would be indistinguishable from a correct hit.
+    * ``thinking_budget`` — reasoning tokens are how a model reaches its answer,
+      and a smaller allowance can change what it concludes, not merely how long
+      it takes to get there.
 
     Deliberately excluded:
 
