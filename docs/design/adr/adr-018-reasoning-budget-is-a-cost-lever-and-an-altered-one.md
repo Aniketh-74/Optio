@@ -64,11 +64,39 @@ the request. Three consequences follow:
 3. **Cheaper and wrong is the worst outcome this package can produce.** It is also the one the
    savings report is structurally unable to detect, because the report measures tokens.
 
-**`thinking_budget` leaves `UNSENT_FIELDS` and gets a real wire path** for both vendors — Anthropic
-`thinking: {type: "enabled", budget_tokens: N}`, OpenAI `reasoning_effort`. That is a separate
-decision from the stage and a safe one: sending a field the caller explicitly set is not an
-optimization, it is the adapter doing its job. A caller who sets `thinking_budget` today has it
-silently discarded, which is its own defect.
+**`thinking_budget` leaves `UNSENT_FIELDS` and gets a real wire path.** That is a separate decision
+from the stage and a safe one: sending a field the caller explicitly set is not an optimization, it
+is the adapter doing its job. A caller who sets `thinking_budget` today has it silently discarded,
+which is its own defect.
+
+### Amendment, 2026-07-30: two fields, because the vendors do not take the same kind of thing
+
+This ADR first said the single field would reach "Anthropic `thinking: {…budget_tokens: N}`, OpenAI
+`reasoning_effort`", as though one value fit both. Checking the installed SDKs before writing any
+code showed it does not:
+
+- Anthropic takes a **token count**: `thinking={"type": "enabled", "budget_tokens": int}`.
+- OpenAI takes a **category**: `reasoning_effort` is a `Literal["none", "minimal", "low", "medium",
+  "high", "xhigh", "max"]`.
+
+There is no honest conversion. Whether a 2,000-token budget is "low" or "medium" depends on the
+model, and any threshold table would be invented — the precise species of unevidenced number that
+has already cost this project a 36.3% claim that measured −1.8%, and a 53.7% figure that was 50.1%.
+`UNSENT_FIELDS` was right that the shape is provider-specific; it was only wrong that this made the
+field unsendable.
+
+**So `LLMRequest` carries both, and each adapter sends the one its provider accepts and ignores the
+other.** `thinking_budget: int | None` stays as Anthropic's token ceiling; `reasoning_effort:
+str | None` is added for OpenAI's category. Neither is derived from the other. A caller targeting
+both vendors sets both, which is more typing than a fabricated mapping and is the only version that
+does not silently mean something different on each provider.
+
+Both are in `request_key`, for the reason `cache.py` already gives about `thinking_budget`:
+reasoning tokens are how a model reaches its answer, so two requests that differ in how hard the
+model was told to think are not the same request.
+
+The cost of the amendment is one more public field on an exported type. The alternative cost was a
+threshold table nobody measured, silently changing what every OpenAI reasoning call does.
 
 **The stage never raises a budget, only lowers it, and never sets one where the caller set none.**
 Raising it would spend money the caller did not ask to spend — a cost-reduction library causing a

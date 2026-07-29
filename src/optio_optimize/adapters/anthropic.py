@@ -205,7 +205,27 @@ def _request_from_kwargs(kwargs: dict[str, Any]) -> LLMRequest:
         tools=tuple(kwargs.get("tools") or ()),
         temperature=float(temperature) if isinstance(temperature, (int, float)) else None,
         stop=tuple(kwargs.get("stop_sequences") or ()),
+        thinking_budget=_budget_from_thinking(kwargs.get("thinking")),
     )
+
+
+def _budget_from_thinking(thinking: Any) -> int | None:
+    """Read Anthropic's ``thinking`` parameter as a token budget.
+
+    Read as well as written, so a stage can *lower* what the caller asked for.
+    Without this the request would carry ``None``, a stage would have nothing to
+    reduce, and ADR-018's "only ever lower a budget the caller set" would have no
+    budget to work from.
+
+    ``None`` for a disabled or absent config: ``{"type": "disabled"}`` is not a
+    budget of zero, it is the absence of one, and turning it into ``0`` would let
+    a request round-trip into an *enabled* zero-token config -- a different
+    instruction to the provider than the one the caller gave.
+    """
+    if not isinstance(thinking, dict) or thinking.get("type") != "enabled":
+        return None
+    budget = thinking.get("budget_tokens")
+    return budget if isinstance(budget, int) else None
 
 
 def _message_from_param(param: Any) -> Message:
@@ -449,6 +469,19 @@ def _kwargs_from_request(sent: LLMRequest, original: dict[str, Any]) -> dict[str
         kwargs["tools"] = tools
     if sent.stop:
         kwargs["stop_sequences"] = list(sent.stop)
+    # Overrides the caller's own `thinking`, unlike `cache_control` on a system
+    # block, which is left alone. The two look similar and are not: a breakpoint
+    # is the caller's better information about their own reuse pattern, while a
+    # budget on the request is a value a stage has already decided to lower --
+    # and ADR-018 lets it only ever lower. Preserving the original here would
+    # make the stage report a saving the provider never granted, which is the
+    # defect class this adapter has now hit three times.
+    #
+    # Note this reads `sent`, not `original`: a caller-set budget arrives here
+    # via `_request_from_kwargs` and comes back out unchanged when no stage
+    # touched it, so the round trip is lossless without a second branch.
+    if sent.thinking_budget is not None:
+        kwargs["thinking"] = {"type": "enabled", "budget_tokens": sent.thinking_budget}
     return kwargs
 
 
