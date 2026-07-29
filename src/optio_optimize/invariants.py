@@ -152,19 +152,43 @@ def _check_tool_result(
     return violations
 
 
-def _call_ids(message: Message) -> frozenset[str]:
-    """Tool-call ids a message carries, in either provider's shape.
+def _tool_call_entries(message: Message) -> tuple[Any, ...]:
+    """Raw ``tool_calls`` entries, wherever the caller's adapter stashed them.
 
-    OpenAI puts them in ``extra["tool_calls"]`` as dicts with an ``id``.
-    A message with none returns an empty set, which is also how "this is not
-    an assistant tool-call message" is expressed.
+    Two conventions exist in this package and both are correct for their site.
+    :func:`~optio_optimize.wire.openai_messages` lifts ``tool_calls`` to
+    ``extra["tool_calls"]`` because it builds a body from parts. The framework
+    adapters keep the caller's whole message param under ``extra["_raw"]``
+    instead, so they can hand back untouched anything this package does not
+    model.
+
+    Reading only the first convention made every rule here misfire on real
+    agent traffic: a tool-calling assistant message looked like empty content
+    with nothing attached, and every tool result that followed looked orphaned.
+    Twenty violations on a run where the library had done nothing wrong. A
+    checker that cries wolf gets switched off, which would have cost more than
+    the rules are worth.
     """
-    raw = message.extra.get("tool_calls")
-    if not isinstance(raw, (list, tuple)):
-        return frozenset()
+    direct = message.extra.get("tool_calls")
+    if isinstance(direct, (list, tuple)):
+        return tuple(direct)
+    raw = message.extra.get("_raw")
+    if isinstance(raw, dict):
+        nested = raw.get("tool_calls")
+        if isinstance(nested, (list, tuple)):
+            return tuple(nested)
+    return ()
+
+
+def _call_ids(message: Message) -> frozenset[str]:
+    """Tool-call ids a message carries.
+
+    A message with none returns an empty set, which is also how "this is not an
+    assistant tool-call message" is expressed.
+    """
     return frozenset(
         str(entry["id"])
-        for entry in raw
+        for entry in _tool_call_entries(message)
         if isinstance(entry, dict) and isinstance(entry.get("id"), str)
     )
 
@@ -211,9 +235,16 @@ def _check_survivors(original: LLMRequest, sent: LLMRequest) -> list[Violation]:
     if last_user is not None and _identity(original.messages[last_user]) not in sent_identities:
         violations.append(Violation(LAST_USER_MESSAGE_DROPPED, last_user, "user"))
 
-    for index, message in enumerate(original.messages):
-        if message.role == "system" and _identity(message) not in sent_identities:
-            violations.append(Violation(SYSTEM_PROMPT_DROPPED, index, "system"))
+    # Presence, not identity. What this protects is PrefixCacheStage's
+    # dependency on *a* system prompt being there every call -- and editing one
+    # is legitimate and default-on: StructuredOutputStage appends an
+    # instruction, ConcisionStage used to. An identity check called every one of
+    # those a dropped prompt, which on a real agent run fired on every single
+    # call while the library was behaving correctly.
+    if any(m.role == "system" for m in original.messages) and not any(
+        m.role == "system" for m in sent.messages
+    ):
+        violations.append(Violation(SYSTEM_PROMPT_DROPPED, None, "system"))
     return violations
 
 
@@ -285,10 +316,7 @@ def _called_tool_names(messages: Sequence[Message]) -> frozenset[str]:
     """Names of tools the conversation shows the agent already invoking."""
     names: set[str] = set()
     for message in messages:
-        raw = message.extra.get("tool_calls")
-        if not isinstance(raw, (list, tuple)):
-            continue
-        for entry in raw:
+        for entry in _tool_call_entries(message):
             if not isinstance(entry, dict):
                 continue
             function = entry.get("function")
