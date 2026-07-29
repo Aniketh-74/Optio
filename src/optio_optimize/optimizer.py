@@ -17,7 +17,7 @@ from optio_optimize.stages import build_stages
 if TYPE_CHECKING:
     from opentelemetry.trace import TracerProvider
 
-    from optio_optimize.pipeline import AsyncProviderCall, ProviderCall
+    from optio_optimize.pipeline import AsyncProviderCall, Pipeline, ProviderCall
     from optio_optimize.savings import SavingsReport
     from optio_optimize.stages.base import Stage
     from optio_optimize.stages.diagnostics import PrefixFinding
@@ -156,6 +156,25 @@ class Optimizer:
     def report(self) -> SavingsReport:
         """Cumulative savings across every request this optimizer has run."""
         return self._pipeline.report
+
+    @property
+    def pipeline(self) -> Pipeline:
+        """The object that runs the stages.
+
+        Exposed for one reason: ADR-017 makes
+        :class:`~optio_optimize.batch.BatchOptimizer` *own* an ``Optimizer``
+        rather than reimplement it, and batch dispatch needs the two halves of
+        a request separately -- run the stages now, hand back the provider's
+        answer tomorrow. :meth:`~optio_optimize.pipeline.Pipeline.prepare` and
+        :meth:`~optio_optimize.pipeline.Pipeline.complete` are that seam.
+
+        Sharing this is also what makes the two surfaces share one exact cache
+        and one savings report, which ADR-017 decision 3 asks for deliberately:
+        a request already answered synchronously should never enter a queue,
+        and an answer that arrives hours later is as cacheable as one that
+        arrives immediately.
+        """
+        return self._pipeline
 
     @property
     def stage_names(self) -> tuple[str, ...]:

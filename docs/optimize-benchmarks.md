@@ -745,6 +745,43 @@ loss into a smaller, visible cost. Off by default, because changing what every
 existing caller sends on one good measurement of one workload is what ADR-016
 exists to prevent.
 
+## Batch dispatch: a weaker class of evidence, stated as such (ADR-017)
+
+Every number above this line is an A/B run: the same workload twice, once with a
+stage and once without, both arms billed by a real provider. **The batch
+discount is not that**, and it cannot be, because the A/B harness is built
+around a synchronous `compare()` and a batched arm returns hours later. So the
+saving is *arithmetic* — the provider's published 50% applied to measured token
+counts — and `BatchReport.summary_lines` prints that caveat as its last line
+rather than leaving a reader to assume parity with the rest of this document.
+
+What *was* measured live, on 2026-07-29 against OpenAI, is the part unit tests
+against a fake client cannot reach: whether the real endpoint accepts the
+envelope we build, and whether the pipeline halves reconnect across the gap.
+
+Three one-word prompts, one answered synchronously first:
+
+| check | result |
+|---|---|
+| envelope accepted by `/v1/batches` | yes, `batch_6a69b54c…` |
+| the pre-answered request | **not submitted** — served from the shared exact cache |
+| requests actually queued | 2 of 3 |
+| results | `q-1` → `Tokyo`, `q-2` → `Lima`, 0 errors |
+| repeat of `q-1` after retrieval | **0 provider calls** |
+
+The last row is ADR-017 decision 3 working end to end: an answer that arrived
+asynchronously ran its stages' `after` hooks on retrieval, populated the exact
+cache, and was served to the synchronous path without a call. The two surfaces
+share one cache because they were given the same `Optimizer`.
+
+One incidental fact worth recording, since the ADR reasons throughout about a
+24-hour window: **this batch completed in about 80 seconds.** The completion
+window is a ceiling, not an estimate, and small batches can return in the time a
+long synchronous call takes. That is not a basis for treating batch as
+low-latency — a queue with no service guarantee is exactly the thing you must
+not put a waiting user behind — but it does mean `await_results` is usable in a
+smoke test rather than only in a cron job.
+
 ## Overhead
 
 Our own cost per request, measured with the provider's time excluded:

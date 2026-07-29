@@ -21,6 +21,57 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Added
+
+- **`BatchOptimizer`: a second public entry point, for work that tolerates hours of latency
+  ([ADR-017](docs/design/adr/adr-017-batch-dispatch-is-a-second-surface.md)).** Providers sell
+  asynchronous processing at roughly half price with no quality trade at all — the same model
+  returns the same answer, later — and it is the largest discount this package had never offered.
+  It could not be a stage: every stage answers *what should this request look like*, and the
+  pipeline's contract is that a response comes back on the same stack frame. Batch answers *when,
+  and by whom*, and there is neither a response to return nor an error to fail open into.
+
+  The caller declares latency tolerance and the library never infers it. There is no heuristic for
+  "this looks like it can wait", because putting a waiting user behind a 24-hour queue to save half
+  a cent is a product failure this package should be structurally incapable of causing — hence a
+  separate class rather than a flag on a shared path.
+
+  `BatchOptimizer` *owns* an `Optimizer` rather than reimplementing one, so the stages run first,
+  unchanged, and the discounts compose. Pass your synchronous optimizer and the two surfaces share
+  an exact cache in both directions: a request already answered never enters a queue, and an answer
+  that arrives hours later runs its `after` hooks on retrieval and is served to the synchronous path
+  immediately. Verified live against OpenAI — of three requests with one pre-answered, two were
+  submitted, and a repeat after retrieval made **0 provider calls**.
+
+  Failure is explicit rather than fail-open. ADR-013's rule 1 works synchronously because there is
+  somewhere to fall back to; a failed submission has not degraded to a slower path, it has not
+  happened. So `submit()` raises a `BatchSubmissionError` naming which items were and were not
+  accepted, and never quietly converts one batch into 10,000 synchronous calls — a fail-open that
+  would cost twice what batching was asked to save.
+
+  The savings figure is **arithmetic, not measured**: the provider's published 50% applied to real
+  token counts, because the A/B harness cannot express a result that arrives tomorrow.
+  `BatchReport.summary_lines` prints that caveat as its own line rather than letting the number sit
+  beside the measured ones looking identical.
+
+- **`optio_optimize.wire`: one place that turns a request into a provider payload.** The live
+  OpenAI adapter once did not forward `request.tools`. Nothing raised, and the whole `mcp_agent`
+  run reported `minify_tools` saving 3,240 tokens while both arms billed byte-identical totals,
+  because the field the stage had rewritten was never sent. Batch submission needed the same
+  translation as JSON rather than SDK keyword arguments — a second copy, and a second chance at
+  exactly that omission — so both call sites now share one. A test walks `LLMRequest`'s own fields
+  and fails unless each is demonstrably on the wire or named in `wire.UNSENT_FIELDS` with a reason,
+  the same guard `request_key` applies to the cache key.
+
+### Changed
+
+- **`Pipeline.execute` is now `prepare` + `complete`.** Batch needs the two halves of a request
+  separately — run the stages now, hand back the provider's answer tomorrow — and a second
+  implementation of "run the stages" would be a second place for one to be skipped, with the
+  divergence showing up as batch and synchronous calls being optimized differently for reasons
+  nobody could see. Behaviour is unchanged; `execute` and `aexecute` are now two calls around the
+  provider instead of inline loops.
+
 ### Fixed
 
 - **`concision`'s instruction was evicting more cache than it cost.** It appended to the *system

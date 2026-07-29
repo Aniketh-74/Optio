@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from optio_optimize import wire
 from optio_optimize.config import PRICING
 from optio_optimize.tokens import TokenCounter, count_request, default_counter
 from optio_optimize.types import LLMResponse
@@ -383,23 +384,11 @@ class OpenAIProvider:
         # cast to each SDK's own TypedDict at the boundary. The cast is checked
         # by the round trip: a wrong role or key fails the live call loudly.
         #
-        # tool_calls / tool_call_id are pulled out of `extra` explicitly rather
-        # than forwarded wholesale: OpenAI rejects a "tool" message with no
-        # preceding tool_calls, so dropping these silently (the first version
-        # of this method did) makes every tool-calling workload fail 400,
-        # regardless of what any stage did to the request. Found live, running
-        # tool_calling_chat -- the same class of surprise as fan_out's missing
-        # "json" literal.
-        messages: list[dict[str, Any]] = []
-        for m in request.messages:
-            entry: dict[str, Any] = {"role": m.role, "content": m.content}
-            if m.name:
-                entry["name"] = m.name
-            if "tool_calls" in m.extra:
-                entry["tool_calls"] = m.extra["tool_calls"]
-            if "tool_call_id" in m.extra:
-                entry["tool_call_id"] = m.extra["tool_call_id"]
-            messages.append(entry)
+        # The translation itself lives in optio_optimize.wire, shared with
+        # batch submission (ADR-017), so the two paths cannot drift into
+        # sending different requests. What stays here is the `create` call
+        # itself -- see below on why it is not an unpacked dict.
+        messages = wire.openai_messages(request)
         completion = self._client.chat.completions.create(
             model=self.model,
             messages=cast("list[ChatCompletionMessageParam]", messages),
@@ -417,9 +406,10 @@ class OpenAIProvider:
             # `mcp_agent` sent no tools at all: `minify_tools` reported saving
             # 3,240 tokens while the provider billed byte-identical totals in
             # both arms (76,439 either way), because the field the stage had
-            # rewritten was dropped on the floor. Exactly the failure the
-            # tool_calls comment above describes, one field over.
-            tools=cast("Any", list(request.tools) or None),
+            # rewritten was dropped on the floor. That incident is why the
+            # translation is shared with the batch path rather than written
+            # twice, and why `wire.UNSENT_FIELDS` makes the omissions explicit.
+            tools=cast("Any", wire.openai_tools(request)),
             stop=cast("Any", list(request.stop) or None),
         )
         usage = completion.usage
@@ -500,20 +490,11 @@ class AnthropicProvider:
         # cast to the SDK's own TypedDicts at the boundary, the same pattern
         # as OpenAIProvider. Built as plain dicts first because a Message's
         # role is a superset (it includes "tool", which Anthropic has no
-        # MessageParam role for) of what either TypedDict accepts.
-        system_blocks: list[dict[str, Any]] = []
-        turns: list[dict[str, Any]] = []
-        for message in request.messages:
-            if message.role == "system":
-                block: dict[str, Any] = {"type": "text", "text": message.content}
-                if message.cacheable:
-                    # This is the whole point of the prefix stage: the marker
-                    # our pipeline placed becomes the provider's own cache
-                    # directive, and the discount is then measurable.
-                    block["cache_control"] = {"type": "ephemeral"}
-                system_blocks.append(block)
-            else:
-                turns.append({"role": message.role, "content": message.content})
+        # MessageParam role for) of what either TypedDict accepts. The split
+        # itself -- including turning a `cacheable` marker into the provider's
+        # own cache_control directive, which is the whole point of the prefix
+        # stage -- lives in optio_optimize.wire, shared with batch submission.
+        system_blocks, turns = wire.anthropic_system_and_turns(request)
 
         from anthropic.types import MessageParam, TextBlock
 
@@ -529,11 +510,11 @@ class AnthropicProvider:
             temperature=request.temperature if request.temperature is not None else 1.0,
             # Anthropic's schema shape differs from OpenAI's -- name and
             # input_schema at the top level rather than nested under
-            # "function" -- so a request built for one is translated here
-            # rather than forwarded. Same omission as OpenAIProvider had, and
-            # it would fail the same silent way: tools rewritten by a stage,
-            # then never sent.
-            tools=cast("Any", [_as_anthropic_tool(t) for t in request.tools] or None),
+            # "function" -- so a request built for one is translated rather
+            # than forwarded. Same omission as OpenAIProvider had, and it would
+            # fail the same silent way: tools rewritten by a stage, then never
+            # sent.
+            tools=cast("Any", wire.anthropic_tools(request)),
             stop_sequences=cast("Any", list(request.stop) or None),
         )
         usage = reply.usage
@@ -600,27 +581,3 @@ def available_live_provider(
         except RuntimeError:
             continue
     return None
-
-
-def _as_anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
-    """Translate a tool schema into Anthropic's shape.
-
-    OpenAI nests ``name``/``description``/``parameters`` under ``function``;
-    Anthropic puts ``name``/``description``/``input_schema`` at the top level.
-    A schema already in Anthropic's shape passes through, so a caller who
-    writes for either provider gets the same behaviour here.
-
-    Args:
-        tool: A tool schema in either provider's shape.
-
-    Returns:
-        The schema as Anthropic expects it.
-    """
-    function = tool.get("function")
-    if not isinstance(function, dict):
-        return tool
-    return {
-        "name": function.get("name", ""),
-        "description": function.get("description", ""),
-        "input_schema": function.get("parameters", {"type": "object", "properties": {}}),
-    }

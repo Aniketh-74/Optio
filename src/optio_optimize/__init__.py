@@ -23,12 +23,39 @@ Typical use::
     for line in optimizer.report.summary_lines("gpt-4o"):
         print(line)
 
+There is a **second entry point**, :class:`BatchOptimizer` (ADR-017), for work
+that tolerates hours of latency. Providers sell asynchronous processing at
+roughly half price, and the discount composes with everything the stages
+already did. It is a separate class rather than a flag because nothing in a
+request says whether a human is waiting for it, and no heuristic should
+guess::
+
+    from optio_optimize import BatchOptimizer, OpenAIBatchBackend, items_from
+
+    batcher = BatchOptimizer(OpenAIBatchBackend(), optimizer=optimizer)
+    submission = batcher.submit(items_from(requests))
+    results = batcher.results(submission.handle)  # hours later
+
 Installing :mod:`optio` alone never brings this in. Nothing in :mod:`optio`
 imports it, and an import-linter contract keeps it that way.
 """
 
 from __future__ import annotations
 
+from optio_optimize.batch import (
+    BatchError,
+    BatchHandle,
+    BatchItem,
+    BatchOptimizer,
+    BatchReport,
+    BatchResults,
+    BatchState,
+    BatchSubmission,
+    BatchSubmissionError,
+    BatchTimeoutError,
+    items_from,
+)
+from optio_optimize.batch_backends import AnthropicBatchBackend, OpenAIBatchBackend
 from optio_optimize.config import OptimizeConfig, config_from_mapping
 from optio_optimize.errors import OptimizeConfigError, OptimizeError
 from optio_optimize.optimizer import Optimizer
@@ -60,9 +87,21 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "AnthropicBatchBackend",
+    "BatchError",
+    "BatchHandle",
+    "BatchItem",
+    "BatchOptimizer",
+    "BatchReport",
+    "BatchResults",
+    "BatchState",
+    "BatchSubmission",
+    "BatchSubmissionError",
+    "BatchTimeoutError",
     "LLMRequest",
     "LLMResponse",
     "Message",
+    "OpenAIBatchBackend",
     "OptimizeConfig",
     "OptimizeConfigError",
     "OptimizeError",
@@ -71,4 +110,5 @@ __all__ = [
     "StageSaving",
     "__version__",
     "config_from_mapping",
+    "items_from",
 ]

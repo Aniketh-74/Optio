@@ -23,6 +23,7 @@ Summaries live in [IMPLEMENTATION.md §15](../../../IMPLEMENTATION.md); full rec
 | [014](adr-014-optimize-emits-spans-optio-already-knows-how-to-read.md) | `optio_optimize` integrates by emitting spans, not by calling `optio` | Accepted |
 | [015](adr-015-evidence-bar-for-promoting-an-altered-tier-stage.md) | Evidence bar for promoting an `ALTERED`-tier stage out of "experimental" | Accepted — evidence gathering in progress |
 | [016](adr-016-the-in-scope-test-for-a-cost-technique.md) | The in-scope test for a cost technique | Accepted |
+| [017](adr-017-batch-dispatch-is-a-second-surface.md) | Batch dispatch is a second surface, not a stage | Accepted — implemented |
 
 ADRs 000, 001, and 004 were expanded first because M0 code already depended on them: they
 determine what the library is allowed to do, and what it must never do.
@@ -63,6 +64,16 @@ what a library is for. It retires effort as a test and replaces it with three: e
 the normalized types, needs no infrastructure the caller must operate, and measurable by the bench
 harness. The immediate consequence is that tool-schema cost, the single largest evidenced win in
 the published literature, stops being out of scope.
+
+ADR-017 is the one item ADR-016 admitted changes the package's *shape* rather than extending it.
+Batch dispatch cannot be a stage — a stage's contract is that a response comes back on the same
+stack frame, and this one comes back tomorrow — so it is a second public class, and ADR-012's
+"the public API is the top level" rule now covers two entry points instead of one. That widening
+is the price of the discount and the ADR says so rather than pretending the surface stayed still.
+It is also the only place in the project where a saving is reported from a *published* figure
+rather than an A/B run, because the harness cannot express an arm that returns hours later; the
+ADR requires that difference to be stated wherever the number appears, and `BatchReport` prints
+it as its own line.
 
 ## Format
 

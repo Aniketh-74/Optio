@@ -53,20 +53,34 @@ AsyncProviderCall = Callable[["LLMRequest"], "Awaitable[LLMResponse]"]
 
 
 @dataclass(slots=True)
-class _StageRun:
-    """What running every stage's ``before`` hook produced.
+class PreparedRequest:
+    """A request with every ``before`` hook applied, awaiting a provider.
+
+    The synchronous path never has to name this: :meth:`Pipeline.execute` calls
+    the provider one line after producing it. Batch dispatch does, because
+    ADR-017's whole difficulty is that hours pass between the two halves --
+    the provider call happens in another process, possibly on another day, and
+    something has to hold the stage state in between.
 
     Attributes:
-        request: The request as every stage that succeeded left it.
+        request: The request as every stage that succeeded left it. This is
+            what gets sent.
         ctx: The context stages ran against. Carried forward rather than
             rebuilt, because a stage's ``after`` hook must see the same
             ``scratch`` its own ``before`` populated -- the cache stages
             carry their key across the two calls this way.
         short_circuit: A response, if some stage served one without calling
-            the provider.
+            the provider. Non-``None`` means **do not send this**; a batch
+            submission that queues an already-answered request pays for it
+            twice and waits a day for the privilege.
         saved_input: Input tokens avoided across every stage that ran.
         saved_output: Output tokens avoided across every stage that ran.
         fired: Names of the stages that did something, in execution order.
+        bypassed: Set when ``enabled`` is ``False`` and no stage ran at all.
+            Distinct from "every stage declined": nothing was measured, so
+            :meth:`Pipeline.complete` records nothing rather than recording
+            zeroes, which would dilute the reduction ratio with requests the
+            pipeline never touched.
     """
 
     request: LLMRequest
@@ -75,6 +89,7 @@ class _StageRun:
     saved_input: int = 0
     saved_output: int = 0
     fired: list[str] = field(default_factory=list)
+    bypassed: bool = False
 
 
 class Pipeline:
@@ -145,16 +160,14 @@ class Pipeline:
             Exception: Only whatever ``call`` raises. Stage failures never
                 propagate -- that is the guarantee this method exists to make.
         """
-        if not self.config.enabled:
+        prepared = self.prepare(request, run_id=run_id)
+        if prepared.bypassed:
             return call(request)
+        if prepared.short_circuit is not None:
+            return self.complete(prepared, prepared.short_circuit, run_id=run_id)
 
-        run = self._run_stages(request, run_id)
-        if run.short_circuit is not None:
-            return self._finish_and_emit(run, run.short_circuit, run_id, short_circuited=True)
-
-        response = call(run.request)
-        self._run_after(run.request, response, run.ctx)
-        return self._finish_and_emit(run, response, run_id, short_circuited=False)
+        response = call(prepared.request)
+        return self.complete(prepared, response, run_id=run_id)
 
     async def aexecute(
         self,
@@ -184,18 +197,77 @@ class Pipeline:
         Raises:
             Exception: Only whatever ``call`` raises.
         """
-        if not self.config.enabled:
+        prepared = self.prepare(request, run_id=run_id)
+        if prepared.bypassed:
             return await call(request)
+        if prepared.short_circuit is not None:
+            return self.complete(prepared, prepared.short_circuit, run_id=run_id)
 
-        run = self._run_stages(request, run_id)
-        if run.short_circuit is not None:
-            return self._finish_and_emit(run, run.short_circuit, run_id, short_circuited=True)
+        response = await call(prepared.request)
+        return self.complete(prepared, response, run_id=run_id)
 
-        response = await call(run.request)
-        self._run_after(run.request, response, run.ctx)
-        return self._finish_and_emit(run, response, run_id, short_circuited=False)
+    def prepare(self, request: LLMRequest, *, run_id: str | None = None) -> PreparedRequest:
+        """Run every ``before`` hook, without calling a provider.
 
-    def _run_stages(self, request: LLMRequest, run_id: str | None) -> _StageRun:
+        The first half of :meth:`execute`, separated so that ADR-017's batch
+        surface can run the identical stages and then stop, holding the result
+        until a provider answers hours later. Splitting rather than duplicating
+        is the point: a second implementation of "run the stages" would be a
+        second place for a stage to be skipped, and the divergence would show
+        up as batch and synchronous calls being optimized differently for
+        reasons nobody could see.
+
+        Args:
+            request: The caller's request.
+            run_id: optio run this belongs to, for attributing savings.
+
+        Returns:
+            The prepared request. Check
+            :attr:`~PreparedRequest.short_circuit` before sending anything: a
+            cache hit means the answer is already in hand.
+        """
+        if not self.config.enabled:
+            return PreparedRequest(
+                request=request,
+                ctx=StageContext(config=self.config, counter=self._counter, run_id=run_id),
+                bypassed=True,
+            )
+        return self._run_stages(request, run_id)
+
+    def complete(
+        self,
+        prepared: PreparedRequest,
+        response: LLMResponse,
+        *,
+        run_id: str | None = None,
+    ) -> LLMResponse:
+        """Run every ``after`` hook and record what the request cost.
+
+        The second half of :meth:`execute`. Must be called exactly once per
+        :meth:`prepare`, or the read-through caches never get their write half
+        and the savings report loses the request entirely.
+
+        Args:
+            prepared: What :meth:`prepare` returned.
+            response: What the provider returned. Ignored when ``prepared``
+                carries a short-circuit -- that response is authoritative, and
+                accepting an argument that overrides it would let a caller
+                report a cache hit's savings against a call they made anyway.
+            run_id: Forwarded to the span emitter.
+
+        Returns:
+            The response to hand back to the caller.
+        """
+        if prepared.bypassed:
+            return response
+        if prepared.short_circuit is not None:
+            return self._finish_and_emit(
+                prepared, prepared.short_circuit, run_id, short_circuited=True
+            )
+        self._run_after(prepared.request, response, prepared.ctx)
+        return self._finish_and_emit(prepared, response, run_id, short_circuited=False)
+
+    def _run_stages(self, request: LLMRequest, run_id: str | None) -> PreparedRequest:
         """Run every stage's ``before`` hook, stopping at a short-circuit or the deadline.
 
         Args:
@@ -207,7 +279,7 @@ class Pipeline:
             short-circuit.
         """
         ctx = StageContext(config=self.config, counter=self._counter, run_id=run_id)
-        run = _StageRun(request=request, ctx=ctx)
+        run = PreparedRequest(request=request, ctx=ctx)
         deadline = time.perf_counter() + self.config.latency_budget_ms / 1000.0
 
         # `run.request` advances only on a stage that succeeds outright. A
@@ -243,7 +315,7 @@ class Pipeline:
 
     def _finish_and_emit(
         self,
-        run: _StageRun,
+        run: PreparedRequest,
         response: LLMResponse,
         run_id: str | None,
         *,
