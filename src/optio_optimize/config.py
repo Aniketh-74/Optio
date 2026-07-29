@@ -66,6 +66,9 @@ class OptimizeConfig:
         concision: Suppress chat scaffolding -- restatement, self-summary,
             follow-up offers. Costs a one-sentence instruction in input to
             save output billed at several times the rate.
+        detect_unstable_prefix: Watch for prompts whose cacheable head changes
+            between calls, and report why. Observes only -- it never modifies a
+            request, and it is the one setting here that cannot cost anything.
         minify_tools: Strip annotation-only keys from tool schemas. Removes
             nothing the model reads.
         cap_tool_results: Bound how many tokens one tool result may add. An
@@ -109,6 +112,9 @@ class OptimizeConfig:
     adaptive_max_tokens: bool = True
     structured_output: bool = True
     minify_tools: bool = True
+
+    # Diagnostic -- transforms nothing, so there is no risk tier to place it in.
+    detect_unstable_prefix: bool = True
 
     # Bounded-risk -- on by default, they drop context rather than invent it.
     trim_history: bool = True

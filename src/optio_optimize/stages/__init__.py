@@ -1,9 +1,10 @@
 """Stage registry and pipeline ordering.
 
 Order is a correctness property, not a preference, so it lives here rather than
-being left to the caller. The sequence below is derived from five rules --
-the fourth joined the original three once the ``ALTERED``-tier stages landed,
-and the fifth once tool schemas became something a stage rewrites:
+being left to the caller. The sequence below is derived from six rules -- the
+fourth joined the original three once the ``ALTERED``-tier stages landed, the
+fifth once tool schemas became something a stage rewrites, and the sixth once
+a stage existed that reads the request rather than changing it:
 
 1. **Cheapest exit first.** A cache hit makes every later stage's work wasted,
    so lookups run before any transformation -- ``exact_cache`` before
@@ -30,6 +31,12 @@ and the fifth once tool schemas became something a stage rewrites:
    claimed saving is what pruning itself bought, not what minifying had
    already banked. Reversed, the same tokens would be counted twice, once by
    each stage, and the report would overstate the pair.
+6. **``unstable_prefix`` runs before everything.** It diagnoses the caller's
+   prompt assembly, so it has to see the request as the caller built it. Run
+   after any transform it would report *our* rewriting as their instability --
+   ``trim_history`` changes the message list on most turns, which is precisely
+   the pattern the diagnostic looks for. A false finding here is worse than no
+   finding: it sends someone hunting for a timestamp in a prompt that has none.
 
 Getting this wrong is subtle rather than loud: marking a prefix before trimming
 still *works*, it just silently never hits the provider cache. The same is true
@@ -43,6 +50,7 @@ from typing import TYPE_CHECKING
 from optio_optimize.stages.base import Stage, StageContext, StageResult
 from optio_optimize.stages.caching import ExactCacheStage, PrefixCacheStage
 from optio_optimize.stages.compress import CompressPromptStage
+from optio_optimize.stages.diagnostics import PrefixFinding, UnstablePrefixStage
 from optio_optimize.stages.history import TrimHistoryStage
 from optio_optimize.stages.output import (
     AdaptiveMaxTokensStage,
@@ -73,6 +81,7 @@ __all__ = [
     "ExactCacheStage",
     "MinifyToolsStage",
     "PrefixCacheStage",
+    "PrefixFinding",
     "PruneRetrievalStage",
     "PruneToolsStage",
     "RouteModelsStage",
@@ -83,6 +92,7 @@ __all__ = [
     "StructuredOutputStage",
     "SummarizeHistoryStage",
     "TrimHistoryStage",
+    "UnstablePrefixStage",
     "build_stages",
 ]
 
@@ -108,6 +118,14 @@ def build_stages(
         Stages to run, ordered per this module's rules.
     """
     stages: list[Stage] = []
+
+    # 0. Diagnosis, and it must be first (rule 6). It reports on the caller's
+    #    own prompt assembly, so it has to see the request as the caller built
+    #    it. Placed after any transform it would diagnose *our* rewriting as
+    #    their unstable prefix -- trim_history changes the message list on most
+    #    turns, which is exactly the pattern this looks for.
+    if config.detect_unstable_prefix:
+        stages.append(UnstablePrefixStage())
 
     # 1. Exits. Nothing below matters if one of these hits. Exact before
     #    semantic: cheaper to check and strictly safer when both would hit.

@@ -122,6 +122,41 @@ def _multi_turn_chat(turns: int = 12, model: str = "gpt-4o") -> list[LLMRequest]
     return requests
 
 
+def _timestamped_agent(turns: int = 12, model: str = "gpt-4o") -> list[LLMRequest]:
+    """``multi_turn_chat`` with a clock at the top of the system prompt.
+
+    One line different from ``multi_turn_chat``, and that line is the most
+    common prompt-caching bug in production: something that varies placed
+    *above* the stable instructions, so the provider's prefix cache matches
+    nothing and the whole system prompt is billed at full rate on every turn.
+    Nothing errors, every response is correct, and the bill is several times
+    what it should be.
+
+    Its value here is as a *pair*: run it beside ``multi_turn_chat`` and the
+    difference in cached tokens is the price of the bug, measured rather than
+    asserted. It is also the workload `detect_unstable_prefix` exists to flag,
+    so a run that reports no finding here is a broken detector.
+    """
+    requests: list[LLMRequest] = []
+    history: list[Message] = []
+    for turn in range(turns):
+        # The timestamp is regenerated per turn, exactly as `datetime.now()` in
+        # a prompt template would be. Below the instructions it would be free.
+        system = f"Current time: 2026-07-29T09:{turn:02d}:31Z\n{_SYSTEM_PROMPT}"
+        history.append(_msg("user", f"Question {turn}: summarise section {turn} of the report."))
+        requests.append(
+            LLMRequest(
+                model=model,
+                messages=(_msg("system", system), *history),
+                temperature=0.0,
+            )
+        )
+        history.append(
+            _msg("assistant", f"Section {turn} covers revenue, costs and outlook for {turn}.")
+        )
+    return requests
+
+
 def _rag_queries(count: int = 10, chunks: int = 8, model: str = "gpt-4o") -> list[LLMRequest]:
     """Retrieval-augmented queries carrying many overlapping chunks.
 
@@ -508,6 +543,15 @@ WORKLOADS: dict[str, Workload] = {
         expectation="every request must stay provider-valid: trim_history must never "
         "orphan a tool result from its assistant tool_calls message",
         tags=("trim_history", "tool_safety"),
+    ),
+    "timestamped_agent": Workload(
+        name="timestamped_agent",
+        description="multi_turn_chat with a per-turn timestamp above the system prompt",
+        build=_timestamped_agent,
+        expectation="ZERO provider prefix-cache hits, by construction. Run beside "
+        "multi_turn_chat to price the most common caching bug in production; "
+        "detect_unstable_prefix must report a finding here or it is broken.",
+        tags=("detect_unstable_prefix", "adversarial"),
     ),
     "mcp_agent": Workload(
         name="mcp_agent",

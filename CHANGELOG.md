@@ -48,6 +48,30 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **`detect_unstable_prefix`: the first thing here that changes nothing.** Provider prefix caching
+  needs only that the head of the prompt be byte-identical between calls, and the field literature
+  calls breaking that "the single most common production caching bug" precisely because it leaves
+  no trace -- inject a timestamp above the instructions and the hit rate goes to zero while every
+  test passes and every response is still correct. This stage reads each request, compares digests
+  against what it has seen, and reports two findings with different fixes:
+  `unstable_system_prompt` (the first message is never the same twice) and `unstable_tool_order`
+  (one unchanging tool set, serialized from an unordered container). It never modifies a request,
+  because the fix is always in the caller's prompt assembly and a stage that "helpfully" reordered
+  a tool list would be rewriting application logic it does not understand. Findings are readable
+  as data through `Optimizer.findings`, not just as a log line, so a smoke test can assert on them
+  before an invoice does.
+- **A workload pair that prices that bug rather than asserting it.** `timestamped_agent` is
+  `multi_turn_chat` with a clock above the system prompt instead of below it -- one line different.
+  Against the simulator's automatic-prefix-cache model the clean version has **16,128 of 19,050**
+  prompt tokens served from the provider's cache and the broken one has **zero**. The detector
+  fires on exactly one of the two, which is what makes the pair a test of the detector and not
+  just an illustration.
+- **The tool-order check is exact, not statistical, and a test is why.** It was first written as a
+  distinct-ratio threshold like the system-prompt check, and could not detect the bug it existed
+  for: there are only *n!* orderings of *n* tools, so a genuinely random ordering bug on a small
+  tool set repeats constantly and never clears any sensible ratio. It now fires when the sorted
+  digest never varied and the unsorted one did -- unambiguous, because unstable ordering is never
+  something a caller wants at any frequency.
 - **Tool cost, the largest evidenced gap in this package, is now addressable.** Anthropic's
   published figure for deferring tool loading is an 85% token reduction with MCP-evaluation
   accuracy rising 49% -> 74%, and until now nothing here touched `request.tools` at all -- two

@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from optio_optimize.pipeline import AsyncProviderCall, ProviderCall
     from optio_optimize.savings import SavingsReport
     from optio_optimize.stages.base import Stage
+    from optio_optimize.stages.diagnostics import PrefixFinding
     from optio_optimize.stages.semantic_cache import SimilarityFn
     from optio_optimize.stages.summarize import Summarizer
     from optio_optimize.types import LLMRequest, LLMResponse
@@ -179,3 +180,25 @@ class Optimizer:
         wrong by two stages when it was replaced.
         """
         return tuple(self._pipeline.stages)
+
+    @property
+    def findings(self) -> tuple[PrefixFinding, ...]:
+        """Diagnoses of why caching is not paying, if any have been reached.
+
+        Empty until ``detect_unstable_prefix`` has seen enough requests to
+        distinguish a broken prefix from a young process -- and empty forever
+        if nothing is wrong, which is the ordinary case.
+
+        Exposed as data rather than left in the log because the caller who
+        needs this is often not the one reading logs: a hit rate that should be
+        70% and is 0% is a production cost problem, and asserting on this tuple
+        in a smoke test catches it before the invoice does.
+        """
+        from optio_optimize.stages.diagnostics import UnstablePrefixStage
+
+        return tuple(
+            finding
+            for stage in self._pipeline.stages
+            if isinstance(stage, UnstablePrefixStage)
+            for finding in stage.findings
+        )
