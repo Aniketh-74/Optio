@@ -577,6 +577,7 @@ Append to `tests/optimize/test_invariants.py`:
 
 ```python
 from dataclasses import replace
+from typing import Any
 
 from optio_optimize.invariants import (
     CALLED_TOOL_REMOVED,
@@ -605,6 +606,24 @@ def _agent_loop(steps: int = 6) -> LLMRequest:
 
 def _transform_rules(original: LLMRequest, sent: LLMRequest) -> set[str]:
     return {v.rule for v in check_transform(original, sent)}
+
+
+def _called_tool_loop() -> LLMRequest:
+    """An agent loop that has already called `search`, so every rule can fire."""
+    return LLMRequest(
+        model="gpt-4o",
+        messages=(
+            Message(role="system", content="You are a support agent."),
+            Message(role="user", content="Refund the damaged widget."),
+            Message(
+                role="assistant",
+                content="",
+                extra={"tool_calls": [{"id": "c1", "function": {"name": "search"}}]},
+            ),
+            _result("c1"),
+        ),
+        temperature=0.0,
+    )
 
 
 class TestPreservationRules:
@@ -684,31 +703,67 @@ class TestPreservationRules:
         assert CALLED_TOOL_REMOVED in _transform_rules(original, replace(original, tools=(_SEARCH,)))
 
 
+def _damaged_drop_user(original: LLMRequest) -> LLMRequest:
+    return original.with_messages(tuple(m for m in original.messages if m.role != "user"))
+
+
+def _damaged_drop_system(original: LLMRequest) -> LLMRequest:
+    return original.with_messages(tuple(m for m in original.messages if m.role != "system"))
+
+
+def _damaged_reorder(original: LLMRequest) -> LLMRequest:
+    return original.with_messages(tuple(reversed(original.messages)))
+
+
+def _damaged_add_tool(original: LLMRequest) -> LLMRequest:
+    return replace(original, tools=(*original.tools, _LOOKUP))
+
+
+def _damaged_remove_called_tool(original: LLMRequest) -> LLMRequest:
+    return replace(original, tools=())
+
+
+#: Each preservation rule paired with a transform that must trigger it. A rule
+#: with no entry here has no proof it can fire; a rule whose entry does not fire
+#: is broken. The two tests below catch those two failures separately.
+_DAMAGE: dict[str, Any] = {
+    LAST_USER_MESSAGE_DROPPED: _damaged_drop_user,
+    SYSTEM_PROMPT_DROPPED: _damaged_drop_system,
+    MESSAGE_ORDER_CHANGED: _damaged_reorder,
+    TOOLS_ADDED: _damaged_add_tool,
+    CALLED_TOOL_REMOVED: _damaged_remove_called_tool,
+}
+
+
 class TestEveryPreservationRuleCanFail:
-    """A rule that cannot fail is not a rule.
+    """A rule that cannot fail is not a rule."""
 
-    Each case above pairs a damaged transform with the rule it must trigger;
-    this asserts the set is complete, so adding a constant without a failing
-    case is caught here rather than by nobody.
-    """
+    @pytest.mark.parametrize("rule", sorted(_DAMAGE))
+    def test_the_rule_fires_on_a_transform_that_breaks_it(self, rule):
+        original = replace(_called_tool_loop(), tools=(_SEARCH,))
+        damaged = _DAMAGE[rule](original)
+        assert rule in _transform_rules(original, damaged), (
+            f"{rule} did not fire on a transform built specifically to break it"
+        )
 
-    def test_all_rule_constants_have_a_failing_case(self):
+    def test_every_preservation_constant_has_a_damage_case(self):
+        # The other direction: a rule added to the module with no proof it can
+        # fire. Reads the module rather than a hand-kept list, so adding a
+        # constant and forgetting its damage case fails here.
         from optio_optimize import invariants
 
-        preservation = {
-            invariants.LAST_USER_MESSAGE_DROPPED,
-            invariants.SYSTEM_PROMPT_DROPPED,
-            invariants.MESSAGE_ORDER_CHANGED,
-            invariants.TOOLS_ADDED,
-            invariants.CALLED_TOOL_REMOVED,
-        }
-        exercised = {
-            name
+        declared = {
+            getattr(invariants, name)
             for name in dir(invariants)
             if name.isupper() and isinstance(getattr(invariants, name), str)
         }
-        covered = {getattr(invariants, n) for n in exercised} & preservation
-        assert covered == preservation
+        absolute = {
+            TOOL_RESULT_UNPAIRED,
+            TOOL_RESULT_UNMATCHED_ID,
+            EMPTY_CONTENT_UNATTACHED,
+            NO_ANSWERABLE_MESSAGE,
+        }
+        assert (declared - absolute) == set(_DAMAGE)
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -944,6 +999,7 @@ by which the marker our pipeline places becomes that field.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -1122,24 +1178,39 @@ class TestCacheHonesty:
 
 class TestFailOpen:
     @pytest.mark.asyncio
-    async def test_untranslatable_kwargs_reach_the_real_client(self, async_client, fake):
-        wrap_anthropic_client(async_client)
-        # `messages` as a bare string is not something this package can model.
-        # It must not raise here; the SDK's own validation owns that.
-        with pytest.raises(Exception):
-            await async_client.messages.create(model="claude-haiku-4-5", max_tokens=8, messages="x")
+    async def test_an_unmodellable_request_still_reaches_the_provider(self, async_client, fake):
+        # Fail-open (ADR-013 rule 1) promises the call still happens -- not that
+        # *some* exception occurs, which `pytest.raises(Exception)` would accept
+        # from any bug anywhere. Assert the promise: content this package does
+        # not model (a block list rather than a string) goes out unoptimized and
+        # the caller gets the provider's own answer.
+        optimizer = Optimizer()
+        wrap_anthropic_client(async_client, optimizer=optimizer)
+
+        reply = await async_client.messages.create(
+            **_kwargs(messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}])
+        )
+
+        assert reply.content[0].text == "hello there"
+        assert len(fake.requests) == 1
 
     @pytest.mark.asyncio
     async def test_a_streaming_call_bypasses_the_wrapper(self, async_client, fake):
-        wrap_anthropic_client(async_client, exact_cache=True)
+        # Wrapped exactly once. Wrapping twice would satisfy the assertion
+        # below because the outer wrapper never saw the call -- a different
+        # fact from the one under test.
         optimizer = Optimizer()
         wrap_anthropic_client(async_client, optimizer=optimizer)
-        # A stream=True call must not be counted by the optimizer at all.
-        try:
+
+        # The mock transport returns JSON rather than SSE, so the SDK's stream
+        # parser will object. Beside the point: what matters is that the
+        # request reached the real client and that no stage ran.
+        with contextlib.suppress(Exception):
             await async_client.messages.create(**_kwargs(stream=True))
-        except Exception:
-            pass
-        assert optimizer.report.requests == 0
+
+        assert len(fake.requests) == 1, "the streaming call never reached the client"
+        assert fake.requests[0]["stream"] is True
+        assert optimizer.report.requests == 0, "a streaming call went through the pipeline"
 ```
 
 - [ ] **Step 2: Add the asyncio marker dependency if absent**
