@@ -268,3 +268,66 @@ class TestFidelityIsDeclaredHonestly:
         assert not MinifyToolsStage().lossy
         assert not CapToolResultsStage().lossy
         assert PruneToolsStage().lossy
+
+
+class TestSavingsAreCalibratedAgainstWhatProvidersBill:
+    """Two constants, both measured live, and they must not be merged.
+
+    A provider does not bill the JSON you hand it -- it re-renders tool schemas
+    into its own compact form -- so counting serialized JSON overstates. The
+    correction is two numbers because it has to be: 0.65 calibrates the *total*
+    cost of a tool set almost exactly, while the annotation keys this module
+    strips are unusually punctuation-heavy and their removal shrinks the real
+    bill by only ~0.37 of the JSON difference.
+
+    Verified live against gpt-4o-mini on 2026-07-29: with the constants in
+    place the stage claims 1,190 tokens on ``mcp_agent`` where the provider
+    stopped billing 1,210 -- 1.7% out, and understating. Without them it
+    claimed 3,240.
+    """
+
+    def test_the_two_constants_are_not_the_same_number(self) -> None:
+        from optio_optimize.stages.tools import ANNOTATION_STRIP_CALIBRATION
+        from optio_optimize.tokens import TOOL_SCHEMA_CALIBRATION
+
+        assert ANNOTATION_STRIP_CALIBRATION != TOOL_SCHEMA_CALIBRATION, (
+            "collapsing these to one multiplier reintroduces a 2.7x overstatement "
+            "of minify_tools' value; see either constant's measurement table"
+        )
+
+    def test_the_total_calibration_matches_the_live_measurement(self) -> None:
+        # 10 MCP-shaped tools: our raw JSON count was 1395, OpenAI billed 898.
+        from optio_optimize.tokens import TOOL_SCHEMA_CALIBRATION
+
+        assert round(1395 * TOOL_SCHEMA_CALIBRATION) == pytest.approx(898, abs=15)
+
+    def test_the_strip_calibration_matches_the_live_measurement(self) -> None:
+        # Same run: stripping moved our raw count by 324, the bill by 121.
+        from optio_optimize.stages.tools import ANNOTATION_STRIP_CALIBRATION
+
+        assert round(324 * ANNOTATION_STRIP_CALIBRATION) == pytest.approx(121, abs=5)
+
+    def test_a_claimed_saving_is_smaller_than_the_raw_json_difference(self) -> None:
+        """The property that matters more than either constant's exact value.
+
+        Whatever the calibration is, the claim must never be the raw JSON
+        delta -- that figure is knowably too large, and reporting it inflates
+        every savings table this stage appears in.
+        """
+        import json
+
+        tools = tuple(
+            _openai_tool(f"tool_{n}", field={"type": "string", "title": "A rather long title"})
+            for n in range(10)
+        )
+        request = _request(tools=tools)
+        ctx = _ctx()
+        result = MinifyToolsStage().before(request, ctx)
+
+        def raw(ts: tuple[dict[str, Any], ...]) -> int:
+            return sum(
+                ctx.counter.count_text(json.dumps(t, separators=(",", ":")), "gpt-4o") for t in ts
+            )
+
+        raw_delta = raw(tools) - raw(result.request.tools)
+        assert 0 < result.saved_input_tokens < raw_delta

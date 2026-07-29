@@ -607,6 +607,89 @@ separated from the assistant message that called it. This is the invariant the
 stage shares with `trim_history`, which `tool_calling_chat` confirmed for
 trimming — now confirmed for summarizing rather than inherited from it.
 
+## The 2026-07-29 wave: four stages measured, three verdicts against them
+
+Live `gpt-4o-mini`, **$0.0654 across 336 calls** for the main sweep plus ~$0.04 of
+probes. Every number below is from a real API call.
+
+### The harness was not sending tool schemas at all
+
+Before any of it meant anything, the live run of `mcp_agent` had to be thrown
+away once. `OpenAIProvider` forwarded messages, `max_tokens`, `temperature` and
+`response_format` — and not `tools`. So the workload built specifically to
+measure tool cost sent **zero tools**, and `minify_tools` reported saving 3,240
+tokens while the provider billed byte-identical totals in both arms (76,439
+either way). It did not fail; it measured nothing and said so confidently.
+
+This is the same failure the adapter's own comments already describe one field
+over: `tool_calls`/`tool_call_id` were dropped by the first version of that
+method and found live. A missing field in a provider adapter does not raise —
+it quietly changes what you are measuring.
+
+### Our tool-token estimate overstated the provider's by 1.5×
+
+With schemas actually being sent, a second problem surfaced: providers do not
+bill the JSON you hand them. They re-render tool schemas into a compact internal
+form, so counting serialized JSON overstates. Measured by differencing against a
+no-tools call:
+
+| tools | our JSON | OpenAI billed | ratio | our Δ from stripping | real Δ | ratio |
+|---|---|---|---|---|---|---|
+| 1 | 138 | 103 | 1.34 | 32 | 12 | 0.375 |
+| 3 | 415 | 279 | 1.49 | 95 | 35 | 0.368 |
+| 5 | 695 | 458 | 1.52 | 160 | 60 | 0.375 |
+| 10 | 1395 | 898 | 1.55 | 324 | 121 | 0.373 |
+
+**Two different corrections, and they cannot be merged.** `0.65` calibrates the
+*total* nearly exactly (0.65 × 1395 = 907 against 898 billed). But the keys
+`minify_tools` strips are unusually punctuation-heavy — `"title": "Record Id"`
+is mostly quoting a provider's renderer never emits — so their removal shrinks
+the real bill by only `0.37` of the JSON difference.
+
+With both in place the stage claims **1,190** tokens on `mcp_agent` where the
+provider stopped billing **1,210**: 1.7% out, and understating. Uncorrected it
+claimed 3,240.
+
+### `concision` loses on both workloads, and the literature's 30–50% did not appear
+
+| workload | input | output | cost | identical |
+|---|---|---|---|---|
+| `multi_turn_chat` | **−1.1%** | +4.5% | **−4.0%** | 11/12 |
+| `unique_questions` | **−110.5%** | +0.4% | **−21.3%** | 2/12 |
+
+Output fell 4.5%, not 30–50%, and the one-sentence instruction cost more than
+that saved. On short prompts it more than doubles the input. **Stays off**, now
+on evidence rather than on caution.
+
+### The timestamp bug, priced against real OpenAI usage numbers
+
+| workload | input | provider-cached |
+|---|---|---|
+| `multi_turn_chat` | 19,242 | **16,768** (87.1%) |
+| `timestamped_agent` | 19,392 | **0** |
+
+One line apart. `detect_unstable_prefix` fired on `timestamped_agent` and stayed
+silent on `multi_turn_chat`. This is also the first time the simulator's
+automatic-cache model has *agreed* with live data (16,128 simulated vs 16,768
+measured).
+
+### append-then-compact loses on cost and wins on fidelity
+
+50 turns, `multi_turn_chat_long`:
+
+| mode | input | output | cost | identical |
+|---|---|---|---|---|
+| slide every turn | 34.1% | 26.8% | **27.1%** | 24/50 |
+| compact @ 2200 tokens | 26.6% | 8.2% | **25.1%** | **42/50** |
+
+**The published guidance did not reproduce.** Sliding every turn is 2 points
+cheaper live, not more expensive — and the simulation had said the opposite by a
+wide margin, for the third time in this project's history and in the same
+direction. What compaction actually buys is fidelity: 42 of 50 responses
+unchanged against 24 of 50, because it keeps more context between cuts. That
+reframes the option as a cost-versus-fidelity dial rather than a free win, which
+is not how it is usually presented.
+
 ## Overhead
 
 Our own cost per request, measured with the provider's time excluded:

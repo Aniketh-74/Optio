@@ -411,6 +411,16 @@ class OpenAIProvider:
             max_completion_tokens=request.max_tokens,
             temperature=request.temperature,
             response_format=cast("Any", request.response_format),
+            # Tool schemas are ordinary billed input, and forgetting them here
+            # does not fail -- it silently measures the wrong thing. The first
+            # version of this method omitted them, so the entire live run of
+            # `mcp_agent` sent no tools at all: `minify_tools` reported saving
+            # 3,240 tokens while the provider billed byte-identical totals in
+            # both arms (76,439 either way), because the field the stage had
+            # rewritten was dropped on the floor. Exactly the failure the
+            # tool_calls comment above describes, one field over.
+            tools=cast("Any", list(request.tools) or None),
+            stop=cast("Any", list(request.stop) or None),
         )
         usage = completion.usage
         cached = 0
@@ -517,6 +527,14 @@ class AnthropicProvider:
             system=cast("Any", system_blocks or None),
             messages=cast("list[MessageParam]", turns),
             temperature=request.temperature if request.temperature is not None else 1.0,
+            # Anthropic's schema shape differs from OpenAI's -- name and
+            # input_schema at the top level rather than nested under
+            # "function" -- so a request built for one is translated here
+            # rather than forwarded. Same omission as OpenAIProvider had, and
+            # it would fail the same silent way: tools rewritten by a stage,
+            # then never sent.
+            tools=cast("Any", [_as_anthropic_tool(t) for t in request.tools] or None),
+            stop_sequences=cast("Any", list(request.stop) or None),
         )
         usage = reply.usage
         cached = getattr(usage, "cache_read_input_tokens", 0) or 0
@@ -582,3 +600,27 @@ def available_live_provider(
         except RuntimeError:
             continue
     return None
+
+
+def _as_anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
+    """Translate a tool schema into Anthropic's shape.
+
+    OpenAI nests ``name``/``description``/``parameters`` under ``function``;
+    Anthropic puts ``name``/``description``/``input_schema`` at the top level.
+    A schema already in Anthropic's shape passes through, so a caller who
+    writes for either provider gets the same behaviour here.
+
+    Args:
+        tool: A tool schema in either provider's shape.
+
+    Returns:
+        The schema as Anthropic expects it.
+    """
+    function = tool.get("function")
+    if not isinstance(function, dict):
+        return tool
+    return {
+        "name": function.get("name", ""),
+        "description": function.get("description", ""),
+        "input_schema": function.get("parameters", {"type": "object", "properties": {}}),
+    }

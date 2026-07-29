@@ -23,6 +23,23 @@ be promoted to the top level deliberately.
 
 ### Fixed
 
+- **The live benchmark harness was not sending tool schemas at all.** `OpenAIProvider` forwarded
+  messages, `max_tokens`, `temperature` and `response_format` — and not `tools`. So `mcp_agent`,
+  the workload built specifically to measure tool cost, sent zero tools: `minify_tools` reported
+  saving 3,240 tokens while the provider billed byte-identical totals in both arms (76,439
+  either way). It did not fail. It measured nothing, confidently. This is the same failure the
+  adapter's own comments already record one field over — `tool_calls`/`tool_call_id` were dropped
+  by the first version of that method and found the same way. `AnthropicProvider` had the same
+  omission and is fixed with it, including the schema-shape translation Anthropic needs.
+- **Tool-token estimates overstated what providers actually bill by ~1.5×,** because providers
+  re-render tool schemas into a compact internal form rather than billing the JSON handed to them.
+  Two measured corrections, which cannot be merged into one: `TOOL_SCHEMA_CALIBRATION = 0.65`
+  gets a tool set's *total* nearly exact (0.65 × 1395 = 907 against 898 billed), while
+  `ANNOTATION_STRIP_CALIBRATION = 0.37` covers the delta from stripping annotation keys, which
+  are unusually punctuation-heavy and so shrink the real bill by far less than they shrink the
+  JSON. Both derived from four measured sizes, consistent within 2%. With them, `minify_tools`
+  claims **1,190** tokens on `mcp_agent` where the provider stopped billing **1,210** — 1.7% out
+  and understating. Without them it claimed 3,240.
 - **`semantic_cache` stored entries under text no lookup could ever produce, so its hit rate was
   silently zero whenever any later stage rewrote the prompt.** `before` looked up the request as
   it received it; `after` re-derived the key from the request *as sent* -- every later stage's

@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from optio_optimize.similarity import overlap_ratio, words
 from optio_optimize.stages.base import Fidelity, Stage, StageResult
+from optio_optimize.tokens import count_tools
 
 if TYPE_CHECKING:
     from optio_optimize.stages.base import StageContext
@@ -77,9 +78,49 @@ MIN_TOOL_RELEVANCE = 0.05
 #: whether or not it fits, which is a worse failure than carrying the schemas.
 MIN_KEPT_TOOLS = 3
 
+#: Fraction of the raw-JSON size difference that a provider actually stops
+#: billing when annotation keys are stripped.
+#:
+#: Separate from :data:`~optio_optimize.tokens.TOOL_SCHEMA_CALIBRATION`, and it
+#: has to be: that constant calibrates the *total* cost of a tool set and gets
+#: it nearly exact (0.65 x 1395 = 907 against 898 billed), but the keys this
+#: stage removes are unusually JSON-heavy -- ``"title": "Record Id"`` is mostly
+#: punctuation and quoting that a provider's own schema renderer never emits.
+#: So the delta shrinks by much more than the total does, and one multiplier
+#: cannot serve both.
+#:
+#: Measured live against ``gpt-4o-mini``, 2026-07-29, tool cost isolated by
+#: differencing against a no-tools call:
+#:
+#: ======  ===========  ============  =======
+#: tools   our delta    real delta    ratio
+#: ======  ===========  ============  =======
+#: 1       32           12            0.375
+#: 3       95           35            0.368
+#: 5       160          60            0.375
+#: 10      324          121           0.373
+#: ======  ===========  ============  =======
+#:
+#: Consistent to within 2% across the range, and it predicts the independent
+#: ``mcp_agent`` result to within 1%: 3,240 raw x 0.37 = 1,199 against 1,210
+#: the provider actually stopped billing. Before this existed the stage claimed
+#: the raw 3,240 -- a 2.7x overstatement of its own value.
+ANNOTATION_STRIP_CALIBRATION = 0.37
+
 
 def _tool_tokens(tools: tuple[dict[str, Any], ...], ctx: StageContext, model: str) -> int:
-    """Tokens a tool set costs, serialized the way ``count_request`` serializes it."""
+    """Tokens a tool set costs, calibrated against what a provider really bills.
+
+    Goes through :func:`~optio_optimize.tokens.count_tools` rather than
+    counting the JSON directly. Counting the JSON is what this function used to
+    do, and it overstated ``minify_tools``'s saving on ``mcp_agent`` by 2.7x --
+    3,240 claimed against 1,210 the provider actually stopped billing.
+    """
+    return count_tools(tools, ctx.counter, model)
+
+
+def _raw_tool_tokens(tools: tuple[dict[str, Any], ...], ctx: StageContext, model: str) -> int:
+    """Uncalibrated JSON token count, for scoring a *difference* rather than a total."""
     return sum(
         ctx.counter.count_text(json.dumps(tool, separators=(",", ":")), model) for tool in tools
     )
@@ -141,9 +182,13 @@ class MinifyToolsStage(Stage):
         if stripped == request.tools:
             return self.declines(request)
 
-        before = _tool_tokens(request.tools, ctx, request.model)
-        after = _tool_tokens(stripped, ctx, request.model)
-        saved = max(0, before - after)
+        # Scored on the *raw* JSON difference and then calibrated, rather than
+        # differencing two already-calibrated totals: the keys this stage
+        # removes shrink the provider's bill by a different fraction than the
+        # schema as a whole does. See ANNOTATION_STRIP_CALIBRATION.
+        raw_before = _raw_tool_tokens(request.tools, ctx, request.model)
+        raw_after = _raw_tool_tokens(stripped, ctx, request.model)
+        saved = int(max(0, raw_before - raw_after) * ANNOTATION_STRIP_CALIBRATION)
         if saved == 0:
             # The keys were present but cost nothing measurable. Rewriting the
             # caller's schemas for no gain is pure risk.
