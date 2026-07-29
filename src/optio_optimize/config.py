@@ -307,6 +307,17 @@ PRICING: dict[str, ModelPricing] = {
     "claude-opus-4": ModelPricing(15.00, 75.00, 1.50),
     "claude-sonnet-4": ModelPricing(3.00, 15.00, 0.30),
     "claude-haiku-4": ModelPricing(0.80, 4.00, 0.08),
+    # Haiku 4.5, added 2026-07-30 for the Anthropic prefix-cache measurement.
+    # Both the alias and the dated id: callers write the alias, and the API
+    # reports the dated one back on every response, so a table with only one of
+    # them makes half the lookups return None. Rates are the published list
+    # price at time of writing and share this table's standing staleness
+    # caveat -- it is data, auditable against the vendor's page, and
+    # overridable. The measurement that motivated the entry is a *token* count
+    # (`cache_read_input_tokens`); the dollar figure derived from it is only as
+    # current as this row.
+    "claude-haiku-4-5": ModelPricing(1.00, 5.00, 0.10),
+    "claude-haiku-4-5-20251001": ModelPricing(1.00, 5.00, 0.10),
     "gemini-2.0-flash": ModelPricing(0.10, 0.40, 0.025),
 }
 
