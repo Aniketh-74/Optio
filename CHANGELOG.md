@@ -74,6 +74,27 @@ be promoted to the top level deliberately.
 
 ### Fixed
 
+- **`trim_history` dropped the task in agent loops, and did it silently.** In a chat the first user
+  turn is an old question that has been answered; in an agent loop it *is the task*, and everything
+  after it is the agent's own tool traffic. The sliding window's oldest entry was therefore the one
+  statement of what the model was supposed to do — and providers accept a conversation with no user
+  message at all, so nothing failed. The model inferred a task from the tool results and answered a
+  question nobody asked.
+
+  Found by `scripts/real_agent_run.py`, a new harness that runs a real OpenAI Agents SDK agent with
+  four real tools through the optimizer. Nothing in this repo had ever done that: the framework
+  tests check adapter recognition and say in their own docstring that "nothing here calls a model",
+  and the adapter tests mock the HTTP transport. It broke on the first run.
+
+  Isolated per ADR-015 rule 2: disabling `structured_output` changed nothing, disabling
+  `trim_history` fixed it. The stage that broke the answer also cost *more* — output more than
+  doubled (140 → 288 tokens), because a model that has lost the question writes longer. Fixed:
+  3,757 in / 288 out / $0.00074 and wrong, becomes 3,816 in / 131 out / $0.00065 and correct.
+
+  The first user turn is now a structural floor, the way the system prompt already was, rather than
+  a new default — `anchor_turns=0` cannot lower it. There is no workload where discarding the
+  question is the cheap option.
+
 - **`concision`'s instruction was evicting more cache than it cost.** It appended to the *system
   prompt* — the exact region a provider's prefix cache covers — so it did not merely add its own
   204 tokens, it shifted everything below the edit out of OpenAI's 128-token block alignment and

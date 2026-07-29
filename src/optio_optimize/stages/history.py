@@ -165,7 +165,32 @@ class TrimHistoryStage(Stage):
 
         history = messages[boundary:]
         keep = ctx.config.recent_turns
-        anchor = ctx.config.anchor_turns
+
+        # The first user turn is not history either, and for a stronger reason
+        # than the system prompt above it.
+        #
+        # In a chat, turn 1 is an old question that has been answered and
+        # superseded. In an agent loop it is *the task*, and every message
+        # after it is the agent's own tool traffic. Dropping it leaves the
+        # model a system prompt, a pile of tool results, and no statement of
+        # what it was asked to do -- so it infers a task from the evidence and
+        # answers a question nobody asked.
+        #
+        # Found by running a real Agents SDK agent (scripts/real_agent_run.py),
+        # not by any test here: providers accept a conversation with no user
+        # message at all, so this fails silently. On a four-tool support task
+        # the trimmed arm dumped a markdown table of order fields instead of
+        # the two-sentence answer requested, and cost *more* than trimming
+        # correctly did, because an unfocused model writes longer:
+        #
+        #   defaults            3,757 in / 288 out / $0.00074   wrong
+        #   first turn kept     3,816 in / 142 out / $0.00066   correct
+        #
+        # A floor rather than a default, so `anchor_turns=0` still means "no
+        # anchoring beyond this". There is no workload where discarding the
+        # question is the cheap option.
+        task_anchor = 1 if history and history[0].role == "user" else 0
+        anchor = max(ctx.config.anchor_turns, task_anchor)
         if len(history) <= keep + anchor:
             return self.declines(request)
 

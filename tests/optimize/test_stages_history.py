@@ -53,8 +53,22 @@ class TestItDropsAgedOutHistory:
 
         result = stage.before(request, ctx)
 
-        assert len(result.request.messages) == 1 + 6
+        # system + the anchored first question + an elision marker + the window.
+        assert len(result.request.messages) == 1 + 1 + 1 + 6
         assert result.saved_input_tokens > 0
+
+    def test_the_opening_question_is_never_dropped(self) -> None:
+        # In a chat this is an old question; in an agent loop it is the task,
+        # and every message after it is the agent's own tool traffic. A real
+        # Agents SDK run (scripts/real_agent_run.py) sent a conversation with
+        # no user message at all -- the provider accepted it, and the model
+        # answered a question it had to guess at.
+        stage = TrimHistoryStage()
+
+        result = stage.before(_chat(turns=10), _ctx(recent_turns=6))
+
+        kept = result.request.messages
+        assert kept[1].content == "question 0"
 
     def test_the_system_message_always_survives(self) -> None:
         stage = TrimHistoryStage()
@@ -73,8 +87,14 @@ class TestItDropsAgedOutHistory:
         result = stage.before(request, ctx)
 
         kept = result.request.messages[1:]
-        assert kept[0].content == "question 8"
+        assert kept[0].content == "question 0"  # anchored: the task
         assert kept[-1].content == "answer 9"
+        assert [m.content for m in kept][-4:] == [
+            "question 8",
+            "answer 8",
+            "question 9",
+            "answer 9",
+        ]
 
     def test_multiple_system_messages_all_survive(self) -> None:
         stage = TrimHistoryStage()
@@ -91,7 +111,7 @@ class TestItDropsAgedOutHistory:
 
         assert result.request.messages[0].content == "rule one"
         assert result.request.messages[1].content == "rule two"
-        assert len(result.request.messages) == 2 + 4
+        assert len(result.request.messages) == 2 + 1 + 1 + 4
 
 
 class TestItDeclinesWhenThereIsNothingToTrim:
@@ -144,12 +164,11 @@ class TestItNeverOrphansAToolResult:
         result = stage.before(request, ctx)
 
         kept = result.request.messages
-        assert kept[1].role == "assistant"
-        assert kept[1].content == "calling fetch_record(0)"
-        assert kept[2].role == "tool"
-        # Only the leading user turn -- entirely before the tool exchange --
-        # was safe to drop.
-        assert [m.content for m in messages if m not in kept] == ["user0"]
+        # "user0" is the task and is now anchored, so the only cut available
+        # is between it and the tool exchange -- which is not safe, because it
+        # would orphan the tool result. Trimming nothing is the right answer.
+        assert kept == messages
+        assert result.saved_input_tokens == 0
 
     def test_parallel_tool_results_all_move_together(self) -> None:
         stage = TrimHistoryStage()
@@ -167,7 +186,8 @@ class TestItNeverOrphansAToolResult:
         result = stage.before(request, ctx)
 
         kept = result.request.messages
-        assert kept[1].content == "calling two tools"
+        assert kept[1].content == "user0"  # the anchored task
+        assert "calling two tools" in [m.content for m in kept]
         assert [m.content for m in kept if m.role == "tool"] == ["result a", "result b"]
 
     def test_no_safe_cut_point_means_no_trim(self) -> None:
@@ -204,7 +224,9 @@ class TestItNeverOrphansAToolResult:
         result = stage.before(request, ctx)
 
         kept = result.request.messages
-        assert len(kept) == 1 + 2  # system + exactly the requested window, no extension needed
+        # system + anchored task + elision + exactly the requested window.
+        assert len(kept) == 1 + 1 + 1 + 2
+        assert kept[-2:] == messages[-2:]
 
 
 class TestItIntegratesWithThePipeline:
@@ -228,9 +250,11 @@ class TestItIntegratesWithThePipeline:
             )
             history.append(Message(role="assistant", content=f"answer {turn}"))
 
-        ceiling = 1 + OptimizeConfig().recent_turns
-        # Unbounded, the last call would have carried 41 messages. Trimming
-        # holds every call to system + the recent-turn window.
+        # system + the anchored opening question + an elision marker + window.
+        # The constant matters far less than the property: unbounded, the last
+        # call would have carried 41 messages, and the anchor adds a fixed two
+        # rather than a growing number -- which is the whole claim.
+        ceiling = 1 + 1 + 1 + OptimizeConfig().recent_turns
         assert max(seen_sizes) <= ceiling
         assert seen_sizes[-1] <= ceiling
 
@@ -368,14 +392,17 @@ class TestAnchoredTrimming:
 
         assert any("omitted" in m.content for m in result.request.messages)
 
-    def test_a_plain_slide_declares_no_gap(self) -> None:
-        # Without an anchor the conversation reads as though it started later,
-        # which is coherent on its own and needs no marker.
+    def test_even_a_plain_slide_declares_its_gap_now(self) -> None:
+        # This used to assert the opposite. A pure front cut leaves a
+        # conversation that reads as though it started later, which needs no
+        # marker -- but there is no longer such a thing as a pure front cut,
+        # because the opening turn is always anchored, so there is always a
+        # gap between it and the window.
         stage = TrimHistoryStage()
 
         result = stage.before(_chat(turns=20), _ctx(recent_turns=6, anchor_turns=0))
 
-        assert not any("omitted" in m.content for m in result.request.messages)
+        assert any("omitted" in m.content for m in result.request.messages)
 
     def test_it_still_saves_tokens(self) -> None:
         stage = TrimHistoryStage()
@@ -402,3 +429,78 @@ class TestAnchoredTrimming:
     def test_a_negative_anchor_is_rejected(self) -> None:
         with pytest.raises(OptimizeConfigError, match="cannot be negative"):
             OptimizeConfig(anchor_turns=-1)
+
+
+class TestTheTaskIsNotHistory:
+    """The bug a real agent found, and no chat workload could.
+
+    In a chat, the first user turn is an old question that has been answered.
+    In an agent loop it is *the task*, and everything after it is the agent's
+    own tool traffic -- so a sliding window whose oldest entry is the task
+    drops the only statement of what the model is supposed to do.
+
+    It fails silently: providers accept a conversation with no user message at
+    all. The live run (scripts/real_agent_run.py) got a markdown dump of order
+    fields instead of the two-sentence answer requested, and paid more for it.
+    """
+
+    @staticmethod
+    def _agent_loop(steps: int) -> LLMRequest:
+        """System prompt, one task, then nothing but tool traffic."""
+        messages: list[Message] = [
+            Message(role="system", content="You are a support agent."),
+            Message(role="user", content="Refund the damaged blue widget for alice@example.com."),
+        ]
+        for step in range(steps):
+            messages.append(Message(role="assistant", content=f"calling tool {step}"))
+            messages.append(Message(role="tool", content=f"result {step}", name=f"tool_{step}"))
+        return LLMRequest(model="gpt-4o", messages=tuple(messages), temperature=0.0)
+
+    def test_the_task_survives_a_long_tool_loop(self) -> None:
+        result = TrimHistoryStage().before(self._agent_loop(steps=10), _ctx(recent_turns=4))
+
+        kept = result.request.messages
+        assert any(m.role == "user" for m in kept), (
+            "the conversation went to the provider with no user message at all; "
+            "the model has to guess what it was asked"
+        )
+        assert kept[1].content.startswith("Refund the damaged")
+
+    def test_it_still_trims(self) -> None:
+        # The fix must not turn the stage off -- anchoring one turn is not the
+        # same as declining, and a stage that silently stops saving is the
+        # failure mode config.py warns about.
+        request = self._agent_loop(steps=10)
+        result = TrimHistoryStage().before(request, _ctx(recent_turns=4))
+
+        assert result.saved_input_tokens > 0
+        assert len(result.request.messages) < len(request.messages)
+
+    def test_the_gap_is_declared(self) -> None:
+        result = TrimHistoryStage().before(self._agent_loop(steps=10), _ctx(recent_turns=4))
+
+        assert any("omitted" in m.content for m in result.request.messages)
+
+    def test_no_tool_result_is_orphaned(self) -> None:
+        # Anchoring moves the cut point, which is exactly where the orphan
+        # hazard lives: a tool message whose assistant call was dropped is an
+        # invalid request on every major provider.
+        kept = TrimHistoryStage().before(self._agent_loop(steps=10), _ctx(recent_turns=4))
+        messages = kept.request.messages
+        for index, message in enumerate(messages):
+            if message.role == "tool":
+                assert index > 0, "a tool result led the conversation"
+                assert messages[index - 1].role in {"assistant", "tool"}
+
+    def test_an_agent_loop_with_no_user_turn_is_left_alone_at_the_front(self) -> None:
+        # Not every caller starts with a user message. When the first turn is
+        # not one, there is no task to anchor and the plain window applies.
+        messages = (
+            Message(role="system", content="sys"),
+            *[Message(role="assistant", content=f"step {i}") for i in range(10)],
+        )
+        request = LLMRequest(model="gpt-4o", messages=messages, temperature=0.0)
+
+        result = TrimHistoryStage().before(request, _ctx(recent_turns=4))
+
+        assert result.request.messages[1].content == "step 6"

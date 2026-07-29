@@ -308,7 +308,10 @@ class TestTrimHistoryShrinksTheRealRequest:
 
         sent = fake_openai.requests[0]["messages"]
         assert len(sent) < len(messages)
-        assert len(sent) == 1 + 4  # system + recent_turns
+        # system + the anchored opening question + an elision marker + window.
+        assert len(sent) == 1 + 1 + 1 + 4
+        assert sent[1]["content"] == "q0", "the opening question is the task; it is never history"
+        assert sent[-1]["content"] == "final question"
 
 
 class TestOmitSentinelNormalization:
