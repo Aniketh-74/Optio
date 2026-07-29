@@ -215,3 +215,60 @@ class TestPercentile:
 
     def test_a_high_percentile_never_goes_out_of_bounds(self) -> None:
         assert _percentile([10, 20], 0.99) == 20.0
+
+
+class TestChainOfDraft:
+    """arXiv:2502.18600, and the reasons its numbers may not be yours.
+
+    The paper reports as little as 7.6% of CoT's tokens at equal accuracy. A
+    follow-up (arXiv:2506.10987) finds it degrades on code, where a reasoning
+    step genuinely needs more than five words. So the stage ships off, and the
+    tests here pin behaviour rather than any claimed saving.
+    """
+
+    def test_it_asks_for_shorthand_reasoning(self) -> None:
+        from optio_optimize.stages.output import ChainOfDraftStage
+
+        result = ChainOfDraftStage().before(_request(), _ctx())
+        text = " ".join(m.content for m in result.request.messages)
+
+        assert "five words per step" in text
+
+    def test_a_schema_request_is_declined(self) -> None:
+        # A schema already constrains the reply; stacking a reasoning-style
+        # instruction is how the shorthand ends up inside the JSON.
+        from optio_optimize.stages.output import ChainOfDraftStage
+
+        request = _request(response_format={"type": "json_object"})
+        assert ChainOfDraftStage().before(request, _ctx()).note == ""
+
+    def test_it_does_not_apply_itself_twice(self) -> None:
+        from optio_optimize.stages.output import ChainOfDraftStage
+
+        stage = ChainOfDraftStage()
+        once = stage.before(_request(), _ctx()).request
+        assert stage.before(once, _ctx()).note == ""
+
+    def test_it_claims_no_saving_it_cannot_measure(self) -> None:
+        """The saving is a fraction of reasoning the stage cannot see.
+
+        A negative figure would be worse than a zero: the pipeline derives
+        ``baseline = actual + saved``, so a negative saving puts baseline below
+        actual and breaks the invariant ``Pipeline._finish`` exists to hold.
+        """
+        from optio_optimize.stages.output import ChainOfDraftStage
+
+        result = ChainOfDraftStage().before(_request(), _ctx())
+
+        assert result.saved_input_tokens == 0
+        assert result.saved_output_tokens == 0
+        assert "costs" in result.note, "the instruction's own cost should still be visible"
+
+    def test_it_declares_itself_lossy(self) -> None:
+        from optio_optimize.stages.base import Fidelity
+        from optio_optimize.stages.output import ChainOfDraftStage
+
+        # Not SHAPED: this changes how the model reasons, not how it presents.
+        assert ChainOfDraftStage().fidelity is Fidelity.ALTERED
+        assert ChainOfDraftStage().lossy
+        assert "chain_of_draft" in OptimizeConfig(chain_of_draft=True).lossy_enabled

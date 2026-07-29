@@ -188,3 +188,101 @@ class PruneRetrievalStage(Stage):
             saved_input_tokens=saved,
             note="low-relevance context blocks dropped",
         )
+
+
+class ReorderContextStage(Stage):
+    """Put the strongest retrieved blocks where the model actually looks.
+
+    The one stage in this package that **saves no tokens at all**, and it is
+    here on purpose. Positional attention is not uniform: the "lost in the
+    middle" result (Liu et al., 2023) shows a U-shaped curve, with material at
+    the beginning and end of a long context recovered far more reliably than
+    material buried between them. Chroma's *Context Rot* work sharpens the
+    same point -- degradation with length is non-uniform, and semantically
+    similar distractors are the dominant cause of failure.
+
+    So this reorders context blocks by relevance into an *edge-first* pattern:
+    best block first, second-best last, third-best second, and so on inward,
+    leaving the weakest material in the middle where it does least harm. The
+    question block stays at the tail, as everywhere else in this module.
+
+    **Why a cost package ships a quality-only stage.** Every other stage here
+    that shrinks a prompt does so by deciding something is not worth its
+    tokens, and each of those decisions can be wrong. This one raises the
+    ceiling on how aggressive the others can safely be: if what survives
+    pruning is also positioned where the model reads it best, the same
+    ``MIN_RELEVANCE`` costs less accuracy than it otherwise would. It buys
+    headroom for savings rather than savings.
+
+    ``SHAPED``. No information is added or removed -- the same blocks, in a
+    different order -- but the prompt genuinely differs and a reply may differ
+    with it, which is exactly what ``IDENTICAL`` may not be claimed for.
+
+    **It fights prefix caching, and that is not a small caveat.** Reordering
+    the context block changes the prompt's middle on every request whose
+    retrieval set changed, so anything cached below that point is invalidated.
+    On a workload where retrieval varies per query the region was never
+    cacheable anyway and this is free; on one where the same chunks recur, it
+    is not. Off by default for that reason, not for a quality one.
+    """
+
+    fidelity = Fidelity.SHAPED
+
+    @property
+    def name(self) -> str:
+        """Stable identifier."""
+        return "reorder_context"
+
+    def before(self, request: LLMRequest, ctx: StageContext) -> StageResult:
+        """Reorder context blocks strongest-outward, weakest in the middle."""
+        del ctx
+        changed = False
+        new_messages: list[Message] = []
+
+        for message in request.messages:
+            blocks = _blocks(message.content)
+            if len(blocks) < MIN_BLOCKS_TO_SCORE + 1:
+                new_messages.append(message)
+                continue
+
+            *body, tail = blocks
+            query_words = words(tail)
+            if not query_words:
+                new_messages.append(message)
+                continue
+
+            ranked = sorted(body, key=lambda b: overlap_ratio(b, query_words), reverse=True)
+            arranged = _edges_first(ranked)
+            if arranged == body:
+                new_messages.append(message)
+                continue
+
+            changed = True
+            new_messages.append(message.with_content(_BLOCK_SEP.join([*arranged, tail])))
+
+        if not changed:
+            return self.declines(request)
+        # Zero savings, deliberately, and the note is how the stage appears in
+        # a report at all -- the same convention PrefixCacheStage uses for a
+        # transform whose value is not a token count.
+        return StageResult(
+            request=request.with_messages(tuple(new_messages)),
+            note="context reordered strongest-outward",
+        )
+
+
+def _edges_first(ranked: list[str]) -> list[str]:
+    """Arrange best-first, second-best last, third-best second, and so inward.
+
+    Args:
+        ranked: Blocks already sorted best to worst.
+
+    Returns:
+        The same blocks positioned so the strongest sit at both ends and the
+        weakest in the middle.
+    """
+    front: list[str] = []
+    back: list[str] = []
+    for position, block in enumerate(ranked):
+        (front if position % 2 == 0 else back).append(block)
+    return front + back[::-1]

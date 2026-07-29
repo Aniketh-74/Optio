@@ -54,10 +54,15 @@ from optio_optimize.stages.diagnostics import PrefixFinding, UnstablePrefixStage
 from optio_optimize.stages.history import TrimHistoryStage
 from optio_optimize.stages.output import (
     AdaptiveMaxTokensStage,
+    ChainOfDraftStage,
     ConcisionStage,
     StructuredOutputStage,
 )
-from optio_optimize.stages.retrieval import DeduplicateStage, PruneRetrievalStage
+from optio_optimize.stages.retrieval import (
+    DeduplicateStage,
+    PruneRetrievalStage,
+    ReorderContextStage,
+)
 from optio_optimize.stages.routing import RouteModelsStage
 from optio_optimize.stages.semantic_cache import SemanticCacheStage
 from optio_optimize.stages.summarize import SummarizeHistoryStage
@@ -75,6 +80,7 @@ if TYPE_CHECKING:
 __all__ = [
     "AdaptiveMaxTokensStage",
     "CapToolResultsStage",
+    "ChainOfDraftStage",
     "CompressPromptStage",
     "ConcisionStage",
     "DeduplicateStage",
@@ -84,6 +90,7 @@ __all__ = [
     "PrefixFinding",
     "PruneRetrievalStage",
     "PruneToolsStage",
+    "ReorderContextStage",
     "RouteModelsStage",
     "SemanticCacheStage",
     "Stage",
@@ -167,6 +174,10 @@ def build_stages(
         stages.append(DeduplicateStage())
     if config.prune_retrieval:
         stages.append(PruneRetrievalStage())
+    if config.reorder_context:
+        # After pruning: reordering blocks that pruning is about to drop is
+        # wasted work, and the ranking is the same one pruning just computed.
+        stages.append(ReorderContextStage())
     if config.cap_tool_results:
         stages.append(CapToolResultsStage(max_tokens=config.max_tool_result_tokens))
     if config.minify_tools:
@@ -175,6 +186,8 @@ def build_stages(
         stages.append(CompressPromptStage())
     if config.prune_tools:
         stages.append(PruneToolsStage())
+    if config.chain_of_draft:
+        stages.append(ChainOfDraftStage())
 
     # 5. Prefix marking. Must be last so it sees the final message list.
     if config.prefix_cache:

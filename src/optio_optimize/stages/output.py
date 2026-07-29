@@ -229,6 +229,83 @@ class ConcisionStage(Stage):
         )
 
 
+class ChainOfDraftStage(Stage):
+    """Constrain reasoning to shorthand instead of prose.
+
+    Chain-of-Thought produces verbose intermediate reasoning, and verbosity is
+    billed as output at the highest per-token rate on the request. Chain of
+    Draft (Xu et al., arXiv:2502.18600) asks for the same reasoning in
+    telegraphic notes of roughly five words a step. The published result is
+    striking: **as little as 7.6% of CoT's tokens** at equal accuracy, and on
+    one task average output fell from 189.4 to 14.3 tokens *while* accuracy
+    rose from 93.2% to 97.3%.
+
+    ``ALTERED``, unambiguously. This does not reshape how an answer is
+    presented -- it changes how the model is asked to think, and a model that
+    reasons in five-word steps can reach a different conclusion than one
+    reasoning in sentences. Off by default and eval-gated like every other
+    ``ALTERED`` stage (ADR-013 rule 3).
+
+    **Where the published number does not transfer.** A follow-up on
+    software-engineering tasks (arXiv:2506.10987) found it degrades on code,
+    where a reasoning step genuinely needs more than five words, and smaller
+    models handle the constraint worse than large ones. It also interacts
+    unpredictably with models that have their own native thinking format,
+    since it is competing with a mechanism it cannot see. So the honest
+    summary is: excellent on arithmetic, extraction and classification;
+    untested-to-poor on everything this package's own workloads look like.
+    Nothing here has measured it, and until something has, the numbers above
+    belong to the paper and not to this library.
+
+    Declines when the caller supplied a ``response_format``. A schema already
+    constrains the reply, and stacking a reasoning-style instruction on top is
+    how you get a model that emits its shorthand notes *inside* the JSON.
+    """
+
+    fidelity = Fidelity.ALTERED
+
+    #: Appended to the system prompt. The word "step" matters more than the
+    #: word count: the paper's own operationalisation asks for minimal drafts
+    #: per step, not for a short answer, and models shorten the *answer* when
+    #: told only to be brief.
+    INSTRUCTION = (
+        "Think step by step, but write at most five words per step. "
+        "Return the final answer after a '####' separator."
+    )
+
+    @property
+    def name(self) -> str:
+        """Stable identifier."""
+        return "chain_of_draft"
+
+    def before(self, request: LLMRequest, ctx: StageContext) -> StageResult:
+        """Ask for shorthand reasoning rather than prose."""
+        if request.response_format is not None:
+            return self.declines(request)
+        if any(self.INSTRUCTION in m.content for m in request.messages):
+            return self.declines(request)
+
+        messages = list(request.messages)
+        instruction_cost = ctx.counter.count_text(self.INSTRUCTION, request.model)
+        if messages and messages[0].role == "system":
+            messages[0] = messages[0].with_content(f"{messages[0].content}\n{self.INSTRUCTION}")
+        else:
+            messages.insert(0, Message(role="system", content=self.INSTRUCTION))
+
+        # **Claims nothing.** Unlike `concision`, which suppresses a wrapper of
+        # roughly knowable size, the saving here is some fraction of however
+        # much reasoning the model would have done -- a quantity this stage
+        # cannot see and must not guess. A negative saving is not the answer
+        # either: the pipeline derives `baseline = actual + saved`, so a
+        # negative would put baseline below actual and break the one invariant
+        # `Pipeline._finish` exists to hold. So the report gets a zero and a
+        # note carrying the cost, and the live A/B supplies the other side.
+        return StageResult(
+            request=request.with_messages(tuple(messages)),
+            note=f"reasoning constrained to shorthand (costs {instruction_cost} input tokens)",
+        )
+
+
 def _percentile(values: list[int], fraction: float) -> float:
     """Return a percentile of ``values`` by nearest rank."""
     if not values:

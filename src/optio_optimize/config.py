@@ -77,6 +77,10 @@ class OptimizeConfig:
         trim_history: Drop old turns beyond the recent window.
         deduplicate: Remove repeated identical context blocks.
         prune_retrieval: Drop retrieved chunks that do not earn their tokens.
+        reorder_context: Position the strongest retrieved blocks at the edges
+            of the context, weakest in the middle. Saves no tokens; buys
+            headroom for the stages that do. Off by default because it
+            invalidates provider caching below the reordered region.
         prune_tools: Drop tools unrelated to the conversation. **Lossy**: a
             wrongly-pruned tool is a capability the agent silently loses.
         summarize_history: Replace old turns with a model-written summary.
@@ -86,6 +90,8 @@ class OptimizeConfig:
             strongest sense** -- returns text the model never produced for this
             prompt. Off by default; see :data:`DEFAULT_SEMANTIC_THRESHOLD`.
         compress_prompt: Drop low-information tokens from the prompt. Lossy.
+        chain_of_draft: Ask for shorthand reasoning rather than prose.
+            Lossy: it changes how the model reasons, not how it presents.
         recent_turns: Turns kept verbatim by trimming and summarization.
         compact_at_tokens: Hold trimming until the prompt reaches this size,
             then cut in one go ("append-then-compact"). ``None`` trims every
@@ -127,6 +133,9 @@ class OptimizeConfig:
     prune_retrieval: bool = True
     cap_tool_results: bool = True
 
+    # Quality-only, and it costs provider caching below the region it moves.
+    reorder_context: bool = False
+
     # Off by default despite being SHAPED, because the saving is unproven.
     # `concision` spends input tokens on every request to save output tokens on
     # some, and only a live run can see the second half of that trade. The
@@ -144,6 +153,7 @@ class OptimizeConfig:
     semantic_cache: bool = False
     compress_prompt: bool = False
     prune_tools: bool = False
+    chain_of_draft: bool = False
 
     recent_turns: int = DEFAULT_RECENT_TURNS
     compact_at_tokens: int | None = None
@@ -213,6 +223,7 @@ class OptimizeConfig:
             "semantic_cache": self.semantic_cache,
             "compress_prompt": self.compress_prompt,
             "prune_tools": self.prune_tools,
+            "chain_of_draft": self.chain_of_draft,
         }
         return tuple(sorted(name for name, on in candidates.items() if on))
 
