@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from optio_optimize.stages.base import Fidelity, Stage, StageResult
-from optio_optimize.tokens import count_message
+from optio_optimize.tokens import count_message, count_request
 
 if TYPE_CHECKING:
     from optio_optimize.stages.base import StageContext
@@ -86,6 +86,37 @@ class TrimHistoryStage(Stage):
     def before(self, request: LLMRequest, ctx: StageContext) -> StageResult:
         """Drop history older than the configured recent-turn window."""
         messages = request.messages
+
+        # Append-then-compact: with a threshold set, hold off entirely until
+        # the prompt crosses it, then cut in one go.
+        #
+        # The reason is the interaction between this stage and provider prefix
+        # caching, and it is not obvious. Trimming on *every* turn moves the
+        # start of the message list every turn, so the prompt's head is never
+        # what it was last call and the provider's cache matches nothing. Left
+        # alone, a conversation only ever appends -- the head stays byte-stable
+        # and the whole of it bills at the cached rate. So a smaller prompt at
+        # the full rate can lose to a larger prompt at a tenth of it, and the
+        # published guidance is that append-then-compact wins "in almost every
+        # case" despite holding more tokens on average.
+        #
+        # Off by default, and the simulated numbers are *not* the reason to
+        # turn it on. Simulated over 50 turns, sliding every turn costs 12.6%
+        # more than never trimming at all under automatic caching (cached
+        # tokens 97,280 -> 2,688) and compaction recovers nearly all of it.
+        # That looks like a clean confirmation of the published guidance, and
+        # it is the same artifact that has already been disproved once: this
+        # class's own docstring records the simulator predicting cost *up*
+        # 34.8% from trimming where the live API measured it *down* 8.4%. The
+        # simulator matches a growing prefix by exact string comparison, so it
+        # over-punishes any change to the head, which is precisely what this
+        # comparison turns on. Reproducing a known-wrong model more carefully
+        # does not make it evidence (ADR-015 rule 1). The option ships, the
+        # default stays, and the question stays open until a live run settles
+        # it.
+        threshold = ctx.config.compact_at_tokens
+        if threshold is not None and count_request(request, ctx.counter) < threshold:
+            return self.declines(request)
 
         # System messages are never history to trim -- they are the one part
         # of the prompt PrefixCacheStage relies on being present every call.

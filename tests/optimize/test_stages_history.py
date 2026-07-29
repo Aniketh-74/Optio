@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from optio_optimize.config import OptimizeConfig
+from optio_optimize.errors import OptimizeConfigError
 from optio_optimize.stages.base import StageContext
 from optio_optimize.stages.history import TrimHistoryStage
 from optio_optimize.tokens import HeuristicCounter
@@ -18,9 +19,10 @@ from optio_optimize.types import LLMRequest, Message
 pytestmark = pytest.mark.optimize
 
 
-def _ctx(*, recent_turns: int = 6) -> StageContext:
+def _ctx(*, recent_turns: int = 6, compact_at_tokens: int | None = None) -> StageContext:
     return StageContext(
-        config=OptimizeConfig(recent_turns=recent_turns), counter=HeuristicCounter()
+        config=OptimizeConfig(recent_turns=recent_turns, compact_at_tokens=compact_at_tokens),
+        counter=HeuristicCounter(),
     )
 
 
@@ -222,3 +224,84 @@ class TestItIntegratesWithThePipeline:
         # holds every call to system + the recent-turn window.
         assert max(seen_sizes) <= ceiling
         assert seen_sizes[-1] <= ceiling
+
+
+class TestAppendThenCompact:
+    """``compact_at_tokens``: hold trimming until the prompt is worth cutting.
+
+    The mechanism is about *when* the prompt head moves, not what it says.
+    Trimming every turn moves the start of the message list every turn, so a
+    provider prefix cache matches nothing; leaving the conversation to append
+    keeps the head byte-stable and bills all of it at the cached rate. The
+    published guidance is that the second wins in almost every case.
+
+    These tests pin the behaviour, not the guidance. Whether it is *worth*
+    turning on is a live question the simulator cannot answer -- it matches a
+    growing prefix by exact string comparison and has already been wrong about
+    this exact stage once, predicting cost up 34.8% where the live API measured
+    it down 8.4%.
+    """
+
+    def test_a_short_prompt_is_left_alone(self) -> None:
+        stage = TrimHistoryStage()
+        request = _chat(turns=20)
+        ctx = _ctx(compact_at_tokens=1_000_000)
+
+        assert stage.before(request, ctx).request.messages == request.messages
+
+    def test_it_still_cuts_once_the_threshold_is_crossed(self) -> None:
+        stage = TrimHistoryStage()
+        request = _chat(turns=20)
+        ctx = _ctx(compact_at_tokens=1)
+
+        result = stage.before(request, ctx)
+        assert len(result.request.messages) < len(request.messages)
+        assert result.saved_input_tokens > 0
+
+    def test_without_a_threshold_it_trims_every_turn_as_before(self) -> None:
+        # The default is unchanged: this option adds a mode, it does not
+        # replace the shipped behaviour.
+        stage = TrimHistoryStage()
+        request = _chat(turns=20)
+
+        result = stage.before(request, _ctx())
+        assert len(result.request.messages) < len(request.messages)
+
+    def test_the_prompt_sawtooths_rather_than_growing_without_bound(self) -> None:
+        """The property that makes this safe: it still bounds the prompt.
+
+        Append-then-compact holds more tokens *between* compactions, which is
+        the trade. What it must not do is stop bounding the conversation at
+        all -- that would turn a cost option into an unbounded context leak.
+        """
+        from optio_optimize import LLMResponse, Optimizer
+
+        optimizer = Optimizer(
+            trim_history=True,
+            compact_at_tokens=600,
+            exact_cache=False,
+            prefix_cache=False,
+            detect_unstable_prefix=False,
+        )
+        sizes: list[int] = []
+
+        def provider(request: LLMRequest) -> LLMResponse:
+            sizes.append(len(request.messages))
+            return LLMResponse(content="ok", input_tokens=100, output_tokens=5, model=request.model)
+
+        history: list[Message] = [Message(role="system", content="You are terse. " * 40)]
+        for turn in range(40):
+            history.append(Message(role="user", content=f"question {turn} " * 10))
+            optimizer.call(
+                LLMRequest(model="gpt-4o", messages=tuple(history), temperature=0.0), provider
+            )
+            history.append(Message(role="assistant", content=f"answer {turn} " * 10))
+
+        assert max(sizes) < 40, "the prompt grew without bound; compaction never fired"
+        assert max(sizes) > 1 + OptimizeConfig().recent_turns, (
+            "it compacted on every turn, which is the mode this option exists to avoid"
+        )
+
+    def test_a_non_positive_threshold_is_rejected(self) -> None:
+        with pytest.raises(OptimizeConfigError, match="must be positive"):
+            OptimizeConfig(compact_at_tokens=0)

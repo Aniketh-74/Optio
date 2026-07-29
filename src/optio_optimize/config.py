@@ -87,6 +87,11 @@ class OptimizeConfig:
             prompt. Off by default; see :data:`DEFAULT_SEMANTIC_THRESHOLD`.
         compress_prompt: Drop low-information tokens from the prompt. Lossy.
         recent_turns: Turns kept verbatim by trimming and summarization.
+        compact_at_tokens: Hold trimming until the prompt reaches this size,
+            then cut in one go ("append-then-compact"). ``None`` trims every
+            turn. The trade is a stable prompt head -- and so a live provider
+            prefix cache -- against carrying more tokens between compactions;
+            see :class:`~optio_optimize.stages.history.TrimHistoryStage`.
         max_tool_result_tokens: Ceiling applied by ``cap_tool_results``.
         semantic_threshold: Similarity required for a semantic cache hit.
         latency_budget_ms: Whole-pipeline ceiling.
@@ -141,6 +146,7 @@ class OptimizeConfig:
     prune_tools: bool = False
 
     recent_turns: int = DEFAULT_RECENT_TURNS
+    compact_at_tokens: int | None = None
     max_tool_result_tokens: int = DEFAULT_MAX_TOOL_RESULT_TOKENS
     semantic_threshold: float = DEFAULT_SEMANTIC_THRESHOLD
     latency_budget_ms: float = DEFAULT_LATENCY_BUDGET_MS
@@ -176,6 +182,11 @@ class OptimizeConfig:
         if self.latency_budget_ms <= 0:
             raise OptimizeConfigError(
                 f"latency_budget_ms must be positive, got {self.latency_budget_ms}"
+            )
+        if self.compact_at_tokens is not None and self.compact_at_tokens < 1:
+            raise OptimizeConfigError(
+                f"compact_at_tokens must be positive, got {self.compact_at_tokens}. "
+                "Use None to trim on every turn rather than 0."
             )
         if self.max_tool_result_tokens < 1:
             raise OptimizeConfigError(
