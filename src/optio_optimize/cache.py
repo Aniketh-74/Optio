@@ -160,6 +160,28 @@ class MemoryCache:
             return self._hits / total if total else None
 
 
+#: Request fields deliberately *excluded* from the cache key, with the reason.
+#:
+#: Machine-checked against :class:`~optio_optimize.types.LLMRequest`'s own field
+#: list, the same way :data:`~optio_optimize.wire.UNSENT_FIELDS` is, and for a
+#: reason paid for in a real defect: :func:`request_key`'s docstring listed
+#: ``stop`` and ``thinking_budget`` as keyed, with a paragraph of justification
+#: each, while the payload contained neither. Two requests differing only in
+#: their stop sequence hashed identically, so ``exact_cache`` -- on by default --
+#: could serve a caller who asked generation to halt at a delimiter an answer
+#: produced without one.
+#:
+#: A prose list in a docstring is not a decision anything can verify. This is.
+UNKEYED_FIELDS: dict[str, str] = {
+    "max_tokens": (
+        "truncates a reply rather than changing it, and keying on it would miss "
+        "hits between otherwise identical calls; ExactCacheStage compensates by "
+        "never serving a stored response whose finish_reason was `length`"
+    ),
+    "extra": "provider transport details, not semantics",
+}
+
+
 def request_key(request: LLMRequest) -> str:
     """Build the exact-match cache key for a request.
 
@@ -211,6 +233,11 @@ def request_key(request: LLMRequest) -> str:
         "response_format": json.dumps(request.response_format, sort_keys=True)
         if request.response_format
         else None,
+        # The three below were documented as keyed for a long time and were not
+        # in this payload -- see UNKEYED_FIELDS for what that cost.
+        "stop": list(request.stop),
+        "thinking_budget": request.thinking_budget,
+        "reasoning_effort": request.reasoning_effort,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8", "replace")
     return hashlib.blake2b(encoded, digest_size=16).hexdigest()

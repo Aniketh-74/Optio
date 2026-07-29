@@ -48,11 +48,14 @@ EPHEMERAL_CACHE_CONTROL = {"type": "ephemeral"}
 #: for the same reason: a new field that is silently not sent is invisible.
 UNSENT_FIELDS: dict[str, str] = {
     "extra": "provider transport details, merged by each adapter rather than named here",
-    "thinking_budget": (
-        "provider-specific shape (Anthropic nests it under `thinking`, OpenAI under "
-        "`reasoning`); carried in `extra` until an adapter needs it"
-    ),
 }
+# `thinking_budget` was excused here until 2026-07-30, on the grounds that its
+# shape is provider-specific. That was true and was not a reason to drop it: a
+# caller who set the field had it silently discarded, and reasoning tokens bill
+# at *completion* rates, so the excuse hid the most expensive tokens in a
+# request. ADR-018 splits the idea into the two shapes the vendors actually
+# accept -- `thinking_budget` (Anthropic, a token count) and `reasoning_effort`
+# (OpenAI, a category) -- rather than inventing a conversion between them.
 
 
 def openai_messages(request: LLMRequest) -> list[dict[str, Any]]:
@@ -204,6 +207,11 @@ def openai_body(request: LLMRequest, model: str) -> dict[str, Any]:
         body["temperature"] = request.temperature
     if request.response_format is not None:
         body["response_format"] = request.response_format
+    # `reasoning_effort`, never a value derived from `thinking_budget`. OpenAI
+    # takes a category and Anthropic a token count, and translating between
+    # them means inventing thresholds that depend on the model (ADR-018).
+    if request.reasoning_effort is not None:
+        body["reasoning_effort"] = request.reasoning_effort
     tools = openai_tools(request)
     if tools is not None:
         body["tools"] = tools
@@ -241,6 +249,13 @@ def anthropic_body(
         body["system"] = system_blocks
     if request.temperature is not None:
         body["temperature"] = request.temperature
+    # `is not None` rather than truthiness: budget 0 means "do not think", which
+    # is a real instruction, while absence means the caller said nothing at all.
+    # Collapsing the two would silently disable reasoning for everyone who left
+    # the field alone -- the absence-is-not-zero rule, on the field where
+    # getting it backwards is most expensive.
+    if request.thinking_budget is not None:
+        body["thinking"] = {"type": "enabled", "budget_tokens": request.thinking_budget}
     tools = anthropic_tools(request)
     if tools is not None:
         body["tools"] = tools

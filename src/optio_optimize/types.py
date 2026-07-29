@@ -71,12 +71,25 @@ class LLMRequest:
             billed for every word of it -- a stop sequence is the only
             mechanism that stops the meter mid-completion rather than
             capping it in advance the way ``max_tokens`` does.
-        thinking_budget: Ceiling on reasoning tokens, for models that expose
-            one. Separate from ``max_tokens`` because reasoning tokens are
-            billed at the output rate while never appearing in the output: a
-            model can spend twenty thousand of them on a question whose
-            visible answer is two hundred, which no ``max_tokens`` value
-            constrains.
+        thinking_budget: Ceiling on reasoning tokens, as a **token count**, for
+            models that expose one. Separate from ``max_tokens`` because
+            reasoning tokens are billed at the output rate while never
+            appearing in the output: a model can spend twenty thousand of them
+            on a question whose visible answer is two hundred, which no
+            ``max_tokens`` value constrains. Reaches Anthropic as
+            ``thinking={"type": "enabled", "budget_tokens": N}``.
+        reasoning_effort: The same lever as ``thinking_budget``, expressed the
+            way OpenAI accepts it: a **category** (``"none"`` through
+            ``"max"``) rather than a number.
+
+            Two fields for one idea, because the vendors do not take the same
+            kind of thing and no honest conversion exists between them
+            (ADR-018 amendment). Whether a 2,000-token budget is ``"low"`` or
+            ``"medium"`` depends on the model, so a threshold table would be
+            invented -- and this package has twice published an invented
+            number that a live run then corrected. Each adapter sends the field
+            its provider understands and ignores the other; a caller targeting
+            both vendors sets both.
         extra: Everything else, passed through untouched.
     """
 
@@ -88,6 +101,7 @@ class LLMRequest:
     response_format: dict[str, Any] | None = None
     stop: tuple[str, ...] = ()
     thinking_budget: int | None = None
+    reasoning_effort: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def with_messages(self, messages: tuple[Message, ...]) -> LLMRequest:

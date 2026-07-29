@@ -64,6 +64,17 @@ def _full_request() -> LLMRequest:
         temperature=0.0,
         response_format={"type": "json_object"},
         stop=("<END>",),
+        thinking_budget=2_000,
+        reasoning_effort="low",
+    )
+
+
+def _base_request(**overrides: Any) -> LLMRequest:
+    """A minimal request, for asserting what is *absent* from a body."""
+    return LLMRequest(
+        model="gpt-4o",
+        messages=(Message(role="user", content="hi"),),
+        **overrides,
     )
 
 
@@ -75,8 +86,15 @@ def _full_request() -> LLMRequest:
 def test_every_request_field_is_sent_or_explicitly_excused():
     request = _full_request()
     body = openai_body(request, request.model)
+    anthropic = anthropic_body(request, request.model)
     # `model` and `messages` are structural; the rest must each show up under
     # some provider key or be excused by name.
+    #
+    # Two reasoning fields rather than one, and they are checked against
+    # *different* providers on purpose (ADR-018 amendment): Anthropic takes a
+    # token count, OpenAI takes a category, and neither is derivable from the
+    # other. A field that only one vendor can express is still sent, just not
+    # by both -- which is why this dict reads from two bodies.
     sent_somewhere = {
         "model": "model" in body,
         "messages": "messages" in body,
@@ -85,6 +103,8 @@ def test_every_request_field_is_sent_or_explicitly_excused():
         "temperature": "temperature" in body,
         "response_format": "response_format" in body,
         "stop": "stop" in body,
+        "thinking_budget": "thinking" in anthropic,
+        "reasoning_effort": "reasoning_effort" in body,
     }
     for spec in fields(LLMRequest):
         if spec.name in UNSENT_FIELDS:
@@ -395,3 +415,59 @@ class TestCacheWriteTokensAreAccountedAndPriced:
 
         pricing = PRICING["claude-haiku-4-5"]
         assert _cost(pricing, 100, 0, 90, 500) >= 0
+
+
+# --------------------------------------------------------------------------
+# Reasoning budget (ADR-018). Written before the implementation existed.
+# --------------------------------------------------------------------------
+
+
+class TestReasoningReachesTheWire:
+    """The most expensive tokens in a request bill at *completion* rates.
+
+    ``thinking_budget`` was typed, documented and part of the cache key while
+    sitting in ``UNSENT_FIELDS`` -- so a caller who set it had it silently
+    discarded. These tests exist because "reported but never sent" has now
+    happened three times in this package (``tools``, then ``cacheable`` twice).
+    """
+
+    def test_anthropic_gets_a_token_budget(self):
+        request = _full_request()
+        body = anthropic_body(request, "claude-haiku-4")
+        assert body["thinking"] == {"type": "enabled", "budget_tokens": 2_000}
+
+    def test_openai_gets_a_category(self):
+        request = _full_request()
+        body = openai_body(request, "gpt-4o")
+        assert body["reasoning_effort"] == "low"
+
+    def test_openai_never_invents_a_category_from_a_token_budget(self):
+        """The anti-fabrication rule, and the reason there are two fields.
+
+        Whether 2,000 tokens is "low" or "medium" depends on the model, so any
+        threshold table would be invented -- the exact species of unevidenced
+        number that already cost this project a 36.3% claim measured at -1.8%
+        and a 53.7% figure that was 50.1%.
+        """
+        request = _base_request(thinking_budget=8_000, reasoning_effort=None)
+        assert "reasoning_effort" not in openai_body(request, "gpt-4o")
+
+    def test_anthropic_never_invents_a_budget_from_a_category(self):
+        request = _base_request(thinking_budget=None, reasoning_effort="high")
+        assert "thinking" not in anthropic_body(request, "claude-haiku-4")
+
+    def test_absence_is_not_a_budget_of_zero(self):
+        """A zero budget disables thinking; absence means "the caller said
+        nothing". Sending 0 for None would silently turn reasoning off."""
+        request = _base_request(thinking_budget=None, reasoning_effort=None)
+        assert "thinking" not in anthropic_body(request, "claude-haiku-4")
+        assert "reasoning_effort" not in openai_body(request, "gpt-4o")
+
+    def test_an_explicit_zero_budget_is_sent(self):
+        request = _base_request(thinking_budget=0, reasoning_effort=None)
+        body = anthropic_body(request, "claude-haiku-4")
+        assert body["thinking"] == {"type": "enabled", "budget_tokens": 0}
+
+    def test_neither_field_is_excused_any_more(self):
+        assert "thinking_budget" not in UNSENT_FIELDS
+        assert "reasoning_effort" not in UNSENT_FIELDS

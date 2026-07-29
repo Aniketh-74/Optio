@@ -516,3 +516,58 @@ class TestTheMarkerReachesNonDictBlocks:
             blocks = _with_cache_control([opaque], "text")
         assert blocks == [opaque]  # content intact; only the discount is lost
         assert "cache breakpoint" in caplog.text
+
+
+class TestReasoningBudgetReachesTheProvider:
+    """`wire` being correct does not prove the adapter sends it.
+
+    The adapter builds `create(**kwargs)` itself rather than going through
+    `anthropic_body`, which is exactly how `cacheable` came to be emitted by
+    `wire` and dropped by the adapter. Two translation sites, one field.
+    """
+
+    def test_a_caller_set_budget_is_forwarded(self, sync_client, fake):
+        wrap_anthropic_client(sync_client, exact_cache=False)
+        sync_client.messages.create(**_kwargs(thinking={"type": "enabled", "budget_tokens": 2048}))
+        assert fake.requests[0]["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+
+    def test_no_thinking_key_when_the_caller_set_none(self, sync_client, fake):
+        wrap_anthropic_client(sync_client, exact_cache=False)
+        sync_client.messages.create(**_kwargs())
+        assert "thinking" not in fake.requests[0]
+
+    def test_a_budget_a_stage_set_on_the_request_reaches_the_wire(self):
+        """The case that actually matters, and the one that passes for the
+        wrong reason if you only test the caller's own kwarg.
+
+        A caller-supplied `thinking` survives because `_kwargs_from_request`
+        starts from `dict(original)` and preserves everything unmodelled -- so
+        that test passes without the adapter understanding the field at all.
+        A budget set by a *stage* lives on the LLMRequest, and nothing carries
+        it over unless this function does. That asymmetry is precisely how
+        `cacheable` reached the wire from `wire` and not from here.
+        """
+        from optio_optimize.adapters.anthropic import _kwargs_from_request
+        from optio_optimize.types import LLMRequest, Message
+
+        sent = LLMRequest(
+            model="claude-haiku-4-5",
+            messages=(Message(role="user", content="hi"),),
+            max_tokens=256,
+            thinking_budget=1_024,
+        )
+        kwargs = _kwargs_from_request(sent, _kwargs())
+        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 1_024}
+
+    def test_a_stage_that_lowers_a_budget_overrides_the_callers(self):
+        from optio_optimize.adapters.anthropic import _kwargs_from_request
+        from optio_optimize.types import LLMRequest, Message
+
+        sent = LLMRequest(
+            model="claude-haiku-4-5",
+            messages=(Message(role="user", content="hi"),),
+            max_tokens=256,
+            thinking_budget=512,
+        )
+        original = _kwargs(thinking={"type": "enabled", "budget_tokens": 8_192})
+        assert _kwargs_from_request(sent, original)["thinking"]["budget_tokens"] == 512
