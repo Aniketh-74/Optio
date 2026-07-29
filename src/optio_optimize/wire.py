@@ -40,6 +40,12 @@ if TYPE_CHECKING:
 #: someone decides which side of this line it belongs on. That is the same
 #: guard :func:`~optio_optimize.cache.request_key` applies to the cache key, and
 #: for the same reason: a new field that is silently not sent is invisible.
+#: Anthropic's only cache-control type. Named so the three places that emit it
+#: -- system blocks, marked turns, and the adapter's raw-param path -- cannot
+#: drift apart on a literal. Copy it at each use: a shared mutable dict living
+#: on several request bodies is a bug waiting for someone to edit one of them.
+EPHEMERAL_CACHE_CONTROL = {"type": "ephemeral"}
+
 UNSENT_FIELDS: dict[str, str] = {
     "extra": "provider transport details, merged by each adapter rather than named here",
     "thinking_budget": (
@@ -93,9 +99,24 @@ def anthropic_system_and_turns(
     """Split messages into Anthropic's ``system`` blocks and ``messages`` turns.
 
     Anthropic takes the system prompt as a separate top-level parameter rather
-    than a message role, and it is where this library's ``cacheable`` marker
-    becomes a real API field: a marked system block gets ``cache_control``,
-    which is the entire difference between a ~90% input discount and none.
+    than a message role, and this is where the library's ``cacheable`` marker
+    becomes a real API field -- the entire difference between a ~90% input
+    discount and none.
+
+    **The marker is honoured on turns too, not only on system blocks.**
+    ``PrefixCacheStage`` marks the *last message of the stable prefix*, which is
+    a system message only in the shortest conversations; once there are three or
+    more turns the boundary lands on a user or assistant message. An earlier
+    version of this function emitted ``cache_control`` for system blocks alone,
+    so on any real conversation the marker was computed, placed, reported in the
+    savings ledger -- and silently dropped on the way to the wire. Caught by the
+    Anthropic adapter's first test run.
+
+    A breakpoint on a turn caches everything above it, the system prompt
+    included, so this is strictly better than marking the system block alone.
+    Anthropic requires block-shaped content to carry ``cache_control``, so a
+    marked turn's string content is promoted to a one-element text block;
+    unmarked turns keep the plain string they arrived with.
 
     Returns:
         ``(system_blocks, turns)``. Either may be empty.
@@ -106,8 +127,21 @@ def anthropic_system_and_turns(
         if message.role == "system":
             block: dict[str, Any] = {"type": "text", "text": message.content}
             if message.cacheable:
-                block["cache_control"] = {"type": "ephemeral"}
+                block["cache_control"] = dict(EPHEMERAL_CACHE_CONTROL)
             system_blocks.append(block)
+        elif message.cacheable:
+            turns.append(
+                {
+                    "role": message.role,
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": message.content,
+                            "cache_control": dict(EPHEMERAL_CACHE_CONTROL),
+                        }
+                    ],
+                }
+            )
         else:
             turns.append({"role": message.role, "content": message.content})
     return system_blocks, turns
