@@ -88,3 +88,14 @@ it as its own line.
 ## Alternatives — what was rejected, and why
 ## Consequences — what this costs us, including the bad parts
 ```
+
+ADR-018 is the first ADR here whose whole content is a *tier* assignment, and it is worth reading
+for that reason. Reasoning-budget control changes not one byte of a prompt, drops no context, and
+invents nothing — every surface reason to call it `IDENTICAL`. It is `ALTERED`, because fidelity in
+this package is a claim about the *response*, not about the request: a reduced budget is free on
+easy steps and wrong on hard ones, and "hard" is why someone chose a reasoning model in the first
+place. It is also the only stage whose failure leaves no trace anywhere — `route_models` at least
+puts a different model name in the response, and `trim_history` leaves a visibly shorter message
+list, while a truncated reasoning trace still yields a confident, well-formed, wrong answer. So the
+package's largest remaining cost lever ships off by default, gated behind ADR-015 evidence that has
+to measure accuracy beside cost rather than cost alone.
