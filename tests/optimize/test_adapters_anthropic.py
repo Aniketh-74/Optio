@@ -280,3 +280,90 @@ class TestFailOpen:
         assert len(fake.requests) == 1, "the streaming call never reached the client"
         assert fake.requests[0]["stream"] is True
         assert optimizer.report.requests == 0, "a streaming call went through the pipeline"
+
+
+class TestTheSyncClient:
+    def test_a_real_call_returns_the_providers_own_content(self, sync_client, fake):
+        wrap_anthropic_client(sync_client)
+        reply = sync_client.messages.create(**_kwargs())
+        assert reply.content[0].text == "hello there"
+
+    def test_stages_reach_the_wire(self, sync_client, fake):
+        wrap_anthropic_client(
+            sync_client,
+            exact_cache=False,
+            prefix_cache=False,
+            trim_history=True,
+            recent_turns=4,
+        )
+        messages = _growing_chat()
+        sync_client.messages.create(**_kwargs(messages=messages))
+
+        sent = fake.requests[0]["messages"]
+        assert len(sent) < len(messages)
+        assert sent[0]["content"] == "q0"
+
+    def test_a_second_identical_call_makes_no_real_request(self, sync_client, fake):
+        wrap_anthropic_client(sync_client, exact_cache=True)
+        kwargs = _kwargs(temperature=0.0)
+        sync_client.messages.create(**kwargs)
+        sync_client.messages.create(**kwargs)
+        assert len(fake.requests) == 1
+
+    def test_the_cache_hit_is_a_valid_sdk_object(self, sync_client, fake):
+        # The reconstructed object must satisfy the SDK's own model, or a
+        # caller reading .usage or .stop_reason on a cache hit gets an
+        # AttributeError instead of an answer.
+        wrap_anthropic_client(sync_client, exact_cache=True)
+        kwargs = _kwargs(temperature=0.0)
+        sync_client.messages.create(**kwargs)
+        hit = sync_client.messages.create(**kwargs)
+        assert hit.stop_reason == "end_turn"
+        assert hit.usage.output_tokens == 0
+        assert hit.content[0].text == "hello there"
+
+    def test_a_streaming_call_bypasses_the_wrapper(self, sync_client, fake):
+        optimizer = Optimizer()
+        wrap_anthropic_client(sync_client, optimizer=optimizer)
+        with contextlib.suppress(Exception):
+            sync_client.messages.create(**_kwargs(stream=True))
+        assert len(fake.requests) == 1
+        assert optimizer.report.requests == 0
+
+
+class TestBothClientsAgree:
+    def test_the_same_request_produces_the_same_wire_body(self):
+        # Two branches in one wrapper is two chances to diverge, and a
+        # divergence would show up as sync and async callers being optimized
+        # differently for reasons nobody could see. The async branch was
+        # entirely dead until the coroutine detection was fixed, and every
+        # test still passed -- so "both branches work" needs asserting, not
+        # assuming.
+        sync_fake, async_fake = _FakeAnthropic(), _FakeAnthropic()
+        sync = Anthropic(
+            api_key="test",
+            http_client=httpx.Client(transport=httpx.MockTransport(sync_fake.handler)),
+        )
+        asynchronous = AsyncAnthropic(
+            api_key="test",
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(async_fake.handler)),
+        )
+        wrap_anthropic_client(sync, exact_cache=False)
+        wrap_anthropic_client(asynchronous, exact_cache=False)
+
+        kwargs = _kwargs(system="You are terse.", stop_sequences=["<END>"])
+        sync.messages.create(**kwargs)
+        asyncio.run(asynchronous.messages.create(**kwargs))
+
+        assert sync_fake.requests[0] == async_fake.requests[0]
+
+    def test_both_branches_are_actually_taken(self):
+        # Guards the defect directly: if _is_async regressed, both clients would
+        # take the sync branch and the test above would still pass, because both
+        # bodies would be built by the same code.
+        from optio_optimize.adapters.anthropic import _is_async
+
+        sync = Anthropic(api_key="test", http_client=httpx.Client())
+        asynchronous = AsyncAnthropic(api_key="test", http_client=httpx.AsyncClient())
+        assert _is_async(asynchronous.messages.create) is True
+        assert _is_async(sync.messages.create) is False
