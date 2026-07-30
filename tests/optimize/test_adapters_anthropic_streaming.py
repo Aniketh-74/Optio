@@ -155,7 +155,7 @@ def _kwargs(**overrides: Any) -> dict[str, Any]:
 
 def _long_chat(turns: int = 40) -> list[dict[str, Any]]:
     """Long enough to clear PrefixCacheStage's minimum cacheable prefix."""
-    filler = "policy detail " * 40
+    filler = "policy detail " * 2400
     messages: list[dict[str, Any]] = [{"role": "user", "content": f"q0 {filler}"}]
     for turn in range(turns):
         messages.append({"role": "assistant", "content": f"a{turn} {filler}"})
@@ -243,7 +243,7 @@ class TestTheRequestSideStagesReachAStreamedCall:
         list(
             sync_client.messages.create(
                 **_kwargs(
-                    system="You are a careful assistant. " * 400,
+                    system="You are a careful assistant. " * 900,
                     messages=[
                         {"role": "user", "content": "q1"},
                         {"role": "assistant", "content": "a1"},

@@ -23,6 +23,36 @@ be promoted to the top level deliberately.
 
 ### Changed
 
+- **The cacheable prefix floor is per-model, and the benchmark now prices its own cache writes
+  ([ADR-027](docs/design/adr/adr-027-the-cacheable-prefix-floor-is-per-model.md)).** Anthropic's
+  minimum cacheable prefix spans a factor of eight — 512 on Opus 5 up to **4,096 on Haiku 4.5** —
+  and `MIN_PREFIX_TOKENS = 1024` was wrong in both directions: too high for Opus 5, where it declined
+  a breakpoint that would have worked, and too low for four models, where it placed one the provider
+  silently discards **while the note reported success**.
+
+  It is now a per-model lookup, longest-prefix matched so dated ids resolve through their alias. An
+  unrecognized model keeps 1,024, so nothing outside the table changes behaviour. Below the floor the
+  stage **declines and names the model and the figure**, because a zero-cache-read result was
+  previously indistinguishable from a broken stage.
+
+  That diagnostic immediately earned itself. On `mcp_agent` — an 11,799-token prompt, the one workload
+  clearing 4,096 — it reports `prefix is ~1387 tokens, below claude-haiku-4-5's 4096-token cacheable
+  minimum`. **The stable prefix is ~1,400 tokens; the rest is tool results that change every step.**
+  Under the old constant that prefix cleared 1,024, got a marker, and had it discarded.
+
+  Worth knowing when choosing a model: this lever needs a *stable* prefix above the floor, and typical
+  agent traffic carries 1,000–2,000 tokens of it. That clears Opus 5 comfortably, often clears the
+  1,024 tier, and rarely clears Haiku 4.5 unless the system prompt and tool schemas are large.
+
+- **The benchmark under-billed its own cache writes.** `ABResult.cost_usd` priced every prompt token at
+  the base or cached rate and never at the **1.25x write premium**, so the arm that places breakpoints
+  was billed 1.25x tokens at 1.0x — the identical asymmetry [ADR-021](docs/design/adr/adr-021-cache-ttl-selection-needs-its-accounting-first.md)
+  removed from `SavingsReport`, reproduced inside the benchmark that measures it, and flattering the
+  optimized arm every time `prefix_cache` wrote. Writes are now tracked on `ArmResult`, priced, and
+  reported beside reads — the pair being what tells "the breakpoint was ignored" (reads 0, writes 0)
+  apart from "the prefix changed between calls" (reads 0, writes N).
+
+
 - **`trim_history` now prices the output it buys, and stops trimming when it cannot pay
   ([ADR-026](docs/design/adr/adr-026-trimming-must-price-the-output-it-buys.md)).** The first full
   live Anthropic benchmark caught the package's flagship default-on stage **increasing** total cost.

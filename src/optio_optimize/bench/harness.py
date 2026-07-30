@@ -95,6 +95,7 @@ def run_arm(
         result.input_tokens += response.input_tokens
         result.output_tokens += response.output_tokens
         result.cached_input_tokens += response.cached_input_tokens
+        result.cache_write_tokens += response.cache_write_tokens
 
     result.wall_seconds = time.perf_counter() - wall_started
     peak = tracemalloc.get_traced_memory()[1]
@@ -250,6 +251,17 @@ def format_result(result: ABResult) -> list[str]:
 
     lines.extend(
         [
+            # The provider's own prefix cache, which is a different mechanism
+            # from the line below it and was invisible until 2026-07-31.
+            # `prefix_cache` deliberately claims no saving of its own (ADR-020's
+            # rule, since the effect is measured rather than estimated), so it
+            # reported 0 tokens on all twelve workloads while the number that
+            # would show whether it did anything was recorded and never printed.
+            # A lever this package calls its largest lossless win has to be
+            # legible in its own benchmark.
+            f"    provider cache      reads {result.optimized.cached_input_tokens:,}"
+            f"   writes {result.optimized.cache_write_tokens:,}"
+            f"   (baseline reads {result.baseline.cached_input_tokens:,})",
             f"    cache hit rate      {_pct(result.true_cache_hit_rate, signed=False)}"
             f"  ({result.cache_hits}/{result.cache_lookups} lookups)",
             f"    added overhead      {_ms(result.added_overhead_ms_per_request)} / request",
