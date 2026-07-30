@@ -20,7 +20,7 @@ from optio_optimize.types import Message
 
 if TYPE_CHECKING:
     from optio_optimize.stages.base import StageContext
-    from optio_optimize.types import LLMRequest
+    from optio_optimize.types import LLMRequest, LLMResponse
 
 
 #: Stands in for the turns an anchored cut removed. Without it the model sees
@@ -33,6 +33,11 @@ _ELISION = Message(
         "[earlier turns omitted to stay within budget; the opening and the recent turns are shown]"
     ),
 )
+
+
+#: Scratch key recording whether this request was actually trimmed, so the
+#: ``after`` hook files its reply in the right observation group (ADR-026).
+_TRIMMED = "trim_history.trimmed"
 
 
 class TrimHistoryStage(Stage):
@@ -122,9 +127,86 @@ class TrimHistoryStage(Stage):
         """Stable identifier."""
         return "trim_history"
 
+    #: Output tokens that one *trimmed* request risks buying, before anything
+    #: has been observed (ADR-026).
+    #:
+    #: **Per trimmed request, not per request**, and the distinction was worth a
+    #: wrong answer to learn. The first version divided the measured inflation by
+    #: all twelve requests in the workload and got 60. Only the nine that
+    #: actually trimmed caused it, so the figure is ``(1096 - 379) / 9 ~= 80``.
+    #: A threshold built on 60 still let the tail of the conversation through and
+    #: the live re-run came back at -2.3% -- better than -11.0% and still a cost
+    #: increase, which is still a rule 1 violation.
+    #:
+    #: Rounded up to 100 rather than to 80: this only decides behaviour before
+    #: any observation exists, and erring toward not-trimming forfeits a saving
+    #: while erring the other way spends someone's money.
+    RISK_OUTPUT_TOKENS = 100
+
+    #: Output/input price multiple assumed for a model absent from ``PRICING``.
+    #: Output costs more than input on every model in that table, so parity
+    #: would be the flattering assumption -- it trims more.
+    DEFAULT_OUTPUT_MULTIPLE = 4.0
+
+    #: Observations of each kind needed before the measured difference replaces
+    #: :attr:`RISK_OUTPUT_TOKENS`. Small: an agent makes these quickly, and the
+    #: bootstrap constant is the thing worth escaping.
+    MIN_OBSERVATIONS = 3
+
+    def __init__(self) -> None:
+        """Build the stage with empty observation groups."""
+        # Two groups, not one running mean: a single average cannot separate
+        # "replies got longer because we trimmed" from "replies got longer
+        # because the questions got harder". The requests this stage declines
+        # are the control the production path otherwise lacks.
+        self._trimmed_output: list[int] = []
+        self._untrimmed_output: list[int] = []
+        self.last_decline_reason = ""
+
+    def _risk_threshold(self, model: str) -> int:
+        """Input tokens a trim must save to be worth the output it risks."""
+        # Imported here, not at module scope: config imports stages.tools for
+        # DEFAULT_MAX_TOOL_RESULT_TOKENS, so stages -> config is a cycle.
+        from optio_optimize.config import PRICING
+
+        pricing = PRICING.get(model)
+        multiple = (
+            pricing.output_usd_per_m / pricing.input_usd_per_m
+            if pricing is not None and pricing.input_usd_per_m
+            else self.DEFAULT_OUTPUT_MULTIPLE
+        )
+        return int(self._risk_tokens() * multiple)
+
+    def _risk_tokens(self) -> float:
+        """Observed output inflation when available, else the bootstrap figure."""
+        if (
+            len(self._trimmed_output) >= self.MIN_OBSERVATIONS
+            and len(self._untrimmed_output) >= self.MIN_OBSERVATIONS
+        ):
+            trimmed = sum(self._trimmed_output) / len(self._trimmed_output)
+            untrimmed = sum(self._untrimmed_output) / len(self._untrimmed_output)
+            # Negative means trimming made replies *shorter*, which gpt-4o-mini
+            # really does. Clamped at zero rather than turned into a bonus: a
+            # shorter reply is already counted where it is measured, in the
+            # provider's own output number.
+            return max(0.0, trimmed - untrimmed)
+        return float(self.RISK_OUTPUT_TOKENS)
+
+    def after(self, request: LLMRequest, response: LLMResponse, ctx: StageContext) -> None:
+        """Record this reply's length against whichever group it belongs to."""
+        if response.served_from is not None:
+            return  # A cache hit says nothing about what a fresh call would produce.
+        if response.output_tokens <= 0:
+            return
+        group = self._trimmed_output if ctx.scratch.get(_TRIMMED) else self._untrimmed_output
+        group.append(response.output_tokens)
+        if len(group) > 200:
+            del group[:100]
+
     def before(self, request: LLMRequest, ctx: StageContext) -> StageResult:
         """Drop history older than the configured recent-turn window."""
         messages = request.messages
+        ctx.scratch[_TRIMMED] = False
 
         # Append-then-compact: with a threshold set, hold off entirely until
         # the prompt crosses it, then cut in one go.
@@ -237,6 +319,22 @@ class TrimHistoryStage(Stage):
             return self.declines(request)
 
         saved = sum(count_message(m, ctx.counter, request.model) for m in dropped)
+
+        # Priced, not merely counted (ADR-026). Trimming drops the model's own
+        # prior short replies, and with them the pattern it was matching, so it
+        # can answer at greater length -- billed at four to five times the input
+        # rate. Measured live: on claude-haiku-4-5 a 12-turn chat saved 1,116
+        # input tokens, bought 717 output tokens, and cost 11.0% MORE.
+        if saved < self._risk_threshold(request.model):
+            self.last_decline_reason = (
+                f"saving {saved} tokens is below the "
+                f"{self._risk_threshold(request.model)} needed to cover the output "
+                f"a shorter prompt can buy"
+            )
+            ctx.scratch[_TRIMMED] = False
+            return self.declines(request)
+        ctx.scratch[_TRIMMED] = True
+
         gap = (
             (_ELISION,)
             if anchored

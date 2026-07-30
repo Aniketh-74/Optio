@@ -49,11 +49,18 @@ percentage is **not** inflated by this gap. The reassuring reading is the correc
 
 Three real consequences remain:
 
-1. **Window decisions are unsafe.** `count_request` returns **8 tokens** for a 1568x1568 image request
-   that really bills ~1,535. `fits_in_window` exists precisely because under-counting a limit
-   decision causes a provider-side rejection the user sees as a crash, and it applies a 1.15x safety
-   margin to guard a few percent of estimator error while a vision request is off by two orders of
-   magnitude. `trim_history` will decline to trim a request that cannot fit.
+1. **Window decisions are unsafe — but latently, and this ADR originally overstated it.**
+   `count_request` returns **8 tokens** for a 1568x1568 image request that really bills ~1,535.
+   `fits_in_window` exists precisely because under-counting a limit decision causes a provider-side
+   rejection, and it applies a 1.15x margin to guard a few percent of estimator error while a vision
+   request is off by two orders of magnitude.
+
+   **Corrected 2026-07-31:** `fits_in_window` has **no production callers**, and `context_limit` is
+   validated at construction and then read by no stage. This package does not enforce a context window
+   at all today, so nothing was actually crashing — the defect is real and dormant, waiting for the
+   first caller of that function, rather than active. The original wording claimed a live consequence
+   it did not have, which is the same kind of overstatement this project treats as serious when it
+   runs the other way.
 2. **Short-circuited savings are understated.** A request served from cache never reaches a provider,
    so `count_request` supplies the number and a vision cache hit reports ~8 tokens avoided against a
    true ~1,535. This is the *safe* direction and still wrong.

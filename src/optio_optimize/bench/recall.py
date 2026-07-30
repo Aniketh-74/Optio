@@ -151,9 +151,23 @@ def build_conversation(model: str) -> tuple[Message, ...]:
         messages.append(
             Message(
                 role="assistant",
+                # A real assistant reply, not a single clause. The filler's job
+                # is to bury the planted facts deeply enough that recovering
+                # them is a genuine test, and since ADR-026 it has a second job:
+                # trimming is gated on the value of what it removes, so filler
+                # this thin left the trim arm declining to trim and the audit
+                # measuring nothing at all about trimming.
                 content=(
                     f"For that: proceed incrementally, document the decision, and "
-                    f"review it at the next checkpoint. ({question.rstrip('?')})"
+                    f"review it at the next checkpoint. ({question.rstrip('?')}) "
+                    f"In practice that means agreeing the acceptance criteria up "
+                    f"front, keeping the change small enough to reason about, and "
+                    f"writing down what you expected to happen before you look at "
+                    f"what did. If the result disagrees with the expectation, the "
+                    f"expectation is the thing to examine first. Record the "
+                    f"outcome either way so the next person does not repeat the "
+                    f"experiment, and raise it at the checkpoint if it changes "
+                    f"any assumption the plan depends on."
                 ),
             )
         )

@@ -43,6 +43,10 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.optimize
 
+#: Turns the size of real ones. A two-token turn is not a conversation worth
+#: trimming, and since ADR-026 the stage correctly declines to trim one.
+_TURN_PADDING = " ".join(f"context{n}" for n in range(120))
+
 
 def _request(text: str = "summarize row 1", *, temperature: float | None = 0.0) -> LLMRequest:
     return LLMRequest(
@@ -137,7 +141,7 @@ def test_stages_run_before_submission():
         model="gpt-4o-mini",
         messages=(
             Message(role="system", content="You are terse."),
-            *[Message(role="user", content=f"turn {i}") for i in range(30)],
+            *[Message(role="user", content=f"turn {i} {_TURN_PADDING}") for i in range(30)],
         ),
         temperature=0.0,
     )

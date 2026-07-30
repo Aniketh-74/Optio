@@ -23,6 +23,46 @@ be promoted to the top level deliberately.
 
 ### Changed
 
+- **`trim_history` now prices the output it buys, and stops trimming when it cannot pay
+  ([ADR-026](docs/design/adr/adr-026-trimming-must-price-the-output-it-buys.md)).** The first full
+  live Anthropic benchmark caught the package's flagship default-on stage **increasing** total cost.
+  Isolated — three arms, one workload, one window — it saved 1,116 input tokens and bought 717 output
+  tokens, and output bills at 5x input on Haiku, so a 5.4% input saving became an **11.0% cost
+  increase**. Removing the stage returned output to baseline exactly.
+
+  Dropping old turns also drops the model's own prior short replies, and with them the pattern it was
+  matching, so it answers at greater length. **And the effect is provider-dependent, which is what
+  makes it hard:** on identical workloads through identical code, trimming makes `gpt-4o-mini` *terser*
+  (output −38%) and `claude-haiku-4-5` *far more verbose* (+189%). There is no constant to encode —
+  a figure fitted to one vendor forfeits a real win on the other.
+
+  So the stage now trims only when the input tokens it removes are worth more than the output it
+  risks, priced from the **model's own rates** in `PRICING`. One rule, no per-vendor branch: the
+  output/input multiple is 5 on Haiku and 4 on `gpt-4o-mini`, so the same rule produces a different
+  threshold per model. The bootstrap risk figure is superseded by **observation** as soon as the stage
+  has seen enough trimmed and declined replies to measure the difference itself — two groups, not one
+  running mean, because a single average cannot separate "replies got longer because we trimmed" from
+  "replies got longer because the questions got harder".
+
+  Verified live on both providers:
+
+  | workload | provider | before | after |
+  |---|---|---|---|
+  | multi_turn_chat | claude-haiku-4-5 | **−11.0%** | **0.0%** |
+  | multi_turn_chat | gpt-4o-mini | −0.4% | +4.2% |
+  | multi_turn_chat_long | claude-haiku-4-5 | +10.9% | **+13.8%** |
+  | multi_turn_chat_long | gpt-4o-mini | +19.9% | +17.6% |
+
+  Both losses gone, both wins kept — and the Haiku long case *improved by three points*, because
+  declining the early unprofitable trims left the profitable ones intact. Trimming less made it worth
+  more.
+
+  **Behaviour change worth knowing:** a conversation of very small turns is now never trimmed, so the
+  prompt is bounded by value rather than by turn count. Nothing was relying on the old guarantee —
+  `context_limit` is a documented config field **no stage reads**, and `fits_in_window` has no
+  production callers — but that is a gap in its own right and is recorded as one.
+
+
 - **`structured_output` is now off by default, and no stage books a saving it cannot attribute
   ([ADR-024](docs/design/adr/adr-024-a-stage-may-not-book-a-saving-it-cannot-attribute.md)).** The
   first end-to-end live agent run — four scenarios, both arms, `gpt-4o-mini`, reproduced twice —
