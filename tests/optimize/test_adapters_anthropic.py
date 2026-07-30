@@ -571,3 +571,104 @@ class TestReasoningBudgetReachesTheProvider:
         )
         original = _kwargs(thinking={"type": "enabled", "budget_tokens": 8_192})
         assert _kwargs_from_request(sent, original)["thinking"]["budget_tokens"] == 512
+
+
+class TestTheCacheLifetimeReachesTheWire:
+    """ADR-021: a chosen TTL is worth nothing if the adapter drops it.
+
+    This is the fourth field in this module to need such a test. `tools` went
+    unsent, then `cacheable` from the turn path, then `cacheable` on a pydantic
+    block, then `thinking_budget`. Each was reported as done and never sent, and
+    each was found by a test that checked the wire rather than the request.
+    """
+
+    def test_a_one_hour_ttl_appears_on_the_breakpoint(self):
+        from optio_optimize.adapters.anthropic import _kwargs_from_request
+        from optio_optimize.types import LLMRequest, Message
+
+        sent = LLMRequest(
+            model="claude-haiku-4-5",
+            messages=(
+                Message(role="system", content="brief", cacheable=True, cache_ttl="1h"),
+                Message(role="user", content="hi"),
+            ),
+            max_tokens=256,
+        )
+
+        kwargs = _kwargs_from_request(sent, _kwargs())
+
+        assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+    def test_no_ttl_means_no_ttl_key_rather_than_an_explicit_five_minutes(self):
+        # Absent and "5m" are different instructions: absent is this package
+        # expressing no preference, which is what it does by default.
+        from optio_optimize.adapters.anthropic import _kwargs_from_request
+        from optio_optimize.types import LLMRequest, Message
+
+        sent = LLMRequest(
+            model="claude-haiku-4-5",
+            messages=(
+                Message(role="system", content="brief", cacheable=True),
+                Message(role="user", content="hi"),
+            ),
+            max_tokens=256,
+        )
+
+        kwargs = _kwargs_from_request(sent, _kwargs())
+
+        assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_a_ttl_reaches_a_turn_breakpoint_too(self):
+        from optio_optimize.adapters.anthropic import _kwargs_from_request
+        from optio_optimize.types import LLMRequest, Message
+
+        sent = LLMRequest(
+            model="claude-haiku-4-5",
+            messages=(
+                Message(role="user", content="q1"),
+                Message(role="assistant", content="a1", cacheable=True, cache_ttl="1h"),
+                Message(role="user", content="q2"),
+            ),
+            max_tokens=256,
+        )
+
+        kwargs = _kwargs_from_request(sent, _kwargs())
+        blocks = _content_blocks(kwargs["messages"])
+        marked = [b for b in blocks if isinstance(b, dict) and "cache_control" in b]
+
+        assert marked, "the breakpoint never reached the wire at all"
+        assert marked[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+    def test_the_callers_own_cache_control_is_still_never_touched(self):
+        """A caller who chose their own TTL has better information than we do.
+
+        Overwriting a caller's `ttl: "1h"` with our own choice would be the cost
+        *regression* the system-block path already had once: they paid 2x for an
+        hour and this package silently downgraded them.
+        """
+        from optio_optimize.adapters.anthropic import _RAW, _kwargs_from_request
+        from optio_optimize.types import LLMRequest, Message
+
+        caller_block = {
+            "type": "text",
+            "text": "brief",
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        }
+        sent = LLMRequest(
+            model="claude-haiku-4-5",
+            messages=(
+                Message(
+                    role="system",
+                    content="brief",
+                    cacheable=True,
+                    cache_ttl=None,
+                    extra={_RAW: caller_block},
+                ),
+                Message(role="user", content="hi"),
+            ),
+            max_tokens=256,
+        )
+
+        kwargs = _kwargs_from_request(sent, _kwargs())
+
+        assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}

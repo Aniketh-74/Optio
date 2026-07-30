@@ -34,6 +34,16 @@ class Message:
         name: Optional participant or tool name.
         cacheable: Whether a provider prefix-cache marker may be placed after
             this message. Set by the prefix stage, read by provider adapters.
+        cache_ttl: Lifetime to request for that marker -- ``"1h"``, or ``None``
+            to say nothing and take the provider's five-minute default. Only
+            meaningful when ``cacheable`` is set.
+
+            A separate field rather than widening ``cacheable`` to a union,
+            which would break every existing reader of it for no gain. ``None``
+            rather than a ``"5m"`` default because the two are not the same
+            instruction: absent means "this package expressed no preference",
+            and a request that says ``5m`` explicitly is one this package has
+            taken responsibility for (ADR-021).
         extra: Provider-specific fields, passed through untouched.
     """
 
@@ -41,6 +51,7 @@ class Message:
     content: str
     name: str | None = None
     cacheable: bool = False
+    cache_ttl: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def with_content(self, content: str) -> Message:
@@ -149,6 +160,13 @@ class LLMResponse:
             into ordinary input tokens understates what a cached call cost and
             therefore overstates what caching saved. Always ``0`` for providers
             that cache automatically without charging to populate it (OpenAI).
+        cache_write_1h_tokens: The **subset** of ``cache_write_tokens`` that
+            populated a one-hour entry rather than a five-minute one, billed at
+            2x base input instead of 1.25x. A subset rather than a sibling
+            because that is how the provider reports it -- the total in
+            ``cache_creation_input_tokens``, the breakdown in ``cache_creation``
+            -- and adding the two would double-count the most expensive tokens
+            in the request (ADR-021).
         model: The model that actually served the request, which is not
             necessarily the one requested -- the routing stage may have changed
             it, and reporting the requested model would make routing savings
@@ -164,6 +182,7 @@ class LLMResponse:
     output_tokens: int = 0
     cached_input_tokens: int = 0
     cache_write_tokens: int = 0
+    cache_write_1h_tokens: int = 0
     model: str = ""
     finish_reason: str | None = None
     served_from: str | None = None
