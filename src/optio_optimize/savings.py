@@ -69,6 +69,10 @@ class SavingsReport:
             reads for the obvious reason and one less obvious one: it is the only
             quantity here that makes this package's reported saving smaller, so
             leaving it out could never be caught by a report that looked wrong.
+        provider_written_1h_tokens: The **subset** of the above that went into a
+            one-hour cache entry, billed at 2x base input rather than 1.25x. A
+            subset, matching how the provider reports it -- adding the two would
+            double-count the most expensive tokens in the request (ADR-021).
         requests: How many requests contributed.
         short_circuits: How many never reached the provider.
         exact: Whether counts came from a real tokenizer.
@@ -81,6 +85,7 @@ class SavingsReport:
     actual_output_tokens: int = 0
     provider_cached_tokens: int = 0
     provider_written_tokens: int = 0
+    provider_written_1h_tokens: int = 0
     requests: int = 0
     short_circuits: int = 0
     exact: bool = False
@@ -134,6 +139,7 @@ class SavingsReport:
             self.actual_output_tokens,
             self.provider_cached_tokens,
             self.provider_written_tokens,
+            self.provider_written_1h_tokens,
         )
 
     def estimated_saved_usd(self, model: str) -> float | None:
@@ -155,6 +161,7 @@ class SavingsReport:
             self.actual_output_tokens,
             self.provider_cached_tokens,
             self.provider_written_tokens,
+            self.provider_written_1h_tokens,
         )
         return baseline - actual
 
@@ -203,20 +210,30 @@ def _cost(
     output_tokens: int,
     cached: int,
     written: int = 0,
+    written_1h: int = 0,
 ) -> float:
     """Return USD for a token usage against a price table.
 
-    Prompt tokens fall into three price bands, not two. ``cached`` are reads and
-    cost roughly a tenth; ``written`` populate the cache and cost a *premium*;
-    everything else pays the base rate. Both are subsets of ``input_tokens``.
+    Prompt tokens fall into **four** price bands. ``cached`` are reads and cost
+    roughly a tenth; ``written`` populate a 5-minute cache entry at a premium;
+    ``written_1h`` populate a one-hour entry at a larger premium; everything else
+    pays the base rate. All three are subsets of ``input_tokens``, and
+    ``written_1h`` is a subset of ``written`` -- the provider reports the total in
+    ``cache_creation_input_tokens`` and breaks it down in ``cache_creation``, so
+    treating the hour figure as *additional* would double-count the most
+    expensive tokens in the request.
 
-    ``written`` defaults to ``0`` so callers with no write data are priced
-    exactly as before. That default is also the shape of the bug it fixes: with
-    writes silently folded into base-rate input, a cached Anthropic call looked
+    Both write arguments default to ``0`` so callers with no write data are
+    priced exactly as before. That default is also the shape of the bug they fix:
+    with writes folded into base-rate input, a cached Anthropic call looked
     cheaper than it was, in the one direction that inflates this package's
-    headline saving.
+    headline saving. ``written_1h`` was added before anything could request a
+    one-hour TTL, so the second occurrence of that error was never possible
+    (ADR-021).
     """
     written = max(0, min(written, max(0, input_tokens - cached)))
+    written_1h = max(0, min(written_1h, written))
+    written_5m = written - written_1h
     full_input = max(0, input_tokens - cached - written)
     cached_rate = (
         pricing.cached_input_usd_per_m
@@ -228,10 +245,19 @@ def _cost(
         if pricing.cache_write_usd_per_m is not None
         else pricing.input_usd_per_m
     )
+    # Falls back to the 5-minute rate, never to the base rate: a one-hour write
+    # is certainly not cheaper than a five-minute one, and guessing low is the
+    # flattering direction.
+    write_1h_rate = (
+        pricing.cache_write_1h_usd_per_m
+        if pricing.cache_write_1h_usd_per_m is not None
+        else write_rate
+    )
     return (
         full_input * pricing.input_usd_per_m / 1_000_000
         + cached * cached_rate / 1_000_000
-        + written * write_rate / 1_000_000
+        + written_5m * write_rate / 1_000_000
+        + written_1h * write_1h_rate / 1_000_000
         + output_tokens * pricing.output_usd_per_m / 1_000_000
     )
 
@@ -247,6 +273,7 @@ def merge(reports: list[SavingsReport]) -> SavingsReport:
         merged.actual_output_tokens += report.actual_output_tokens
         merged.provider_cached_tokens += report.provider_cached_tokens
         merged.provider_written_tokens += report.provider_written_tokens
+        merged.provider_written_1h_tokens += report.provider_written_1h_tokens
         merged.requests += report.requests
         merged.short_circuits += report.short_circuits
         for name, saving in report.stages.items():

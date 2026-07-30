@@ -476,11 +476,32 @@ def _param_from_message(message: Message) -> Any:
         param = {"role": message.role, "content": message.content}
 
     if message.cacheable:
-        param = {**param, "content": _with_cache_control(param.get("content"), message.content)}
+        param = {
+            **param,
+            "content": _with_cache_control(
+                param.get("content"), message.content, message.cache_ttl
+            ),
+        }
     return param
 
 
-def _with_cache_control(content: Any, text: str) -> list[dict[str, Any]]:
+def _cache_control(ttl: str | None) -> dict[str, Any]:
+    """Build a breakpoint, with a lifetime only if one was chosen.
+
+    ``None`` emits no ``ttl`` key at all rather than an explicit ``"5m"``, and
+    the difference is deliberate: absent means this package expressed no
+    preference and the provider applies its own default, while a literal ``"5m"``
+    is a lifetime this package has taken responsibility for. They bill the same
+    today; they are not the same statement, and only one of them stays correct if
+    Anthropic ever changes that default (ADR-021).
+    """
+    control: dict[str, Any] = dict(wire.EPHEMERAL_CACHE_CONTROL)
+    if ttl is not None:
+        control["ttl"] = ttl
+    return control
+
+
+def _with_cache_control(content: Any, text: str, ttl: str | None = None) -> list[dict[str, Any]]:
     """Return ``content`` as blocks, with a cache breakpoint on the last one.
 
     Anthropic only accepts ``cache_control`` on a content *block*, so plain
@@ -501,7 +522,7 @@ def _with_cache_control(content: Any, text: str) -> list[dict[str, Any]]:
         blocks: list[Any] = [_as_block_dict(b) or b for b in content]
         last = blocks[-1]
         if isinstance(last, dict):
-            last["cache_control"] = dict(wire.EPHEMERAL_CACHE_CONTROL)
+            last["cache_control"] = _cache_control(ttl)
         else:
             # Un-coercible foreign object. Nothing correct is available: marking
             # is impossible and dropping the block would delete content. The
@@ -513,13 +534,7 @@ def _with_cache_control(content: Any, text: str) -> list[dict[str, Any]]:
                 type(last).__name__,
             )
         return blocks
-    return [
-        {
-            "type": "text",
-            "text": text,
-            "cache_control": dict(wire.EPHEMERAL_CACHE_CONTROL),
-        }
-    ]
+    return [{"type": "text", "text": text, "cache_control": _cache_control(ttl)}]
 
 
 def _system_block_from_message(message: Message) -> dict[str, Any]:
@@ -547,7 +562,7 @@ def _system_block_from_message(message: Message) -> dict[str, Any]:
     if str(block.get("text", "")) != message.content:
         block["text"] = message.content
     if message.cacheable and "cache_control" not in block:
-        block["cache_control"] = dict(wire.EPHEMERAL_CACHE_CONTROL)
+        block["cache_control"] = _cache_control(message.cache_ttl)
     return block
 
 

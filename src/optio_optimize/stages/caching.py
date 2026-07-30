@@ -17,6 +17,9 @@ every step and is identical every time.
 
 from __future__ import annotations
 
+import hashlib
+import time
+from collections import OrderedDict
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -25,6 +28,8 @@ from optio_optimize.stages.base import Fidelity, Stage, StageResult
 from optio_optimize.tokens import count_request
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from optio_optimize.cache import CacheBackend
     from optio_optimize.stages.base import StageContext
     from optio_optimize.types import LLMRequest, LLMResponse, Message
@@ -48,6 +53,22 @@ _KEY = "exact_cache_key"
 #: The cost of being wrong is a marker that does nothing, never a wrong answer.
 #: ``docs/optimize-benchmarks.md`` records the full table.
 MIN_PREFIX_TOKENS = 1024
+
+#: How long Anthropic's default cache entry lives. A gap longer than this means
+#: the entry the previous call wrote is gone, so the next call pays a fresh
+#: 1.25x write on a prefix it just wrote -- which is the whole case for the
+#: one-hour TTL (ADR-021).
+FIVE_MINUTE_WINDOW_SECONDS = 300.0
+
+#: Prefixes tracked for TTL selection. Bounded because this lives for the
+#: process lifetime in a long-running agent (§11), and an agent that rotates
+#: system prompts would otherwise grow the map without limit. 1,024 prefixes is
+#: a few hundred kilobytes of hex digests and covers far more distinct prompts
+#: than a single process realistically holds.
+MAX_TRACKED_PREFIXES = 1024
+
+#: The value sent when observation says the entry will have expired.
+ONE_HOUR_TTL = "1h"
 
 
 class ExactCacheStage(Stage):
@@ -194,6 +215,26 @@ class PrefixCacheStage(Stage):
     # A marker changes what the provider *bills*, never what it generates.
     fidelity = Fidelity.IDENTICAL
 
+    def __init__(self, clock: Callable[[], float] | None = None) -> None:
+        """Build the stage.
+
+        Args:
+            clock: Monotonic time source, injectable for tests. TTL selection
+                turns on a five-minute threshold, and a test that proves it by
+                sleeping for five minutes is a test nobody runs -- so the clock
+                is a seam rather than a call to ``time.monotonic`` inline. The
+                live script does the real waiting, because only the provider can
+                confirm an entry actually expired.
+        """
+        self._clock = clock if clock is not None else time.monotonic
+        # Prefix digest -> when it was last sent. An OrderedDict so the bound
+        # below evicts the least recently seen rather than an arbitrary entry.
+        self._last_seen: OrderedDict[str, float] = OrderedDict()
+        # Prefixes observed to have outlived a five-minute entry. Once true it
+        # stays true: reverting on the next quick call would re-write the prefix
+        # at 1.25x while a live one-hour entry sat there unread.
+        self._expires: set[str] = set()
+
     @property
     def name(self) -> str:
         """Stable identifier."""
@@ -213,12 +254,49 @@ class PrefixCacheStage(Stage):
             # anyway would show up in reports as work done for no effect.
             return self.declines(request)
 
+        ttl = self._ttl_for(request, boundary, enabled=ctx.config.cache_ttl_selection)
+
         marked = list(request.messages)
-        marked[boundary - 1] = _with_cacheable(marked[boundary - 1])
-        return StageResult(
-            request=request.with_messages(tuple(marked)),
-            note=f"prefix marked at message {boundary} (~{prefix_tokens} tokens)",
-        )
+        marked[boundary - 1] = _with_cacheable(marked[boundary - 1], ttl)
+        note = f"prefix marked at message {boundary} (~{prefix_tokens} tokens)"
+        if ttl is not None:
+            note += f", ttl {ttl}"
+        return StageResult(request=request.with_messages(tuple(marked)), note=note)
+
+    def _ttl_for(self, request: LLMRequest, boundary: int, *, enabled: bool) -> str | None:
+        """Pick a cache lifetime, and record this sighting either way.
+
+        ``None`` means "send no ``ttl`` field", which the provider reads as its
+        five-minute default. That is the answer unless expiry has actually been
+        *observed* for this prefix -- the same prefix seen again after a gap
+        longer than :data:`FIVE_MINUTE_WINDOW_SECONDS`.
+
+        Nothing here predicts a gap. A one-hour write costs 2x base input against
+        1.25x, so guessing wrong raises the bill, and ADR-013's rule 1 forbids a
+        cost-reduction library doing that. Reacting to an expiry that already
+        happened is free of that risk in a way any predictor would not be.
+
+        The sighting is recorded even when the feature is off, so enabling the
+        flag mid-process does not start from a blank history -- and so the
+        bookkeeping is exercised by the default configuration rather than only by
+        the opt-in path.
+        """
+        digest = _prefix_digest(request, boundary)
+        now = self._clock()
+        previous = self._last_seen.get(digest)
+
+        if previous is not None and (now - previous) > FIVE_MINUTE_WINDOW_SECONDS:
+            self._expires.add(digest)
+
+        self._last_seen[digest] = now
+        self._last_seen.move_to_end(digest)
+        while len(self._last_seen) > MAX_TRACKED_PREFIXES:
+            evicted, _ = self._last_seen.popitem(last=False)
+            self._expires.discard(evicted)
+
+        if not enabled:
+            return None
+        return ONE_HOUR_TTL if digest in self._expires else None
 
     @staticmethod
     def _stable_prefix_length(request: LLMRequest) -> int:
@@ -249,6 +327,23 @@ class PrefixCacheStage(Stage):
         return max(boundary, stable_history) if stable_history > boundary else boundary
 
 
-def _with_cacheable(message: Message) -> Message:
+def _with_cacheable(message: Message, ttl: str | None = None) -> Message:
     """Return a copy of ``message`` flagged as a prefix-cache boundary."""
-    return replace(message, cacheable=True)
+    return replace(message, cacheable=True, cache_ttl=ttl)
+
+
+def _prefix_digest(request: LLMRequest, boundary: int) -> str:
+    """Identify a prefix without carrying it.
+
+    A hash, for the reason :func:`~optio_optimize.cache.request_key` gives: these
+    values live in a long-running process and reach debug output, and §10's rule
+    that this package never emits prompt content applies to an identifier derived
+    from a prompt just as much as to the prompt.
+
+    The model is part of the digest. Two workloads with the same system prompt on
+    different models have separate cache entries at the provider, so one
+    observing expiry says nothing about the other.
+    """
+    parts = [request.model, *(m.content for m in request.messages[:boundary])]
+    encoded = "\x00".join(parts).encode("utf-8", "replace")
+    return hashlib.blake2b(encoded, digest_size=16).hexdigest()

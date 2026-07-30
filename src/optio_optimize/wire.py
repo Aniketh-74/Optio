@@ -292,6 +292,13 @@ def response_from_anthropic_message(message: Any) -> LLMResponse:
     usage = getattr(message, "usage", None)
     cached = int(getattr(usage, "cache_read_input_tokens", 0) or 0) if usage else 0
     written = int(getattr(usage, "cache_creation_input_tokens", 0) or 0) if usage else 0
+    # The one-hour band, which the provider has always reported and this package
+    # did not read until ADR-021. A one-hour write costs 2x base input against
+    # 1.25x for five minutes, so folding the two together under-bills the more
+    # expensive one by 37.5% -- the same direction as the omission above, and the
+    # reason both are read here rather than one being inferred from the other.
+    creation = getattr(usage, "cache_creation", None) if usage else None
+    written_1h = min(written, int(getattr(creation, "ephemeral_1h_input_tokens", 0) or 0))
     text = "".join(
         str(getattr(block, "text", ""))
         for block in getattr(message, "content", [])
@@ -303,6 +310,7 @@ def response_from_anthropic_message(message: Any) -> LLMResponse:
         output_tokens=int(getattr(usage, "output_tokens", 0)) if usage else 0,
         cached_input_tokens=cached,
         cache_write_tokens=written,
+        cache_write_1h_tokens=written_1h,
         model=str(getattr(message, "model", "")),
         finish_reason=getattr(message, "stop_reason", None),
     )
