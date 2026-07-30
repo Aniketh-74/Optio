@@ -86,9 +86,12 @@ class OptimizeConfig:
             the upgrade, and an agent step slower than five minutes otherwise
             re-writes a prefix it just wrote. Off by default despite changing
             nothing about the request: it is the only setting here that can
-            *raise* a bill, on a prefix that turns out never to be re-used, and
-            the default flips when a live run says it should and not before
-            (ADR-021).
+            *raise* a bill, on a prefix that turns out never to be re-used.
+            Measured live at **-30.9%** over four rounds five minutes apart --
+            but **+29.9% after only two**, because the upgrade write costs 2x
+            and pays back on the round after. Worth turning on for an agent loop
+            with steps slower than five minutes; not worth defaulting on for a
+            prefix that might be seen twice and then dropped (ADR-021).
         detect_unstable_prefix: Watch for prompts whose cacheable head changes
             between calls, and report why. Observes only -- it never modifies a
             request, and it is the one setting here that cannot cost anything.

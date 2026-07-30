@@ -177,6 +177,23 @@ already enforced in the Anthropic adapter as of 2026-07-30.
 
 **Gate.** Arithmetic plus one live confirmation that the longer TTL is honoured.
 
+**Done, 2026-07-30. The gate was met and the result argues against turning it on.** The break-even
+above is wrong in the spec's own terms — it is `m >= 1`, not 1.6 — and ADR-021 derives it properly.
+The accounting shipped first and separately: `_cost` priced every write at 1.25x, so the moment
+anything asked for an hour the most expensive band was under-billed by 37.5%, in the flattering
+direction, and a caller setting their own `ttl: "1h"` breakpoint was already mis-priced. Selection
+lives inside `PrefixCacheStage` and asks for an hour only after expiry has been *observed*.
+
+Live, `claude-haiku-4-5`, four rounds 330s apart with both arms interleaved: **−30.9%** total,
+16,888 tokens re-written by the control against 4,222 + 4,222 written and 8,444 read by the treated
+arm. The TTL was honoured — no beta header needed, verified separately. But the cumulative curve is
+the real finding: after round 2 the treated arm is **29.9% more expensive**, because the upgrade
+write costs 2.0x, and it only crosses over in round 3. A prefix that expires once and is never used
+again loses ~30% for good, which ADR-013 rule 1 forbids. So `cache_ttl_selection` **ships off**;
+observed expiry is sound backward evidence, and the upgrade needs a forward fact this run measured
+nothing about. 29 new tests (19 accounting, 10 selection), and mutation testing caught two of them
+being vacuous.
+
 ### 5. Multimodal token cost
 
 **Mechanism.** Two separate things. **Counting** images at all — currently zero, so every
