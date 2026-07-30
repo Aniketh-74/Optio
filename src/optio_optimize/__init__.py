@@ -56,6 +56,7 @@ from optio_optimize.batch import (
     items_from,
 )
 from optio_optimize.batch_backends import AnthropicBatchBackend, OpenAIBatchBackend
+from optio_optimize.cascade import CascadeCost, CascadeStats, ModelJudge, default_verifier
 from optio_optimize.config import OptimizeConfig, config_from_mapping
 from optio_optimize.errors import OptimizeConfigError, OptimizeError
 from optio_optimize.optimizer import Optimizer
@@ -98,9 +99,12 @@ __all__ = [
     "BatchSubmission",
     "BatchSubmissionError",
     "BatchTimeoutError",
+    "CascadeCost",
+    "CascadeStats",
     "LLMRequest",
     "LLMResponse",
     "Message",
+    "ModelJudge",
     "OpenAIBatchBackend",
     "OptimizeConfig",
     "OptimizeConfigError",
@@ -110,5 +114,6 @@ __all__ = [
     "StageSaving",
     "__version__",
     "config_from_mapping",
+    "default_verifier",
     "items_from",
 ]

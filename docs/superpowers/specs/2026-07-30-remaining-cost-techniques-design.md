@@ -249,6 +249,42 @@ have caught and this plan will not.
 
 **Gate.** Live comparison with graded correctness, against static routing as the baseline.
 
+**Done, 2026-07-30. Gate met on the mechanism; ships off by default because the gate for the
+*judgment* is the caller's, not this package's.** ADR-023 settles the shape: cascade is a
+**provider-call wrapper, not a stage**, because a stage's contract is one provider call and this
+needs two — the same wall ADR-017 hit with batch dispatch. The wrapper reuses `route_models`'
+eligibility rule verbatim, so the gate that says "this request is a candidate" is unchanged; only
+"so send it cheap and hope" becomes "so try cheap, and verify."
+
+**The interaction risk this spec flagged was resolved structurally rather than by a special case.**
+A rejected cheap answer is never cached because the cheap attempt is made *inside* the wrapper
+against the raw provider call, so it never passes through the stage pipeline and no cache `after`
+hook ever sees it. Only the accepted final answer reaches the cache. Pinned by
+`test_a_rejected_cheap_answer_is_never_cached`.
+
+Live gate, gpt-4o vs gpt-4o-mini, twelve graded probes, $0.0013: easy 100% both; hard 100% vs 88%,
+and the single regression was the motivating case reproduced exactly — 319 against **329**. With an
+oracle verifier, cascade scores 12/12 at ~14% of all-expensive cost against static routing's 11/12
+at 6%. **That gap is the whole result**, and it confirms rather than softens the design: the
+built-in `default_verifier` rejects only empty and truncated answers, and "329" is neither — so with
+the default verifier cascade would score the same 92% as static routing. The verifier *is* the
+fidelity claim.
+
+A second live run exercised the wrapper itself end to end ($0.00004, all three flags on): routing,
+structured output and a proposed tool call all accepted without escalation. That confirms the code
+engages live; it does **not** exercise the escalation path live, which stays covered offline.
+
+Three eligibility expansions followed, each off by default and each with its own verifier reasoning:
+`cascade_structured_output` (the requested JSON *is* the verifier), `cascade_max_tokens` (the
+escalation net makes the length ceiling a cost knob rather than a safety one), and `cascade_tools`
+(safe only because a chat-completions call returns a *proposed* call, not an executed one, so it can
+be vetted before anything with a side effect happens).
+
+A post-implementation review found five weaknesses, all now closed — the largest being that cascade
+wraps the provider call, so an escalated request's **wasted cheap attempt was spent and counted
+nowhere**. `CascadeStats.cost_summary` now reports measured cheap spend, escalation spend, and
+escalation waste, with only the accepted-cheap baseline labelled as a projection.
+
 ### 7. The minor items
 
 Each cheap, each small, in rough value order: truncation-retry avoidance

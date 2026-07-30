@@ -21,6 +21,50 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Added
+
+- **Cascade routing: call cheap, verify, escalate
+  ([ADR-023](docs/design/adr/adr-023-cascade-routing-calls-cheap-verifies-and-escalates.md)).**
+  `route_models` decides cheap-vs-expensive *before* the call, from prompt length. Its own docstring
+  records the guess failing: *"What is 17 times 24, minus 89?"* is eight words with no tools, so it
+  routes — and the cheap model answers **329** against 319. Cascade removes the guess. It calls the
+  cheap model, runs a verifier over the answer, and escalates to the originally requested model only
+  on failure, so the worst case stops being wrong-and-cheap and becomes slow-and-right.
+
+  **Not a stage.** A stage's contract is `before → call → after` with exactly one provider call, and
+  this needs two — the same wall ADR-017 hit with batch dispatch. Cascade wraps the provider call
+  instead, so the stage contract stays single-call and every existing hook still fires once, against
+  whichever request actually goes out last.
+
+  **The verifier is the fidelity claim, not the cascade.** `cascade_verifier` takes a caller-supplied
+  `(request, response) -> bool`; the built-in `default_verifier` catches only what a cheap
+  deterministic check can — an empty or truncated answer, a `response_format` request whose reply is
+  not JSON or drops a required key, a proposed tool call naming an unknown tool or missing a required
+  argument. It does **not** catch "329", and says so in its own docstring. Grading with a model would
+  spend the very escalation cascade exists to avoid; `ModelJudge` is provided for callers who want
+  that trade and reports its own cost so the saving stays net rather than gross.
+
+  **A rejected cheap answer is never cached**, structurally rather than by special case: the cheap
+  attempt runs inside the wrapper against the raw provider call, so no cache `after` hook ever sees
+  it. Only the accepted final answer reaches the cache. Keying attempts by model instead would have
+  reopened the cache key ADR-022 had just finished getting right.
+
+  Live gate: twelve graded probes, gpt-4o against gpt-4o-mini, $0.0013 total. Easy prompts 100% on
+  both; hard prompts 100% against 88%, the single regression being the motivating case reproduced
+  exactly. With an oracle verifier cascade scores 12/12 at ~14% of all-expensive cost, against static
+  routing's 11/12 at 6% — and **that gap is the result**, because with the default verifier cascade
+  would score the same 92% static routing does.
+
+  Three eligibility expansions ride along, each off by default: `cascade_structured_output` (the
+  requested JSON *is* a verifier), `cascade_max_tokens` (the escalation net turns the length ceiling
+  into a cost knob rather than a safety one), and `cascade_tools` (safe only because the provider
+  returns a *proposed* call, not an executed one, so it can be vetted before any side effect).
+  `CascadeStats` reports attempts, escalation rate, per-phase latency, and a `cost_summary` that
+  counts the wasted cheap attempt on escalated requests — spend that wrapping the provider call had
+  otherwise made invisible. **Off by default:** the live run clears the mechanism, not the judgment
+  ADR-015 reserves for whoever supplies `cheap_model`. Mutually exclusive with `route_models`, which
+  raises at construction rather than routing twice.
+
 ### Fixed
 
 - **Two different images produced the same cache key, and `exact_cache` is on by default

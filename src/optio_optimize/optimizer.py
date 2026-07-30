@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from optio_optimize.cascade import CascadeRouter
 from optio_optimize.config import OptimizeConfig, config_from_mapping
 from optio_optimize.pipeline import Pipeline
 from optio_optimize.stages import build_stages
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
 
     from opentelemetry.trace import TracerProvider
 
+    from optio_optimize.cascade import CascadeStats, Verifier
     from optio_optimize.pipeline import AsyncProviderCall, Pipeline, ProviderCall
     from optio_optimize.savings import SavingsReport
     from optio_optimize.stages.base import Stage
@@ -35,7 +37,7 @@ class Optimizer:
         config: The active configuration.
     """
 
-    __slots__ = ("_pipeline", "config")
+    __slots__ = ("_cascade", "_pipeline", "config")
 
     def __init__(
         self,
@@ -45,6 +47,7 @@ class Optimizer:
         tracer_provider: TracerProvider | None = None,
         summarizer: Summarizer | None = None,
         similarity_fn: SimilarityFn | None = None,
+        cascade_verifier: Verifier | None = None,
         **overrides: Any,
     ) -> None:
         """Build an optimizer.
@@ -68,6 +71,13 @@ class Optimizer:
             similarity_fn: Similarity function for ``semantic_cache``.
                 Defaults to a lexical, embeddings-free metric; see
                 :mod:`optio_optimize.similarity`.
+            cascade_verifier: Acceptance check for ``cascade_routing`` -- given
+                the request and the cheap model's answer, returns ``True`` to
+                accept or ``False`` to escalate (ADR-023). Defaults to
+                :func:`~optio_optimize.cascade.default_verifier`, which catches
+                empty and truncated answers but does not judge correctness; a
+                caller who needs semantic verification supplies their own.
+                Ignored unless ``cascade_routing`` is on.
             **overrides: Individual config fields, e.g. ``semantic_cache=True``.
 
         Raises:
@@ -103,6 +113,17 @@ class Optimizer:
             else build_stages(self.config, summarizer=summarizer, similarity_fn=similarity_fn),
             tracer_provider=tracer_provider,
         )
+        # Cascade is not a stage (ADR-023): it wraps the provider call rather
+        # than transforming the request, so it lives beside the pipeline, not in
+        # it. Built only when enabled, so the common path constructs nothing.
+        if self.config.cascade_routing:
+            from optio_optimize.cascade import default_verifier
+
+            self._cascade: CascadeRouter | None = CascadeRouter(
+                self.config, verify=cascade_verifier or default_verifier
+            )
+        else:
+            self._cascade = None
 
     def call(
         self,
@@ -123,6 +144,8 @@ class Optimizer:
             The response. Identical to what ``provider`` would have returned,
             unless a lossy stage is enabled.
         """
+        if self._cascade is not None:
+            provider = self._cascade.wrap(provider)
         return self._pipeline.execute(request, provider, run_id=run_id)
 
     async def acall(
@@ -152,6 +175,8 @@ class Optimizer:
             The response. Identical to what ``provider`` would have returned,
             unless a lossy stage is enabled.
         """
+        if self._cascade is not None:
+            provider = self._cascade.awrap(provider)
         return await self._pipeline.aexecute(request, provider, run_id=run_id)
 
     async def afan_out(
@@ -213,6 +238,19 @@ class Optimizer:
     def report(self) -> SavingsReport:
         """Cumulative savings across every request this optimizer has run."""
         return self._pipeline.report
+
+    @property
+    def cascade_stats(self) -> CascadeStats | None:
+        """Running cascade tally, or ``None`` when ``cascade_routing`` is off.
+
+        Cascade savings do not fold into :attr:`report` the way a stage's do --
+        a stage reports tokens avoided on one call, while cascade's economics
+        are a rate across calls (a cheap answer accepted saves the gap between
+        the two models; one escalated spends both). The escalation rate on this
+        object is what the ADR-015 gate reads to decide whether the cascade is
+        paying on a given workload.
+        """
+        return self._cascade.stats if self._cascade is not None else None
 
     @property
     def pipeline(self) -> Pipeline:

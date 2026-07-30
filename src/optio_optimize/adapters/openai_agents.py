@@ -276,6 +276,22 @@ def _response_from_completion(completion: ChatCompletion) -> LLMResponse:
     if usage is not None and usage.prompt_tokens_details is not None:
         cached = usage.prompt_tokens_details.cached_tokens or 0
 
+    extra: dict[str, Any] = {_NATIVE: completion}
+    # Surface any proposed tool call under the shared ``tool_calls`` convention
+    # (in addition to the native object) so cascade routing can vet it before
+    # the agent executes it (ADR-023 step 3). The native completion is still
+    # what gets returned to the SDK on a real call, so this is additive.
+    tool_calls = getattr(choice.message, "tool_calls", None) if choice is not None else None
+    if tool_calls:
+        extra["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": tc.type,
+                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+            }
+            for tc in tool_calls
+        ]
+
     return LLMResponse(
         content=(choice.message.content or "") if choice is not None else "",
         input_tokens=usage.prompt_tokens if usage else 0,
@@ -283,7 +299,7 @@ def _response_from_completion(completion: ChatCompletion) -> LLMResponse:
         cached_input_tokens=cached,
         model=completion.model,
         finish_reason=choice.finish_reason if choice is not None else None,
-        extra={_NATIVE: completion},
+        extra=extra,
     )
 
 
