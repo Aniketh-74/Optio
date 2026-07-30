@@ -105,6 +105,14 @@ class OptimizeConfig:
         compress_prompt: Drop low-information tokens from the prompt. Lossy.
         chain_of_draft: Ask for shorthand reasoning rather than prose.
             Lossy: it changes how the model reasons, not how it presents.
+        reasoning_budget: Lower a caller-set reasoning budget toward what this
+            workload has been observed to use. **Lossy, and the tier matters
+            more here than anywhere else** (ADR-018): reasoning tokens bill at
+            the completion rate, so this is the most expensive lever in the
+            package -- and a budget that binds degrades exactly on the hard
+            questions a reasoning model was chosen for, leaving no trace in the
+            prompt or the report. Never raises a budget and never sets one
+            where the caller set none.
         recent_turns: Turns kept verbatim by trimming and summarization.
         anchor_turns: Oldest turns trimming must keep, dropping the middle
             instead of the front. The cached region a provider serves is
@@ -173,6 +181,7 @@ class OptimizeConfig:
     compress_prompt: bool = False
     prune_tools: bool = False
     chain_of_draft: bool = False
+    reasoning_budget: bool = False
 
     recent_turns: int = DEFAULT_RECENT_TURNS
     anchor_turns: int = DEFAULT_ANCHOR_TURNS
@@ -249,6 +258,7 @@ class OptimizeConfig:
             "compress_prompt": self.compress_prompt,
             "prune_tools": self.prune_tools,
             "chain_of_draft": self.chain_of_draft,
+            "reasoning_budget": self.reasoning_budget,
         }
         return tuple(sorted(name for name, on in candidates.items() if on))
 
