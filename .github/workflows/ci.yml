@@ -160,12 +160,28 @@ jobs:
         # directory; it was shipping `.import_linter_cache/` until the sdist
         # manifest was made explicit. A stray cache in a published artifact is
         # at best noise and at worst a leak of local paths.
+        #
+        # Cache *directories* are matched by path component, not by substring.
+        # The first version of this check asked whether "cache" appeared anywhere
+        # in the path, which was fine until the package acquired a response cache
+        # -- then `src/optio_optimize/cache.py`, `stages/semantic_cache.py` and
+        # `tests/optimize/test_cache_key.py` were all reported as build
+        # artefacts, and the job failed on three platforms over its own
+        # substring. A gate that fires on correct code teaches people to ignore
+        # it, which is worse than not having it.
         shell: bash
         run: |
           python - <<'PY'
           import glob, sys, tarfile
+          CACHE_DIRS = {
+              "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache",
+              ".import_linter_cache", ".hypothesis", ".coverage_cache",
+          }
           names = [n.split("/", 1)[-1] for n in tarfile.open(glob.glob("dist/*.tar.gz")[0]).getnames()]
-          stray = [n for n in names if "cache" in n.lower() or n.endswith(".pyc") or ".github" in n]
+          stray = [
+              n for n in names
+              if (set(n.split("/")) & CACHE_DIRS) or n.endswith(".pyc") or n.startswith(".github")
+          ]
           if stray:
               sys.exit(f"::error::sdist contains build artefacts: {stray[:10]}")
           for required in ("src/optio/__init__.py", "tests", "LICENSE", "README.md"):
