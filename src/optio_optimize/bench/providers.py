@@ -17,6 +17,7 @@ A benchmark that quietly bills someone is a far worse bug than a slow one.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -417,13 +418,35 @@ class OpenAIProvider:
         if usage is not None and getattr(usage, "prompt_tokens_details", None) is not None:
             cached = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
 
+        message = completion.choices[0].message
+        # Surface any proposed tool call so cascade routing can vet it before
+        # the agent executes it (ADR-023 step 3). Same ``extra["tool_calls"]``
+        # convention the request side uses (see optio_optimize.wire); OpenAI's
+        # ``arguments`` is already a JSON string, so it passes through as-is.
+        extra: dict[str, Any] = {}
+        # Only "function" tool calls carry a ``.function``; the SDK's union also
+        # includes a custom-tool variant that does not, so skip anything without
+        # one rather than assume the shape.
+        function_calls = [
+            {
+                "id": tc.id,
+                "type": tc.type,
+                "function": {"name": fn.name, "arguments": fn.arguments},
+            }
+            for tc in (message.tool_calls or [])
+            if (fn := getattr(tc, "function", None)) is not None
+        ]
+        if function_calls:
+            extra["tool_calls"] = function_calls
+
         response = LLMResponse(
-            content=completion.choices[0].message.content or "",
+            content=message.content or "",
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
             cached_input_tokens=cached,
             model=completion.model,
             finish_reason=completion.choices[0].finish_reason,
+            extra=extra,
         )
         self.guard.record(_actual_cost(response, self.model))
         return response
@@ -525,6 +548,27 @@ class AnthropicProvider:
         # check alone type-checked only because anthropic was previously
         # exempted from mypy via ignore_missing_imports, which hid this.
         text = "".join(b.text for b in reply.content if isinstance(b, TextBlock))
+        # Normalise Anthropic's tool_use blocks to the same ``tool_calls``
+        # convention OpenAI uses, so cascade's verifier reads one shape (ADR-023
+        # step 3). Anthropic's ``input`` is a dict, not a JSON string, so it is
+        # serialised to match ``function.arguments``. Detected by the block's
+        # ``type`` discriminator rather than an ``isinstance`` against a class
+        # name, so this survives SDK versions that spell or place ToolUseBlock
+        # differently (ADR-023 improvement #5); getattr keeps it type-clean.
+        extra: dict[str, Any] = {}
+        tool_uses = [b for b in reply.content if getattr(b, "type", None) == "tool_use"]
+        if tool_uses:
+            extra["tool_calls"] = [
+                {
+                    "id": getattr(b, "id", None),
+                    "type": "function",
+                    "function": {
+                        "name": getattr(b, "name", None),
+                        "arguments": json.dumps(getattr(b, "input", {})),
+                    },
+                }
+                for b in tool_uses
+            ]
 
         response = LLMResponse(
             content=text,
@@ -533,6 +577,7 @@ class AnthropicProvider:
             cached_input_tokens=cached,
             model=reply.model,
             finish_reason=reply.stop_reason,
+            extra=extra,
         )
         self.guard.record(_actual_cost(response, self.model))
         return response

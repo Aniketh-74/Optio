@@ -112,6 +112,37 @@ class OptimizeConfig:
         summarize_history: Replace old turns with a model-written summary.
             Lossy: costs a small model call, and the summary is not the history.
         route_models: Send easy steps to a cheaper model. Lossy.
+        cascade_routing: Try the cheaper model first, verify the answer, and
+            escalate to the requested model on failure (ADR-023). Lossy, but
+            bounded by the verifier in a way static ``route_models`` is not.
+            Needs ``cheap_model``; mutually exclusive with ``route_models``
+            (both retarget ``.model``, so running them together would route
+            twice). Not a stage -- it wraps the provider call, so it does not
+            appear in ``stage_names``; its activity is reported via
+            ``Optimizer.cascade_stats``.
+        cascade_structured_output: Let cascade also attempt requests carrying a
+            ``response_format`` (ADR-023 step 1). Static ``route_models``
+            declines these because it cannot check the schema was honoured;
+            cascade can, because the requested JSON *is* a verifier -- the
+            built-in ``default_verifier`` escalates when the cheap answer does
+            not parse as JSON or drops a required key. Off by default; requires
+            ``cascade_routing``.
+        cascade_max_tokens: Prompt-token ceiling for cascade attempts, raising
+            the static ``route_models`` limit of 500 (ADR-023 step 2). ``None``
+            keeps that default. Because cascade escalates a cheap answer it
+            cannot verify, the ceiling is a *cost* knob rather than a safety
+            one: a higher limit lets longer prompts try the cheap model, and
+            only stops paying if enough of them escalate that the wasted cheap
+            attempts outweigh the wins. Requires ``cascade_routing``.
+        cascade_tools: Let cascade also attempt requests carrying ``tools``
+            (ADR-023 step 3). Safe only because the model returns a *proposed*
+            call, not an executed one: the built-in ``default_verifier`` vets it
+            (escalates on an unknown tool name or non-JSON arguments) before the
+            agent runs anything. Requires that the provider adapter surface the
+            proposed call in ``response.extra["tool_calls"]``; until it does, a
+            tool request escalates rather than mis-routing, so enabling this is
+            never worse than static behaviour. Off by default; requires
+            ``cascade_routing``.
         semantic_cache: Serve near-matching requests from cache. **Lossy in the
             strongest sense** -- returns text the model never produced for this
             prompt. Off by default; see :data:`DEFAULT_SEMANTIC_THRESHOLD`.
@@ -194,12 +225,16 @@ class OptimizeConfig:
     # Lossy -- off by default (ADR-013).
     summarize_history: bool = False
     route_models: bool = False
+    cascade_routing: bool = False
+    cascade_structured_output: bool = False
+    cascade_tools: bool = False
     semantic_cache: bool = False
     compress_prompt: bool = False
     prune_tools: bool = False
     chain_of_draft: bool = False
     reasoning_budget: bool = False
 
+    cascade_max_tokens: int | None = None
     recent_turns: int = DEFAULT_RECENT_TURNS
     anchor_turns: int = DEFAULT_ANCHOR_TURNS
     compact_at_tokens: int | None = None
@@ -259,6 +294,37 @@ class OptimizeConfig:
         if self.route_models and not self.cheap_model:
             raise OptimizeConfigError(
                 "route_models is on but cheap_model is unset; there is nothing to route to"
+            )
+        if self.cascade_routing and not self.cheap_model:
+            raise OptimizeConfigError(
+                "cascade_routing is on but cheap_model is unset; there is nothing to route to"
+            )
+        if self.cascade_routing and self.route_models:
+            raise OptimizeConfigError(
+                "cascade_routing and route_models are both on; both retarget the model, so "
+                "running them together would route twice. Enable one -- cascade_routing is the "
+                "one that verifies before it commits (ADR-023)."
+            )
+        if self.cascade_structured_output and not self.cascade_routing:
+            raise OptimizeConfigError(
+                "cascade_structured_output is on but cascade_routing is off; it widens what "
+                "cascade attempts and does nothing without the cascade itself (ADR-023 step 1)."
+            )
+        if self.cascade_max_tokens is not None:
+            if not self.cascade_routing:
+                raise OptimizeConfigError(
+                    "cascade_max_tokens is set but cascade_routing is off; it only bounds "
+                    "cascade attempts and does nothing without the cascade itself (ADR-023 step 2)."
+                )
+            if self.cascade_max_tokens < 1:
+                raise OptimizeConfigError(
+                    f"cascade_max_tokens must be positive, got {self.cascade_max_tokens}. "
+                    "Use None to keep the default 500-token ceiling."
+                )
+        if self.cascade_tools and not self.cascade_routing:
+            raise OptimizeConfigError(
+                "cascade_tools is on but cascade_routing is off; it widens what cascade "
+                "attempts and does nothing without the cascade itself (ADR-023 step 3)."
             )
 
     @property

@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 import pytest
 
+from optio_optimize import Optimizer
 from optio_optimize.bench.providers import (
     AnthropicProvider,
     OpenAIProvider,
@@ -110,9 +111,12 @@ pytest.importorskip("openai")
 class _FakeOpenAIBackend:
     """Records every request body and answers with a fixed usage/content."""
 
-    def __init__(self, usage: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, usage: dict[str, Any] | None = None, tool_calls: list[dict[str, Any]] | None = None
+    ) -> None:
         self.requests: list[dict[str, Any]] = []
         self.reply = "the answer"
+        self.tool_calls = tool_calls
         self.usage = (
             usage
             if usage is not None
@@ -122,6 +126,13 @@ class _FakeOpenAIBackend:
     def handler(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         self.requests.append(body)
+        message: dict[str, Any] = {"role": "assistant"}
+        if self.tool_calls is not None:
+            # OpenAI returns null content alongside a tool call.
+            message["content"] = None
+            message["tool_calls"] = self.tool_calls
+        else:
+            message["content"] = self.reply
         return httpx.Response(
             200,
             json={
@@ -132,8 +143,8 @@ class _FakeOpenAIBackend:
                 "choices": [
                     {
                         "index": 0,
-                        "message": {"role": "assistant", "content": self.reply},
-                        "finish_reason": "stop",
+                        "message": message,
+                        "finish_reason": "tool_calls" if self.tool_calls else "stop",
                     }
                 ],
                 "usage": self.usage,
@@ -240,6 +251,75 @@ class TestOpenAIProviderMockedSDK:
         assert sent[0]["tool_calls"] == assistant_calls
         assert sent[1]["tool_call_id"] == "call_1"
 
+    def test_a_proposed_tool_call_is_surfaced_into_extra(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ADR-023 step 3: cascade reads the proposed call from response.extra.
+        backend = _FakeOpenAIBackend(
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": '{"q": "cats"}'},
+                }
+            ]
+        )
+        provider = _openai_provider(monkeypatch, backend)
+
+        response = provider(_chat_request())
+
+        assert response.extra["tool_calls"] == [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "search", "arguments": '{"q": "cats"}'},
+            }
+        ]
+        assert response.finish_reason == "tool_calls"
+
+    def test_no_tool_call_leaves_extra_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = _FakeOpenAIBackend()
+        provider = _openai_provider(monkeypatch, backend)
+
+        response = provider(_chat_request())
+
+        assert "tool_calls" not in response.extra
+
+    def test_cascade_tools_vets_a_live_proposed_call_end_to_end(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The whole point of the provider follow-up: a proposed tool call now
+        # reaches cascade's verifier through a real provider, so cascade_tools
+        # actually engages instead of escalating for lack of anything to vet.
+        backend = _FakeOpenAIBackend(
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": "{}"},
+                }
+            ]
+        )
+        provider = _openai_provider(monkeypatch, backend)
+        opt = Optimizer(
+            cascade_routing=True,
+            cascade_tools=True,
+            cheap_model="gpt-4o-mini",
+            exact_cache=False,
+        )
+        request = LLMRequest(
+            model="gpt-4o",
+            messages=(Message(role="user", content="find cats"),),
+            temperature=0.0,
+            tools=({"type": "function", "function": {"name": "search", "parameters": {}}},),
+        )
+
+        opt.call(request, provider)
+
+        assert opt.cascade_stats is not None
+        assert opt.cascade_stats.cheap_passed == 1  # known tool call accepted, no escalation
+        assert opt.cascade_stats.escalated == 0
+
     def test_max_tokens_temperature_and_response_format_are_passed_through(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -305,14 +385,30 @@ pytest.importorskip("anthropic")
 class _FakeAnthropicBackend:
     """Records every request body and answers with a fixed usage/content."""
 
-    def __init__(self, cache_read_input_tokens: int = 0) -> None:
+    def __init__(
+        self, cache_read_input_tokens: int = 0, tool_use: dict[str, Any] | None = None
+    ) -> None:
         self.requests: list[dict[str, Any]] = []
         self.reply = "the answer"
         self.cache_read_input_tokens = cache_read_input_tokens
+        self.tool_use = tool_use
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         self.requests.append(body)
+        if self.tool_use is not None:
+            content = [
+                {
+                    "type": "tool_use",
+                    "id": self.tool_use["id"],
+                    "name": self.tool_use["name"],
+                    "input": self.tool_use["input"],
+                }
+            ]
+            stop_reason = "tool_use"
+        else:
+            content = [{"type": "text", "text": self.reply}]
+            stop_reason = "end_turn"
         return httpx.Response(
             200,
             json={
@@ -320,8 +416,8 @@ class _FakeAnthropicBackend:
                 "type": "message",
                 "role": "assistant",
                 "model": body.get("model", "claude-haiku-4"),
-                "content": [{"type": "text", "text": self.reply}],
-                "stop_reason": "end_turn",
+                "content": content,
+                "stop_reason": stop_reason,
                 "stop_sequence": None,
                 "usage": {
                     "input_tokens": 40,
@@ -360,6 +456,27 @@ class TestAnthropicProviderMockedSDK:
         assert response.output_tokens == 8
         assert response.finish_reason == "end_turn"
         assert response.model == "claude-haiku-4"
+
+    def test_a_tool_use_block_is_normalised_into_the_tool_calls_convention(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ADR-023 step 3: Anthropic's tool_use (input is a dict) is normalised
+        # to the OpenAI-shaped tool_calls convention (arguments a JSON string)
+        # so cascade's verifier reads one shape.
+        backend = _FakeAnthropicBackend(
+            tool_use={"id": "toolu_1", "name": "search", "input": {"q": "cats"}}
+        )
+        provider = _anthropic_provider(monkeypatch, backend)
+
+        response = provider(_chat_request(model="claude-haiku-4"))
+
+        assert response.extra["tool_calls"] == [
+            {
+                "id": "toolu_1",
+                "type": "function",
+                "function": {"name": "search", "arguments": '{"q": "cats"}'},
+            }
+        ]
 
     def test_cache_read_tokens_are_added_into_billable_input_tokens(
         self, monkeypatch: pytest.MonkeyPatch
