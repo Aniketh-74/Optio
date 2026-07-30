@@ -100,6 +100,18 @@ double-counted savings, the `minify_tools`/`prune_tools` problem again) and `ada
 **Gate.** Isolated live run on a reasoning model, easy and hard task sets, measuring cost *and*
 correctness. Ships off by default unless correctness holds.
 
+**Done, 2026-07-30 — and the gate was not met.** Both hazards above turned out to be real, and the
+`adaptive_max_tokens` one was a live bug rather than a risk: Anthropic rejects a `max_tokens` at or
+below `thinking.budget_tokens`, so a default-on ceiling derived from observed output turned a working
+reasoning call into a 400 and a fail-open call at full price. Fixed with an answer-headroom floor and
+ordering rule 7. The overlap with `chain_of_draft` is settled by the stage claiming no saving at all.
+
+The live run measured **−21.9%** against the mean of two bracketing controls with accuracy unchanged
+— and then showed the mechanism is not the one the stage was built on: zero of forty control calls
+came near the ceiling, so `budget_tokens` shapes the trace as a *target*, not just a cap. The
+accuracy half of the gate was satisfied in form only, because every arm scored 100% on both sets. The
+flag stays off. See the ADR-018 amendment for the numbers and the two limits on them.
+
 ### 2. Streaming — make existing savings reachable
 
 **Mechanism.** `stream=True` currently bypasses the wrapper entirely, so a streaming caller gets
