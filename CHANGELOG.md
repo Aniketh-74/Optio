@@ -21,6 +21,46 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Changed
+
+- **`structured_output` is now off by default, and no stage books a saving it cannot attribute
+  ([ADR-024](docs/design/adr/adr-024-a-stage-may-not-book-a-saving-it-cannot-attribute.md)).** The
+  first end-to-end live agent run — four scenarios, both arms, `gpt-4o-mini`, reproduced twice —
+  found this package making two scenarios **more expensive while reporting a saving**: `parallel`
+  **−3.0%** against a claimed 10.0%, `empty_result` **−4.3%** against a claimed 13.2%.
+
+  Disabling one stage returned the prompt to *exactly* the control arm's size (661→635, 523→497), so
+  `structured_output` owned the entire regression — and on the two large scenarios it was marginally
+  *worse* than not running, so it paid for itself in none of the four.
+
+  The cause was a guard that contradicted its own docstring. The class says *"Only acts when a schema
+  is already present"*; the code read `response_format is None and not request.tools`, so it also
+  fired on any tool-using request with **no schema at all** — which is every call of every agent
+  workload. It appended *"Respond only with the requested structure. No preamble or explanation."* to
+  requests whose reply is a **tool call**, where no preamble exists to suppress. Measured output:
+  132→**137**, 94→**95**, 28→**28**, 165→148. It raised output in two scenarios and changed nothing
+  in a third.
+
+  Three changes follow. The guard now requires a schema. The stage no longer claims
+  `saved_output_tokens` from a hypothesised 40-token preamble — `savings.py`'s opening rule is *"only
+  count what was avoided, never what was hoped for"*, and this was the one stage that did; if the
+  suppression works it shows up in provider-measured `actual_output_tokens`, the same place ADR-020
+  leaves fan-out's effect. And **a stage that adds tokens now reports that as a negative saving**, so
+  `baseline = actual + saved` yields the true baseline instead of one inflated by the stage's own
+  instruction: 523 + (−26) = 497, exactly what the control arm billed.
+
+  **A savings report can therefore now show a negative number.** That is deliberate. A stage costing
+  more than it saved was structurally invisible for this package's entire history, and rounding the
+  loss up to zero is how a 4.3% cost increase came to be reported as a 13.2% saving. `concision`
+  carries the identical pattern and gets the identical accounting fix; it was already off by default.
+
+  Verified live after the fix: the regression is gone (0.0% and −0.8%, the latter output-sampling
+  noise on byte-identical prompts) and the real wins are intact — **+47.9%** and **+62.2%**.
+
+  **If you relied on `structured_output`,** switch it on by name. Its benefit has never been measured
+  on a request that actually carries a schema, which is the evidence it needs before it goes back to
+  being a default.
+
 ### Added
 
 - **Cascade routing: call cheap, verify, escalate

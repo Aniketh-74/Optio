@@ -139,16 +139,33 @@ class TestStructuredOutputStage:
 
         result = stage.before(request, _ctx())
 
-        assert result.note == "preamble suppressed"
+        # Note renamed with ADR-024: nothing here verifies a preamble was
+        # suppressed, and the old wording asserted an outcome the stage cannot
+        # observe.
+        assert result.note == "structure reinforced"
         assert stage.INSTRUCTION in result.request.messages[0].content
 
-    def test_fires_when_tools_are_set_even_without_a_response_format(self) -> None:
+    def test_declines_when_only_tools_are_set(self) -> None:
+        """Inverted by ADR-024, and this test is why the defect survived.
+
+        It previously asserted the stage *fires* on a tool-using request with no
+        schema -- written to match the code, while the class docstring said
+        "only acts when a schema is already present". The code was wrong and the
+        test froze it in place.
+
+        The cost was not theoretical: every agent scenario in this repo is a
+        tool loop with no ``response_format``, so this branch fired on every
+        call, appending a JSON-preamble instruction to replies that are tool
+        calls. The first live end-to-end run measured it raising cost 3.0% and
+        4.3% on two scenarios while the report claimed 10.0% and 13.2% saved.
+        """
         stage = StructuredOutputStage()
         request = _request(tools=({"name": "search"},))
 
         result = stage.before(request, _ctx())
 
-        assert result.note == "preamble suppressed"
+        assert result.note == ""
+        assert result.request.messages == request.messages
 
     def test_appends_to_an_existing_system_message_rather_than_inserting_a_new_one(self) -> None:
         stage = StructuredOutputStage()

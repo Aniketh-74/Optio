@@ -163,7 +163,15 @@ class StructuredOutputStage(Stage):
 
     def before(self, request: LLMRequest, ctx: StageContext) -> StageResult:
         """Reinforce an existing structured-output request."""
-        if request.response_format is None and not request.tools:
+        # A schema, and only a schema (ADR-024). This read `response_format is
+        # None and not request.tools` until 2026-07-31, so it also fired on any
+        # tool-using request carrying no schema at all -- which is every call of
+        # every agent scenario in this repo. Those replies are *tool calls*, not
+        # prose wrapped around JSON, so there was no preamble to suppress and
+        # the instruction described a shape the request could not produce. It
+        # cost 13 input tokens a call and measurably raised output in two of the
+        # four live scenarios.
+        if request.response_format is None:
             return self.declines(request)
         if any(self.INSTRUCTION in m.content for m in request.messages):
             return self.declines(request)  # Already applied on a previous pass.
@@ -176,14 +184,20 @@ class StructuredOutputStage(Stage):
         else:
             messages.insert(0, Message(role="system", content=self.INSTRUCTION))
 
-        # Typical preamble suppressed, minus what the instruction costs. A
-        # modest, defensible figure rather than the flattering one: measured
-        # preambles run 30-60 output tokens on chat-tuned models.
-        net = max(0, 40 - instruction_cost)
+        # No claimed output saving. This booked `max(0, 40 - instruction_cost)`
+        # from a *hypothesised* preamble that nothing ever verified, against
+        # `savings.py`'s opening rule -- "only count what was avoided, never
+        # what was hoped for". If the suppression works it shows up in a lower
+        # provider-reported `actual_output_tokens`, which is measured; the same
+        # place ADR-020 leaves fan-out's effect for the same reason.
+        #
+        # The instruction's input cost *is* reported, as a negative saving, so
+        # `baseline = actual + saved` yields the true unoptimized baseline
+        # rather than one inflated by this stage's own addition.
         return StageResult(
             request=request.with_messages(tuple(messages)),
-            saved_output_tokens=net,
-            note="preamble suppressed",
+            saved_input_tokens=-instruction_cost,
+            note="structure reinforced",
         )
 
 
@@ -277,9 +291,16 @@ class ConcisionStage(Stage):
         # models follow an output-format instruction most reliably.
         messages[-1] = messages[-1].with_content(f"{messages[-1].content}\n\n{self.INSTRUCTION}")
 
+        # Same accounting as StructuredOutputStage, and for the same reason
+        # (ADR-024): ESTIMATED_SCAFFOLDING_TOKENS is a figure this repo has
+        # never measured -- this class's own docstring says "nothing in this
+        # suite measures the case this stage exists for" -- so booking it was
+        # counting what was hoped for. The instruction's real input cost is
+        # reported instead, negative, because that is the part that certainly
+        # happened.
         return StageResult(
             request=request.with_messages(tuple(messages)),
-            saved_output_tokens=max(0, self.ESTIMATED_SCAFFOLDING_TOKENS - instruction_cost),
+            saved_input_tokens=-instruction_cost,
             note="chat scaffolding suppressed",
         )
 
