@@ -156,6 +156,14 @@ serializing the first call delays the batch.
 
 **Gate.** Isolated live run on Anthropic against the existing `fan_out` workload.
 
+**Done, 2026-07-30, and the gate was met cleanly.** ADR-020 settles the shape: a method on
+`Optimizer` (`afan_out`), async only — a synchronous loop already gets warm-up ordering for free —
+opt-in, and skipped whenever the shared prefix is below the cacheable floor. Live: five branches over
+a 4,223-token shared prefix, three arms cold/warmed/cold with per-arm nonces, **−68.2%** total cost
+and **0.0% spread between the two cold arms**. On the shared prefix alone that is 73.6% off against a
+predicted 74% — the first modelled figure in this package to survive contact with a provider.
+15 new tests; mutating the decision to "always warm" fails 3 and "never warm" fails 1.
+
 ### 4. Cache TTL selection
 
 **Mechanism.** A 5-minute write costs 1.25x, a one-hour write 2x, reads 0.1x either way. Break-even

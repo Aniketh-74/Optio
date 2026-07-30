@@ -23,6 +23,32 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **`Optimizer.afan_out`: dispatch order as a cost lever
+  ([ADR-020](docs/design/adr/adr-020-fan-out-warm-up-is-an-async-dispatch-order.md)).** N concurrent
+  calls over a shared prompt prefix each pay to populate the provider's cache, because none of them
+  can see another's write. Sending one first turns that into one write plus N−1 reads.
+
+  Measured on `claude-haiku-4-5`, five branches over a 4,223-token shared prefix, three arms
+  cold/warmed/cold with a per-arm nonce so each starts cold: **−68.2%** total cost, with **0.0%
+  spread between the two cold arms** — they came out byte-identical. Isolating the shared prefix
+  itself gives **73.6% off against a predicted 74%**. This is the first modelled number in this
+  package that survived contact with a provider, and the reason is structural: nothing here estimates
+  provider behaviour, the saving falls out of dispatch order and published rate cards.
+
+  Not a stage — nothing about any request changes, only the order they go out in, which is ADR-017's
+  test. Not a second surface either, since responses come back on the same stack frame from the same
+  pipeline and report. **Async only, and not for lack of effort:** a caller looping over five
+  synchronous calls already gets warm-up ordering for free, since sequential execution *is* warm-up
+  ordering. The problem exists only under real concurrency, and serving a thread-pool caller would
+  mean this package owning a thread pool.
+
+  **Opt-in, never inferred.** The cost is one round trip of latency prepended to the batch, and
+  doubling a page's time to first byte to save a fraction of a cent is not a trade a library should
+  make on anyone's behalf. Warming is skipped automatically when it cannot pay: fewer than two real
+  calls, no shared prefix, or a shared prefix below the cacheable floor — below which nothing is
+  cached at all, so the warm-up would be pure latency, silently. Short-circuited requests are
+  excluded from the decision, so a cache hit can never justify a real call's delay.
+
 - **Streaming is optimized on Anthropic, sync and async
   ([ADR-019](docs/design/adr/adr-019-a-streamed-call-gets-the-request-side-pipeline.md)).** A
   `stream=True` call used to bypass the wrapper entirely, on the stated grounds that a pipeline
