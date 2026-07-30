@@ -23,9 +23,14 @@ both in ordinary use. :class:`~optio_optimize.pipeline.Pipeline` already has
 ``execute`` and ``aexecute``, so supporting both costs one branch -- and "async
 only" is not plug and play.
 
-**Streaming is not optimized.** A stage pipeline built around one request
-producing one response can only buffer a token stream, which defeats the reason
-to ask for one. A ``stream=True`` call bypasses this wrapper entirely.
+**Streaming is optimized, as of ADR-019.** It used not to be, on the grounds
+that a pipeline built around one request producing one response can only buffer
+a token stream. That holds for the few stages which read a reply and not for the
+majority, which only rewrite the request -- so a streaming caller was getting
+zero of nineteen stages, including the one this module exists for. A
+``stream=True`` call now runs every ``before`` hook, sends the transformed
+request, and completes when the stream does; see
+:mod:`optio_optimize.adapters.anthropic_streaming`.
 """
 
 from __future__ import annotations
@@ -41,6 +46,8 @@ from optio_optimize.types import LLMRequest, LLMResponse, Message
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+    from optio_optimize.pipeline import PreparedRequest
 
 _log = logging.getLogger("optio_optimize")
 
@@ -71,8 +78,8 @@ def wrap_anthropic_client(
     detected rather than declared.
 
     Args:
-        client: The client to wrap. Non-streaming ``create`` calls are
-            optimized from this point on; streaming calls pass through.
+        client: The client to wrap. ``create`` calls are optimized from this
+            point on, streaming and not (ADR-019).
         optimizer: Optimizer to route through. Built from ``overrides`` when
             omitted, so ``wrap_anthropic_client(client, exact_cache=False)``
             works without constructing one.
@@ -121,7 +128,7 @@ def _async_create(
 
     async def optimized(**kwargs: Any) -> Any:
         if kwargs.get("stream"):
-            return await original(**kwargs)
+            return await _astream(original, optimizer, kwargs)
         prepared = _translate(kwargs)
         if prepared is None:
             return await original(**kwargs)
@@ -140,7 +147,7 @@ def _sync_create(original: Callable[..., Any], optimizer: Optimizer) -> Callable
 
     def optimized(**kwargs: Any) -> Any:
         if kwargs.get("stream"):
-            return original(**kwargs)
+            return _stream(original, optimizer, kwargs)
         prepared = _translate(kwargs)
         if prepared is None:
             return original(**kwargs)
@@ -152,6 +159,103 @@ def _sync_create(original: Callable[..., Any], optimizer: Optimizer) -> Callable
         return _unwrap(optimizer.call(prepared, call_provider), kwargs)
 
     return optimized
+
+
+def _outgoing_stream_kwargs(
+    optimizer: Optimizer,
+    kwargs: dict[str, Any],
+) -> tuple[PreparedRequest, dict[str, Any]] | LLMResponse | None:
+    """Run the request-side half of a streaming call (ADR-019).
+
+    Everything that can fail happens here, *before* the provider is called, so
+    the fail-open path cannot retry a call that already billed.
+
+    Args:
+        optimizer: The optimizer whose pipeline runs.
+        kwargs: The caller's ``create`` arguments.
+
+    Returns:
+        ``(prepared, outgoing_kwargs)`` to send; an :class:`LLMResponse` when a
+        stage served the answer without a provider; or ``None`` meaning "call the
+        provider with the caller's own arguments, untouched".
+    """
+    request = _translate(kwargs)
+    if request is None:
+        return None
+    try:
+        pipeline = optimizer.pipeline
+        prepared = pipeline.prepare(request)
+        if prepared.bypassed:
+            return None
+        if prepared.short_circuit is not None:
+            return pipeline.complete(prepared, prepared.short_circuit)
+        return prepared, _kwargs_from_request(prepared.request, kwargs)
+    except Exception as exc:  # noqa: BLE001 - ADR-013 rule 1: never break the caller
+        # Type only, never the message (§10).
+        _log.warning(
+            "optio_optimize: could not optimize a streaming request (%s); "
+            "streaming directly from the provider, unoptimized",
+            type(exc).__name__,
+        )
+        return None
+
+
+def _stream(original: Callable[..., Any], optimizer: Optimizer, kwargs: dict[str, Any]) -> Any:
+    """Optimize and return a synchronous stream."""
+    from optio_optimize.adapters.anthropic_streaming import (
+        ReplayStream,
+        StreamProxy,
+        replay_events,
+    )
+
+    outcome = _outgoing_stream_kwargs(optimizer, kwargs)
+    if outcome is None:
+        return original(**kwargs)
+    if isinstance(outcome, LLMResponse):
+        return ReplayStream(replay_events(outcome, kwargs))
+
+    prepared, outgoing = outcome
+    stream = original(**outgoing)
+    try:
+        return StreamProxy(stream, optimizer.pipeline, prepared)
+    except Exception as exc:  # noqa: BLE001 - the call already happened
+        # Returning the raw stream loses the accounting, never the answer.
+        # Re-calling the provider here would bill the caller twice.
+        _log.warning(
+            "optio_optimize: could not wrap a live stream (%s); returning it unwrapped",
+            type(exc).__name__,
+        )
+        return stream
+
+
+async def _astream(
+    original: Callable[..., Awaitable[Any]],
+    optimizer: Optimizer,
+    kwargs: dict[str, Any],
+) -> Any:
+    """Optimize and return an asynchronous stream."""
+    from optio_optimize.adapters.anthropic_streaming import (
+        AsyncReplayStream,
+        AsyncStreamProxy,
+        replay_events,
+    )
+
+    outcome = _outgoing_stream_kwargs(optimizer, kwargs)
+    if outcome is None:
+        return await original(**kwargs)
+    if isinstance(outcome, LLMResponse):
+        return AsyncReplayStream(replay_events(outcome, kwargs))
+
+    prepared, outgoing = outcome
+    stream = await original(**outgoing)
+    try:
+        return AsyncStreamProxy(stream, optimizer.pipeline, prepared)
+    except Exception as exc:  # noqa: BLE001 - the call already happened
+        _log.warning(
+            "optio_optimize: could not wrap a live stream (%s); returning it unwrapped",
+            type(exc).__name__,
+        )
+        return stream
 
 
 def _translate(kwargs: dict[str, Any]) -> LLMRequest | None:
