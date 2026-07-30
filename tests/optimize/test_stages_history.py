@@ -35,13 +35,25 @@ def _ctx(
     )
 
 
+#: Padding that makes a fixture turn the size of a real one.
+#:
+#: These turns used to be ``"question 0"`` / ``"answer 0"`` -- three tokens --
+#: so a ten-turn conversation held less text than a single real exchange. That
+#: was invisible until ADR-026 gated trimming on the *value* of the saving, at
+#: which point every mechanics test below was exercising a conversation not
+#: worth trimming. The mechanics are unchanged; the fixture now has enough in it
+#: for the question "is this worth trimming?" to have the answer these tests
+#: assume.
+_TURN_PADDING = " ".join(f"context{n}" for n in range(120))
+
+
 def _chat(turns: int, *, system: bool = True) -> LLMRequest:
     messages: list[Message] = []
     if system:
         messages.append(Message(role="system", content="You are terse."))
     for turn in range(turns):
-        messages.append(Message(role="user", content=f"question {turn}"))
-        messages.append(Message(role="assistant", content=f"answer {turn}"))
+        messages.append(Message(role="user", content=f"question {turn} {_TURN_PADDING}"))
+        messages.append(Message(role="assistant", content=f"answer {turn} {_TURN_PADDING}"))
     return LLMRequest(model="gpt-4o", messages=tuple(messages), temperature=0.0)
 
 
@@ -68,7 +80,7 @@ class TestItDropsAgedOutHistory:
         result = stage.before(_chat(turns=10), _ctx(recent_turns=6))
 
         kept = result.request.messages
-        assert kept[1].content == "question 0"
+        assert kept[1].content.startswith("question 0")
 
     def test_the_system_message_always_survives(self) -> None:
         stage = TrimHistoryStage()
@@ -87,9 +99,9 @@ class TestItDropsAgedOutHistory:
         result = stage.before(request, ctx)
 
         kept = result.request.messages[1:]
-        assert kept[0].content == "question 0"  # anchored: the task
-        assert kept[-1].content == "answer 9"
-        assert [m.content for m in kept][-4:] == [
+        assert kept[0].content.startswith("question 0")  # anchored: the task
+        assert kept[-1].content.startswith("answer 9")
+        assert [m.content.split()[0] + " " + m.content.split()[1] for m in kept][-4:] == [
             "question 8",
             "answer 8",
             "question 9",
@@ -212,10 +224,10 @@ class TestItNeverOrphansAToolResult:
         stage = TrimHistoryStage()
         messages = (
             Message(role="system", content="sys"),
-            Message(role="user", content="user0"),
-            Message(role="assistant", content="calling fetch_record(0)"),
-            Message(role="tool", content="record 0: ok"),
-            Message(role="assistant", content="final answer 0"),
+            Message(role="user", content=f"user0 {_TURN_PADDING}"),
+            Message(role="assistant", content=f"calling fetch_record(0) {_TURN_PADDING}"),
+            Message(role="tool", content=f"record 0: ok {_TURN_PADDING}"),
+            Message(role="assistant", content=f"final answer 0 {_TURN_PADDING}"),
             Message(role="user", content="user1"),
         )
         request = LLMRequest(model="gpt-4o", messages=messages, temperature=0.0)
@@ -243,12 +255,12 @@ class TestItIntegratesWithThePipeline:
 
         history: list[Message] = [Message(role="system", content="You are terse.")]
         for turn in range(20):
-            history.append(Message(role="user", content=f"question {turn}"))
+            history.append(Message(role="user", content=f"question {turn} {_TURN_PADDING}"))
             optimizer.call(
                 LLMRequest(model="gpt-4o", messages=tuple(history), temperature=0.0),
                 provider,
             )
-            history.append(Message(role="assistant", content=f"answer {turn}"))
+            history.append(Message(role="assistant", content=f"answer {turn} {_TURN_PADDING}"))
 
         # system + the anchored opening question + an elision marker + window.
         # The constant matters far less than the property: unbounded, the last
@@ -453,7 +465,13 @@ class TestTheTaskIsNotHistory:
         ]
         for step in range(steps):
             messages.append(Message(role="assistant", content=f"calling tool {step}"))
-            messages.append(Message(role="tool", content=f"result {step}", name=f"tool_{step}"))
+            messages.append(
+                Message(
+                    role="tool",
+                    content=f"result {step} {_TURN_PADDING}",
+                    name=f"tool_{step}",
+                )
+            )
         return LLMRequest(model="gpt-4o", messages=tuple(messages), temperature=0.0)
 
     def test_the_task_survives_a_long_tool_loop(self) -> None:
@@ -497,10 +515,10 @@ class TestTheTaskIsNotHistory:
         # not one, there is no task to anchor and the plain window applies.
         messages = (
             Message(role="system", content="sys"),
-            *[Message(role="assistant", content=f"step {i}") for i in range(10)],
+            *[Message(role="assistant", content=f"step {i} {_TURN_PADDING}") for i in range(10)],
         )
         request = LLMRequest(model="gpt-4o", messages=messages, temperature=0.0)
 
         result = TrimHistoryStage().before(request, _ctx(recent_turns=4))
 
-        assert result.request.messages[1].content == "step 6"
+        assert result.request.messages[1].content.startswith("step 6")

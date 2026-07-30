@@ -106,11 +106,16 @@ def _content_blocks(messages: list[dict[str, Any]]) -> list[Any]:
     return blocks
 
 
+#: Turns the size of real ones. A two-token turn is not a conversation worth
+#: trimming, and since ADR-026 the stage correctly declines to trim one.
+_TURN_PADDING = " ".join(f"context{n}" for n in range(120))
+
+
 def _growing_chat(turns: int = 10) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = [{"role": "user", "content": "q0"}]
     for turn in range(turns):
-        messages.append({"role": "assistant", "content": f"a{turn}"})
-        messages.append({"role": "user", "content": f"q{turn + 1}"})
+        messages.append({"role": "assistant", "content": f"a{turn} {_TURN_PADDING}"})
+        messages.append({"role": "user", "content": f"q{turn + 1} {_TURN_PADDING}"})
     return messages
 
 

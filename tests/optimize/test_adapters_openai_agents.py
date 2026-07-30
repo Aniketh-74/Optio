@@ -46,6 +46,10 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.optimize
 
+#: Turns the size of real ones. A two-token turn is not a conversation worth
+#: trimming, and since ADR-026 the stage correctly declines to trim one.
+_TURN_PADDING = " ".join(f"context{n}" for n in range(120))
+
 
 class _FakeOpenAI:
     """Records every request body it receives and answers deterministically."""
@@ -301,7 +305,7 @@ class TestTrimHistoryShrinksTheRealRequest:
         messages = [{"role": "system", "content": "sys"}]
         for turn in range(10):
             messages.append({"role": "user", "content": f"q{turn}"})
-            messages.append({"role": "assistant", "content": f"a{turn}"})
+            messages.append({"role": "assistant", "content": f"a{turn} {_TURN_PADDING}"})
         messages.append({"role": "user", "content": "final question"})
 
         asyncio.run(client.chat.completions.create(**_basic_kwargs(messages=messages)))
