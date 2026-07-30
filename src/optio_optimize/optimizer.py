@@ -15,6 +15,8 @@ from optio_optimize.pipeline import Pipeline
 from optio_optimize.stages import build_stages
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from opentelemetry.trace import TracerProvider
 
     from optio_optimize.pipeline import AsyncProviderCall, Pipeline, ProviderCall
@@ -151,6 +153,61 @@ class Optimizer:
             unless a lossy stage is enabled.
         """
         return await self._pipeline.aexecute(request, provider, run_id=run_id)
+
+    async def afan_out(
+        self,
+        requests: Sequence[LLMRequest],
+        provider: AsyncProviderCall,
+        *,
+        run_id: str | None = None,
+    ) -> list[LLMResponse]:
+        """Optimize a concurrent fan-out and dispatch it in the cheaper order.
+
+        N concurrent calls over a shared prompt prefix each pay to populate the
+        provider's cache, because none can see another's write. Sending one first
+        turns that into one write plus N-1 reads: on Anthropic the shared prefix
+        goes from ``5 x 1.25`` to ``1.25 + 4 x 0.1`` for a fan-out of five, **74%
+        off**, with no request altered (ADR-020). It pays on OpenAI too, whose
+        automatic prefix cache still needs somebody to go first.
+
+        **The cost is latency**, and it is the caller's to accept: one round trip
+        is prepended to the batch. That is why this is a method you call rather
+        than something inferred from a pattern of concurrent calls -- doubling a
+        page's time to first byte to save a fraction of a cent is not a trade a
+        library should make on anyone's behalf.
+
+        Warming is skipped automatically when it cannot pay: fewer than two real
+        calls, no shared prefix, or a shared prefix below
+        :data:`~optio_optimize.fan_out.WARM_UP_MIN_PREFIX_TOKENS`. Below a
+        provider's floor nothing is cached, so the warm-up would be pure latency.
+
+        There is no synchronous twin, and that is not an omission. A caller
+        issuing five calls in a loop **already gets this for free** -- sequential
+        execution *is* warm-up ordering. The problem exists only under real
+        concurrency, and serving a thread-pool caller would mean this package
+        owning a thread pool, which is infrastructure ADR-016 keeps out.
+
+        On a Claude model with ``prefix_cache`` off, Anthropic caches nothing, so
+        this pays the latency and receives no discount. That is a configuration
+        to fix rather than a case to detect: guessing a provider from a model
+        string is the sort of proxy ``route_models`` was already caught getting
+        wrong.
+
+        Args:
+            requests: The fan-out, in the caller's order.
+            provider: Async function performing one real API call.
+            run_id: optio run id, so savings attribute to the metered run.
+
+        Returns:
+            One response per request, in the order given. Callers correlate a
+            fan-out by index.
+
+        Raises:
+            Exception: Only whatever ``provider`` raises.
+        """
+        from optio_optimize.fan_out import dispatch
+
+        return await dispatch(self._pipeline, requests, provider, run_id=run_id)
 
     @property
     def report(self) -> SavingsReport:
