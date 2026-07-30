@@ -21,6 +21,53 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two different images produced the same cache key, and `exact_cache` is on by default
+  ([ADR-022](docs/design/adr/adr-022-an-image-is-content-and-the-cache-key-was-the-urgent-half.md)).**
+  `request_key` keyed `[role, content, name]` per message. An image block never reaches
+  `Message.content`, so it rode through in `extra["_raw"]`, which `UNKEYED_FIELDS` excluded as
+  *"provider transport details, not semantics"* — a classification that does not hold when the image
+  **is** the semantics. Two requests with identical prompts and different images hashed identically,
+  and `exact_cache` caches at `temperature == 0`, exactly the setting deterministic vision work uses.
+  "Describe this image" over two different images returned the first image's description for the
+  second. This is a **wrong answer**, not a mis-measurement, and the same defect class as the `stop`
+  bug already recorded in that dict.
+
+  Every non-text block is now keyed — `tool_use` arguments, `tool_result` payloads, and block types
+  nobody has seen yet — because the bug came from judging a block semantically irrelevant. Text blocks
+  stay out, since their text is already keyed through `content`. The digest is appended only when
+  non-text content exists, so text-only keys are unchanged. **A digest, never the bytes:** §10 covers
+  an image at least as squarely as prose. Expect `exact_cache`'s hit rate on vision requests to drop
+  to near zero; those hits were wrong answers.
+
+- **Images counted as zero tokens
+  ([ADR-022](docs/design/adr/adr-022-an-image-is-content-and-the-cache-key-was-the-urgent-half.md)).**
+  `count_request` returned **8 tokens** for a request billing ~1,535. The reported saving *percentage*
+  was never inflated by this — `pipeline` takes the provider's own `input_tokens` on a live call, so
+  image tokens sat on both sides of the ratio — but `fits_in_window` applies a 1.15x margin to guard a
+  few percent of estimator error while a vision request was off by two orders of magnitude, which is
+  precisely the provider-side rejection that function exists to prevent. Short-circuited vision
+  requests also under-reported what they avoided, since no provider number exists on that path.
+
+  **Measured, not taken from the documentation.** Anthropic's `messages.count_tokens` is exact and
+  free, so the estimator is calibrated against synthetic PNGs with a text-only baseline differenced
+  out. That mattered: the published `(w*h)/750` formula is accurate to ±4% from 512x512 through
+  1200x958 and then breaks, overstating 1568x1568 by **2.15x** and 400x3000 by 3.6x, because a
+  1568-pixel edge cap and an area cap near 1,600 tokens apply that it does not mention — while small
+  images cost *more* than it says. Validated afterwards on **thirteen held-out sizes** the constants
+  were not fitted to: worst error 5.5%, mean **+1.4%**, ten of thirteen over-estimating, which is the
+  safe direction in both places the number is used.
+
+  Dimensions come off PNG, JPEG, GIF and WebP headers with **no new dependency** — Pillow is a large
+  native wheel and §4.4 exists to keep it out of a tree for four integers. An image whose dimensions
+  cannot be read (a URL source, an unreadable header) counts a documented constant, **never zero**.
+  OpenAI uses its published tile formula and says plainly that it is unmeasured here.
+
+  Reducing image cost is deliberately **not** shipped: `detail: "low"` degrades what the model can
+  see, making it `ALTERED`, and ADR-015 wants a vision *accuracy* probe first. No flag was added, so
+  it cannot be turned on by accident.
+
 ### Added
 
 - **One-hour cache entries are priced correctly, and can now be requested

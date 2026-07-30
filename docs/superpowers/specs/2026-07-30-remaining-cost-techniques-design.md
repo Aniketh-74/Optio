@@ -211,6 +211,28 @@ carry the round-trip tests added with that fix.
 **Gate.** Token-count correctness against the vendors' published tile formulas, then a vision
 accuracy probe before any downgrade ships on.
 
+**Counting done, 2026-07-30. Reduction deferred with its gate intact. And the investigation found a
+worse bug than either.** ADR-022 orders the three by severity:
+
+1. **`request_key` gave two different images the same key**, and `exact_cache` is on by default at
+   `temperature == 0` — the setting OCR and document extraction use. Verified: identical digests. A
+   wrong answer, not a mis-measurement, and it shipped first and alone.
+2. **Counting.** The gate said "against the vendors' published tile formulas"; that would have been
+   wrong. Anthropic's `count_tokens` is exact and free, and measuring showed the published
+   `(w*h)/750` overstates 1568x1568 by **2.15x** — an undocumented edge cap and area cap hold every
+   image near 1,600 tokens. Calibrated against measurement, then validated on **13 held-out sizes**:
+   worst 5.5%, mean +1.4%, biased high. Dimensions from a dependency-free header parse; unreadable
+   dimensions count a documented constant, never zero. The spec's premise that this fixes inflated
+   savings was also wrong and is corrected in the ADR: `pipeline` uses the provider's own count on a
+   live call, so the real damage was to `fits_in_window` and to short-circuited requests.
+3. **Reduction not shipped**, no flag added. `detail: "low"` is `ALTERED`, and ADR-015 wants a vision
+   accuracy probe with a hard set the control sometimes gets *wrong* — the control ADR-018's run was
+   criticized for lacking. This stays queued.
+
+51 new tests. Nine mutations run; the two that survived were both real test gaps and are now closed —
+a section-10 assertion aimed at the wrong function, and a synthetic JPEG too simple to exercise the
+Huffman-table exclusion that real photographs need.
+
 ### 6. Cascade routing
 
 **Mechanism.** `route_models` guesses cheap-vs-expensive *before* the call from prompt length. Its

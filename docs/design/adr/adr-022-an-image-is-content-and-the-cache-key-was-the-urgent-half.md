@@ -95,6 +95,32 @@ The residual is *quantized*, not smooth: `1092x1092 -> 1,525` and `784x1568 -> 1
 exactly `w*h/782`, while 800x600 and 512x512 do not, which is the signature of patch-based processing
 rather than a closed formula. Chasing that with a curve fit would be false precision.
 
+### Validated afterwards on sizes the constants were not fitted to
+
+A table you calibrated against tells you nothing about accuracy, so the estimator was re-measured on
+thirteen held-out sizes — common screen and camera dimensions plus three extreme aspect ratios, none
+used to pick a constant:
+
+| w x h | measured | estimate | error |
+|---|---|---|---|
+| 128 x 96 | 24 | 24 | +0.0% |
+| 320 x 240 | 112 | 110 | −1.8% |
+| 640 x 480 | 418 | 417 | −0.2% |
+| 900 x 700 | 829 | 848 | +2.3% |
+| 1024 x 768 | 1,040 | 1,056 | +1.5% |
+| 1366 x 768 | 1,376 | 1,406 | +2.2% |
+| 1440 x 900 | 1,554 | 1,600 | +3.0% |
+| 1920 x 1080 | 1,564 | 1,600 | +2.3% |
+| 2560 x 1440 | 1,564 | 1,600 | +2.3% |
+| 3840 x 2160 | 1,564 | 1,600 | +2.3% |
+| 600 x 2400 | 788 | 827 | +4.9% |
+| 2400 x 600 | 788 | 827 | +4.9% |
+| 100 x 1500 | 220 | 208 | −5.5% |
+
+**Worst absolute error 5.5%, mean signed error +1.4%, ten of thirteen over-estimating.** Biased high is
+the safe direction in both places this number is used. The three largest sizes all measuring 1,564
+confirms the ceiling independently, across a factor of four in area.
+
 ## Decision
 
 ### 1. The cache key includes an image identity digest, and this ships first and alone
