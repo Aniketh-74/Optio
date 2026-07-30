@@ -27,6 +27,7 @@ them in the form its transport needs.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from optio_optimize.types import LLMResponse
@@ -56,6 +57,67 @@ UNSENT_FIELDS: dict[str, str] = {
 # request. ADR-018 splits the idea into the two shapes the vendors actually
 # accept -- `thinking_budget` (Anthropic, a token count) and `reasoning_effort`
 # (OpenAI, a category) -- rather than inventing a conversion between them.
+
+#: The key under which an adapter stashes a caller's original message param on
+#: :attr:`~optio_optimize.types.Message.extra`, so anything this package does not
+#: model -- image blocks, ``tool_use``/``tool_result``, provider extensions --
+#: rides through and is restored verbatim.
+#:
+#: Named here rather than privately in each adapter because it is a contract
+#: *between* modules: both adapters write it and :func:`optio_optimize.cache
+#: .request_key` now reads it. It was two identical private literals until
+#: 2026-07-30, which is the arrangement this module's docstring warns about.
+RAW_CONTENT_KEY = "_raw"
+
+
+def is_text_block(block: Any) -> bool:
+    """Is ``block`` a text content block?
+
+    Handles both shapes the SDKs use: a plain dict, and a pydantic block object
+    echoed back from a previous response. Shared rather than reimplemented per
+    caller for this module's founding reason -- two subtly different readings of
+    one wire shape is how the readings come to disagree. Here the disagreement
+    would be silent and expensive: a block wrongly judged *text* contributes
+    nothing to the cache key (ADR-022).
+    """
+    if isinstance(block, dict):
+        return block.get("type") == "text"
+    return bool(getattr(block, "type", "") == "text")
+
+
+def block_text(block: Any) -> str:
+    """The ``text`` of one text block, whichever shape it arrived in."""
+    if isinstance(block, dict):
+        return str(block.get("text", ""))
+    return str(getattr(block, "text", ""))
+
+
+def canonical_block(block: Any) -> str:
+    """A stable string identifying one content block, for hashing.
+
+    Normalizes SDK objects through ``model_dump`` so that a block built as a
+    dict and the same block echoed back as a pydantic object produce the same
+    string. Without that, a conversation replayed from stored dicts could never
+    hit a cache entry written from a live response's own objects.
+
+    ``sort_keys`` makes the result independent of key order, and ``default=repr``
+    keeps a stray non-JSON value (a ``datetime``, a bytes payload) from raising.
+
+    This deliberately does **not** swallow exceptions. A payload nothing here can
+    render is a payload whose identity is unknown, and the caller
+    (:func:`~optio_optimize.cache.request_key`) is reached only from stage
+    ``before`` hooks, which the pipeline guards per stage: raising means the cache
+    stage is skipped for this request, so the call goes to the provider
+    unoptimized. That is a lost cache hit. Returning a constant instead would be
+    a *shared key* for payloads whose contents differ, which is the wrong answer
+    this whole ADR is about.
+    """
+    if isinstance(block, dict):
+        return json.dumps(block, sort_keys=True, separators=(",", ":"), default=repr)
+    dump = getattr(block, "model_dump", None)
+    if callable(dump):
+        return json.dumps(dump(), sort_keys=True, separators=(",", ":"), default=repr)
+    return repr(block)
 
 
 def openai_messages(request: LLMRequest) -> list[dict[str, Any]]:
