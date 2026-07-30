@@ -95,12 +95,67 @@ except one.
 `concision` took the same bargain and is still off because the measurement said so. The flag flips
 when a live run with real five-minute gaps says it should, and not before.
 
+## Live measurement, 2026-07-30 — and it says the flag stays off
+
+`scripts/measure_cache_ttl.py`, `claude-haiku-4-5`, a 4,222-token shared prefix, four rounds
+**330 seconds apart** so a 5-minute entry cannot survive the gap. Both arms interleaved in one
+wall-clock window with separate nonces, so they share timing and nothing else. 16 minutes, 8 calls,
+~$0.04.
+
+| round | control (`5m`) | treated (`1h`) |
+|-------|----------------|----------------|
+| 1 | 4,222 write (5m) | 4,222 write (**5m**) |
+| 2 | 4,222 write (5m) | 4,222 write (**1h**) |
+| 3 | 4,222 write (5m) | 4,222 **read** |
+| 4 | 4,222 write (5m) | 4,222 **read** |
+| **total** | 16,888 written, 0 read, **$0.02117** | 4,222 + 4,222 written, 8,444 read, **$0.01463** |
+
+**−30.9% on the input side, and every mechanical claim in this ADR held.** The control re-wrote its
+prefix all four rounds, which is what makes the result meaningful — had it read even once, the gap
+would have been too short and the run would have measured the case the lever is not for. Round 1 of
+the treated arm wrote at **5m**, identical to the control: the stage reacted to an observed expiry
+rather than predicting one, which is decision 3 visible in provider billing. The 1-hour entry then
+survived two further 330-second gaps, confirming the TTL was honoured and not silently ignored.
+
+### The cumulative curve is the actual finding
+
+|                  | after r1 | after r2 | after r3 | after r4 |
+|------------------|----------|----------|----------|----------|
+| change vs control | 0.0% | **−29.9%** | +10.6% | +30.9% |
+
+Round 2 is the observation cost: a 2.0x write against the control's 1.25x, and at that instant the
+treated arm is **29.9% more expensive**. It crosses over in round 3 — one further use after the
+upgrade, exactly the `m >= 1` break-even derived above, which is a pleasing but narrow confirmation.
+
+So a workload whose prefix expires once and is then used **twice more** wins by 30.9%, and a workload
+whose prefix expires once and is then **never used again** loses 29.9% permanently. That second
+workload is not exotic — it is a two-turn conversation resumed after a coffee break.
+
+This is what settles the default, and it settles it the other way from the headline. Observed expiry
+is sound backward-looking evidence, but the upgrade needs a *forward* fact — will this prefix be used
+again inside the hour — and the stage does not have it. The bet pays whenever that probability
+exceeds `0.75 / 1.15 ≈ 65%`, and this run measured the mechanism and the magnitude while measuring
+nothing at all about that distribution. ADR-013 rule 1 does not say "reduce cost in expectation".
+
+**`cache_ttl_selection` stays off by default.** It is correct, honoured by the provider, and now
+correctly priced; a caller with a slow agent loop should turn it on and will get roughly a third off
+their prefix. It is not something this package should do to someone unasked.
+
+### Open question, deliberately not decided here
+
+Requiring **two** observed expiries before upgrading would change the bet materially: a prefix that
+has expired twice has already been used three times, so the third use is far better evidenced than
+the second, at a cost of one extra 1.25x write delaying the upgrade. That is a different decision
+with a different break-even and it needs its own measurement — recorded here so it is not lost, and
+not implemented, because deciding it inline is what §16 rule 1 forbids.
+
 ## Consequences
 
 - Measuring this live is unusually slow: proving the 5-minute entry expires means *waiting out five
-  minutes*, twice, so the run is ~12 minutes of wall clock for a handful of calls. That is the only
+  minutes*, three times, so the run took 16 minutes of wall clock for 8 calls. That is the only
   honest way to observe the behaviour the lever exists for, and a shorter run would measure the case
-  where 5 minutes is already sufficient.
+  where 5 minutes is already sufficient. Interleaving the arms rather than running them in sequence
+  halved that and removed time-of-day provider behaviour as a confound in one move.
 - A caller's own `cache_control` is still never overwritten (enforced in the Anthropic adapter since
   2026-07-30). A caller who chose `ttl: "1h"` has better information than this package's inference,
   and after decision 1 they will finally be billed correctly for it.

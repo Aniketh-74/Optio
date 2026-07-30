@@ -23,6 +23,37 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **One-hour cache entries are priced correctly, and can now be requested
+  ([ADR-021](docs/design/adr/adr-021-cache-ttl-selection-needs-its-accounting-first.md)).** Anthropic
+  charges **2.0x** base input to populate a one-hour cache entry against 1.25x for a five-minute one.
+  `_cost` knew about a single write rate, so any one-hour write was under-billed by **37.5%** — in
+  the direction that inflates this package's headline saving. **That half shipped first and stands on
+  its own:** a caller who set their own `cache_control: {"ttl": "1h"}` breakpoint was already
+  mis-priced by this package, and the provider had been reporting the split in
+  `usage.cache_creation.ephemeral_1h_input_tokens` all along with nothing reading it. `LLMResponse`
+  gains `cache_write_1h_tokens` (a **subset** of `cache_write_tokens`, matching how the provider
+  reports it), `ModelPricing` gains `cache_write_1h_usd_per_m`, and `SavingsReport` carries the band
+  through. This project has already paid for the identical asymmetry once, when writes were omitted
+  from the prompt total and a published 53.7% figure turned out to be 50.1%.
+
+  `cache_ttl_selection` then makes `PrefixCacheStage` ask for an hour — but only once expiry has been
+  **observed**, meaning the same prefix seen again after a gap longer than five minutes. Nothing
+  predicts a gap. Prefixes are identified by hash and never by text (§10), in an LRU bounded at 1,024
+  entries (§11). A caller's own `cache_control` is still never overwritten.
+
+  Measured live on `claude-haiku-4-5`, four rounds **330 seconds apart** with both arms interleaved
+  in one wall-clock window: **−30.9%**, the control re-writing 16,888 tokens against the treated
+  arm's 4,222 + 4,222 written and 8,444 read. The 1-hour TTL is honoured and needs no beta header.
+
+  **It ships off by default, and the measurement is why.** The cumulative curve matters more than the
+  total: after round 2 the treated arm is **29.9% more expensive**, since the upgrade write costs
+  2.0x, and it only crosses over in round 3 — exactly the `m >= 1` break-even. A prefix that expires
+  once and is then never used again loses ~30% permanently, and that is a two-turn conversation
+  resumed after a break, not an exotic case. Observed expiry is sound backward-looking evidence, but
+  the upgrade needs a forward fact — will this prefix be used again inside the hour — that the run
+  measured nothing about. ADR-013 rule 1 does not say "reduce cost in expectation". Turn it on for a
+  slow agent loop and it pays; it is not something to do to someone unasked.
+
 - **`Optimizer.afan_out`: dispatch order as a cost lever
   ([ADR-020](docs/design/adr/adr-020-fan-out-warm-up-is-an-async-dispatch-order.md)).** N concurrent
   calls over a shared prompt prefix each pay to populate the provider's cache, because none of them
