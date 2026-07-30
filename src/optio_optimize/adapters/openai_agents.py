@@ -46,6 +46,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, cast
 
+from optio_optimize import wire
 from optio_optimize.optimizer import Optimizer
 from optio_optimize.types import LLMRequest, LLMResponse, Message
 
@@ -61,7 +62,10 @@ _log = logging.getLogger("optio_optimize")
 #: package does not model (multimodal content, ``cache_control``, provider
 #: extensions) -- rides through untouched unless a stage actually changed
 #: the text.
-_RAW = "_raw"
+#:
+#: Defined in :mod:`~optio_optimize.wire` since ADR-022, because the cache key
+#: reads it too -- an image part lives here and nowhere else.
+_RAW = wire.RAW_CONTENT_KEY
 
 #: Scratch key on a response for the real ChatCompletion, when one exists.
 #: Returned verbatim rather than reconstructed, to preserve every field this

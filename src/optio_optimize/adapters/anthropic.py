@@ -54,7 +54,11 @@ _log = logging.getLogger("optio_optimize")
 #: Scratch key under which the caller's original message param rides through
 #: untouched -- multimodal content blocks, provider extensions, anything this
 #: package does not model -- restored verbatim unless a stage changed the text.
-_RAW = "_raw"
+#:
+#: Defined in :mod:`~optio_optimize.wire` since ADR-022, because the cache key
+#: now reads it too: an image block lives here and nowhere else, so keying only
+#: ``Message.content`` made two different images hash identically.
+_RAW = wire.RAW_CONTENT_KEY
 
 #: Scratch key on a response for the real SDK object, when one exists. Returned
 #: verbatim rather than reconstructed, to preserve every field this package
@@ -357,18 +361,12 @@ def _message_from_param(param: Any) -> Message:
     )
 
 
-def _is_text_block(block: Any) -> bool:
-    """Is ``block`` a text content block, dict-shaped or SDK object?"""
-    if isinstance(block, dict):
-        return block.get("type") == "text"
-    return bool(getattr(block, "type", "") == "text")
-
-
-def _block_text(block: Any) -> str:
-    """The ``text`` of one text block, whichever shape it arrived in."""
-    if isinstance(block, dict):
-        return str(block.get("text", ""))
-    return str(getattr(block, "text", ""))
+#: Both shared with the cache key since ADR-022. A block wrongly judged *text*
+#: contributes nothing to that key, so a second, subtly different reading of the
+#: same wire shape is exactly the divergence :mod:`~optio_optimize.wire` exists
+#: to prevent -- and here it would be silent and would serve a wrong answer.
+_is_text_block = wire.is_text_block
+_block_text = wire.block_text
 
 
 def _text_from_content(content: Any) -> str:

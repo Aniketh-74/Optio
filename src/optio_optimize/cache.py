@@ -21,8 +21,10 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from optio_optimize.wire import RAW_CONTENT_KEY, canonical_block, is_text_block
+
 if TYPE_CHECKING:
-    from optio_optimize.types import LLMRequest, LLMResponse
+    from optio_optimize.types import LLMRequest, LLMResponse, Message
 
 #: Entries retained by the default backend. 512 full responses is a few MB --
 #: large enough to be useful across a long agent run, small enough that nobody
@@ -178,7 +180,12 @@ UNKEYED_FIELDS: dict[str, str] = {
         "hits between otherwise identical calls; ExactCacheStage compensates by "
         "never serving a stored response whose finish_reason was `length`"
     ),
-    "extra": "provider transport details, not semantics",
+    "extra": (
+        "request-level provider transport details, not semantics. Message.extra "
+        "is a different question and was answered wrongly until ADR-022: image, "
+        "tool_use and tool_result blocks live there, and non_text_digest now "
+        "keys them"
+    ),
 }
 
 
@@ -216,7 +223,11 @@ def request_key(request: LLMRequest) -> str:
       The stage compensates by never serving an entry whose stored response was
       truncated (``finish_reason == "length"``).
     * ``Message.cacheable`` — a marker this library placed, not caller input.
-    * ``extra`` — provider transport details, not semantics.
+    * ``LLMRequest.extra`` — request-level provider transport details, not
+      semantics. **Note the level.** ``Message.extra`` is a different matter:
+      until ADR-022 it was excluded on this same "not semantics" reasoning,
+      which is false for the image, ``tool_use`` and ``tool_result`` blocks that
+      live there — see :func:`non_text_digest`, which keys their identity.
 
     Args:
         request: The request to key.
@@ -227,7 +238,11 @@ def request_key(request: LLMRequest) -> str:
     """
     payload = {
         "model": request.model,
-        "messages": [[m.role, m.content, m.name] for m in request.messages],
+        # The digest is appended only when there is non-text content, so a
+        # text-only request's key is byte-identical to what it was before
+        # ADR-022 -- a trailing `null` on every message would have changed every
+        # key in the package to record the absence of an image.
+        "messages": [_keyed_message(m) for m in request.messages],
         "tools": [json.dumps(t, sort_keys=True, separators=(",", ":")) for t in request.tools],
         "temperature": request.temperature,
         "response_format": json.dumps(request.response_format, sort_keys=True)
@@ -241,3 +256,51 @@ def request_key(request: LLMRequest) -> str:
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8", "replace")
     return hashlib.blake2b(encoded, digest_size=16).hexdigest()
+
+
+def _keyed_message(message: Message) -> list[str | None]:
+    """The key payload for one message: role, text, name, and non-text identity."""
+    digest = non_text_digest(message)
+    base: list[str | None] = [message.role, message.content, message.name]
+    return base if digest is None else [*base, digest]
+
+
+def non_text_digest(message: Message) -> str | None:
+    """A digest of everything in ``message`` that is not text, or ``None``.
+
+    ``Message.content`` holds only the *text* an adapter could extract, so an
+    image block, a ``tool_use``'s arguments and a ``tool_result``'s payload live
+    on ``extra[RAW_CONTENT_KEY]`` and were invisible to :func:`request_key`.
+    Two vision requests with the same prompt and different images hashed
+    identically -- verified, both `277f0c84dc88772471a95b2f9cbe7846` -- and
+    ``exact_cache`` is on by default at ``temperature == 0``, exactly the setting
+    OCR and screenshot analysis use. That served the first image's answer for the
+    second (ADR-022).
+
+    **Text blocks are excluded, and that is load-bearing.** Their text is already
+    keyed through ``content``; digesting them again would make an ordinary
+    text-only conversation's key depend on which adapter normalized it, and on
+    block wrappers that carry no meaning.
+
+    **Everything else is included, including block types nobody has seen.** The
+    bug came from deciding a block was semantically irrelevant, so the fix does
+    not get to make that call again for a future block type.
+
+    Returns:
+        A hex digest, or ``None`` when the message carries no non-text content --
+        ``None`` so that a text-only request's key is byte-identical to what it
+        was before this existed. Never the content itself: §10's rule covers an
+        image at least as squarely as prose, and an image is more identifying
+        than most text.
+    """
+    raw = message.extra.get(RAW_CONTENT_KEY)
+    if not isinstance(raw, dict):
+        return None
+    content = raw.get("content")
+    if not isinstance(content, list):
+        return None
+    parts = [canonical_block(b) for b in content if not is_text_block(b)]
+    if not parts:
+        return None
+    joined = "\x00".join(parts).encode("utf-8", "replace")
+    return hashlib.blake2b(joined, digest_size=16).hexdigest()
