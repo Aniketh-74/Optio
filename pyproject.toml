@@ -204,6 +204,28 @@ ignore_missing_imports = true
 module = ["openai.*", "anthropic.*"]
 ignore_missing_imports = true
 
+# `scripts/real_agent_run.py` drives a real agent through the OpenAI Agents SDK,
+# whose `@function_tool` decorator is applied to five tool functions. That SDK
+# lives in the `[openai]` extra, not `[dev]`, because the four framework trees
+# conflict with each other -- so in any environment without it, `agents.*` above
+# resolves to `Any`, and `disallow_any_unimported` then reports the decorator and
+# the tool list as untyped. Five errors about a package that is deliberately
+# absent.
+#
+# Found by CI, and it is the reason CI exists: `mypy` was clean on the machine
+# this was written on, which had `openai-agents` installed from an earlier live
+# run. A local environment that has drifted a package ahead of `[dev]` cannot
+# see this class of failure at all.
+#
+# Scoped to this one module, and both name forms because `scripts/` has no
+# `__init__.py` -- mypy names the module `real_agent_run` when invoked on the
+# directory and `scripts.real_agent_run` when the path is given explicitly, and
+# only one of those matches on any given invocation.
+[[tool.mypy.overrides]]
+module = ["real_agent_run", "scripts.real_agent_run"]
+disallow_untyped_decorators = false
+disallow_any_unimported = false
+
 # ---------------------------------------------------------------------------
 # Test (§9)
 # ---------------------------------------------------------------------------
