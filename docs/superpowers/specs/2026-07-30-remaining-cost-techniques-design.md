@@ -293,6 +293,24 @@ cross-turn tool-result deduplication (`cap_tool_results` truncates by size but n
 same tool with the same arguments returned the same output three steps ago); Anthropic's
 token-efficient tool-use header; OpenAI Predicted Outputs for edit-heavy work.
 
+**Added 2026-07-31 by the first live end-to-end run: `minify_tools` claimed 30 tokens and the
+provider billed byte-identical input.** On both small agent scenarios, with `structured_output`
+disabled so nothing else moved, the optimized arm's prompt was *exactly* the control's — 497 vs 497
+and 635 vs 635 — while the report claimed 5.4% and 4.0% saved. The stage did strip keys ("stripped
+schema annotations from 4 tool(s)"); the provider simply did not bill less for it.
+
+This is **not** obviously a wrong constant. `ANNOTATION_STRIP_CALIBRATION = 0.37` was measured
+properly — four tool counts, consistent to within 2%, and it predicted an independent `mcp_agent`
+result to within 1%. The likely reading is that it is tool-set-dependent: these four schemas may
+carry annotations the provider already discards, so the delta this stage computes has no billing
+consequence here. That is a different claim from "the calibration is wrong", and guessing between
+them is what ADR-015 exists to prevent.
+
+**Gate.** Its own isolation run: one scenario, `minify_tools` alone against a control, tool schemas
+varied between annotation-heavy and annotation-free, differencing the billed prompt. Until then the
+number stands as measured-elsewhere and unverified-here. Recorded rather than fixed, deliberately —
+the same discipline that kept `cache_ttl_selection` off.
+
 **`stop` sequences are deliberately not on this list, and the audit that produced it was wrong to
 suggest them.** ADR-016 already settled the question: a correct stop sequence is a fact about the
 caller's output format, so it is a request *field* — which `LLMRequest.stop` already is, and which

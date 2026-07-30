@@ -192,7 +192,12 @@ class OptimizeConfig:
     exact_cache: bool = True
     prefix_cache: bool = True
     adaptive_max_tokens: bool = True
-    structured_output: bool = True
+    # Off since 2026-07-31 (ADR-024). It was on, and the first end-to-end live
+    # agent run found it raising cost on two of four scenarios and helping none
+    # -- while the report claimed 10.0% and 13.2% savings on the two it made
+    # more expensive. ADR-013 rule 1 forbids the increase, and its benefit has
+    # never been measured on a request that actually carries a schema.
+    structured_output: bool = False
     minify_tools: bool = True
 
     # Cache economics -- off by default because it is the only flag here that
