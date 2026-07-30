@@ -450,12 +450,18 @@ class TestAnthropicProviderMockedSDK:
         backend = _FakeAnthropicBackend()
         provider = _anthropic_provider(monkeypatch, backend)
 
-        response = provider(_chat_request(model="claude-haiku-4"))
+        # The request names one model and the provider serves its own. That is
+        # deliberate for a benchmark -- the provider is constructed with the
+        # model under test -- and worth pinning, because it means any stage that
+        # retargets `request.model` (route_models, cascade) is a **no-op** under
+        # `bench --live`. The dedicated routing audit builds its own per-model
+        # requests for exactly this reason.
+        response = provider(_chat_request(model="claude-sonnet-4-5"))
 
         assert response.content == "the answer"
         assert response.output_tokens == 8
         assert response.finish_reason == "end_turn"
-        assert response.model == "claude-haiku-4"
+        assert response.model == AnthropicProvider.DEFAULT_MODEL
 
     def test_a_tool_use_block_is_normalised_into_the_tool_calls_convention(
         self, monkeypatch: pytest.MonkeyPatch
@@ -647,3 +653,143 @@ class TestAvailableLiveProvider:
         provider = available_live_provider()
 
         assert isinstance(provider, OpenAIProvider)
+
+
+class TestAnthropicProviderOmitsEmptyOptionalFields:
+    """A toolless request must not send ``tools``, and the API is strict about it.
+
+    Found by the first live run of the benchmark against Anthropic: every one of
+    twelve calls failed with ``400 tools: Input should be a valid array``,
+    because the provider passed ``tools=None`` unconditionally. Anthropic accepts
+    ``system=None`` -- which the comment above that line correctly reasons about
+    -- and then the same reasoning was applied to ``tools``, where it does not
+    hold. The key has to be **absent**, not null.
+
+    ``adapters/anthropic.py`` already had this right (``if tools is not None:
+    kwargs["tools"] = tools``), which is why every live measurement script in
+    this repo worked while the benchmark's own provider had never once
+    succeeded against Anthropic.
+    """
+
+    def test_a_toolless_request_does_not_send_a_tools_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = _FakeAnthropicBackend()
+        provider = _anthropic_provider(monkeypatch, backend)
+
+        provider(_request("hello", model="claude-haiku-4-5"))
+
+        assert "tools" not in backend.requests[0]
+
+    def test_a_request_without_stop_does_not_send_stop_sequences(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same failure mode one argument over; it never surfaced live only
+        # because `tools` is rejected first.
+        backend = _FakeAnthropicBackend()
+        provider = _anthropic_provider(monkeypatch, backend)
+
+        provider(_request("hello", model="claude-haiku-4-5"))
+
+        assert "stop_sequences" not in backend.requests[0]
+
+    def test_a_request_with_no_system_prompt_does_not_send_a_system_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The third one, and it was asserted otherwise in a comment.
+
+        "Every anthropic version accepts None here as 'no system prompt'" --
+        current Anthropic answers ``400 system: Input should be a valid array``.
+        It only surfaced after the ``tools`` fix, because each rejection hides
+        the next: one live call can only report its first invalid field.
+        """
+        backend = _FakeAnthropicBackend()
+        provider = _anthropic_provider(monkeypatch, backend)
+        user_only = LLMRequest(
+            model="claude-haiku-4-5",
+            messages=(Message(role="user", content="hi"),),
+            temperature=0.0,
+        )
+
+        provider(user_only)
+
+        assert "system" not in backend.requests[0]
+
+    def test_a_system_prompt_is_still_sent_when_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = _FakeAnthropicBackend()
+        provider = _anthropic_provider(monkeypatch, backend)
+        with_system = LLMRequest(
+            model="claude-haiku-4-5",
+            messages=(
+                Message(role="system", content="be terse"),
+                Message(role="user", content="hi"),
+            ),
+            temperature=0.0,
+        )
+
+        provider(with_system)
+
+        assert backend.requests[0]["system"]
+
+    def test_tools_are_still_sent_when_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The fix must omit an empty list, not drop real tools.
+        backend = _FakeAnthropicBackend()
+        provider = _anthropic_provider(monkeypatch, backend)
+        request = LLMRequest(
+            model="claude-haiku-4-5",
+            messages=(Message(role="user", content="hi"),),
+            tools=({"type": "function", "function": {"name": "search", "parameters": {}}},),
+            temperature=0.0,
+        )
+
+        provider(request)
+
+        assert [t["name"] for t in backend.requests[0]["tools"]] == ["search"]
+
+    def test_stop_sequences_are_still_sent_when_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = _FakeAnthropicBackend()
+        provider = _anthropic_provider(monkeypatch, backend)
+        request = LLMRequest(
+            model="claude-haiku-4-5",
+            messages=(Message(role="user", content="hi"),),
+            stop=("STOP",),
+            temperature=0.0,
+        )
+
+        provider(request)
+
+        assert backend.requests[0]["stop_sequences"] == ["STOP"]
+
+    def test_the_default_model_is_one_the_api_actually_serves(self) -> None:
+        """The fourth failure in the same chain, and the most embarrassing.
+
+        The default was ``claude-haiku-4``, which answers ``404
+        not_found_error``. So do ``claude-sonnet-4`` and ``claude-opus-4`` --
+        checked live against ``models.list`` on 2026-07-31, where the real
+        lineup is ``claude-opus-5``, ``claude-sonnet-5``, ``claude-fable-5``,
+        ``claude-opus-4-8``, ``claude-opus-4-7``, ``claude-sonnet-4-6``,
+        ``claude-opus-4-6`` and four dated 4.5-era ids. Three of the five
+        Anthropic rows in ``PRICING`` are family keys the API will not serve.
+
+        Pinned as a literal rather than asserted against ``PRICING``, because
+        membership in ``PRICING`` is exactly what ``claude-haiku-4`` had and it
+        still 404s. Only a live check can move this value; the docstring records
+        the one that set it.
+        """
+        assert AnthropicProvider.DEFAULT_MODEL == "claude-haiku-4-5"
+
+    def test_the_call_still_returns_a_usable_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = _FakeAnthropicBackend()
+        provider = _anthropic_provider(monkeypatch, backend)
+
+        response = provider(_request("hello", model="claude-haiku-4-5"))
+
+        assert response.content == "the answer"
+        assert response.input_tokens == 40
+        assert response.output_tokens == 8
