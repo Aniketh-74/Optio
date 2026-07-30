@@ -1,10 +1,11 @@
 """Stage registry and pipeline ordering.
 
 Order is a correctness property, not a preference, so it lives here rather than
-being left to the caller. The sequence below is derived from six rules -- the
+being left to the caller. The sequence below is derived from seven rules -- the
 fourth joined the original three once the ``ALTERED``-tier stages landed, the
-fifth once tool schemas became something a stage rewrites, and the sixth once
-a stage existed that reads the request rather than changing it:
+fifth once tool schemas became something a stage rewrites, the sixth once
+a stage existed that reads the request rather than changing it, and the seventh
+once two stages drew on the same output ceiling:
 
 1. **Cheapest exit first.** A cache hit makes every later stage's work wasted,
    so lookups run before any transformation -- ``exact_cache`` before
@@ -37,6 +38,15 @@ a stage existed that reads the request rather than changing it:
    ``trim_history`` changes the message list on most turns, which is precisely
    the pattern the diagnostic looks for. A false finding here is worse than no
    finding: it sends someone hunting for a timestamp in a prompt that has none.
+7. **``reasoning_budget`` precedes ``adaptive_max_tokens``.** Reasoning tokens
+   are drawn from the same completion ceiling as the answer, and Anthropic
+   rejects a ``max_tokens`` at or below ``thinking.budget_tokens``, so the
+   ceiling has to clear whatever budget will actually be sent. Run second, it
+   clears the reduced budget; run first, it is floored to the caller's original
+   -- 32k where 4k would have done -- and bounds nothing. This is the one
+   ordering here whose failure is *loud* rather than silent, which is why
+   ``AdaptiveMaxTokensStage`` carries the floor as well: a provider 400 becomes
+   a fail-open call at full price.
 
 Getting this wrong is subtle rather than loud: marking a prefix before trimming
 still *works*, it just silently never hits the provider cache. The same is true
@@ -56,6 +66,7 @@ from optio_optimize.stages.output import (
     AdaptiveMaxTokensStage,
     ChainOfDraftStage,
     ConcisionStage,
+    ReasoningBudgetStage,
     StructuredOutputStage,
 )
 from optio_optimize.stages.retrieval import (
@@ -90,6 +101,7 @@ __all__ = [
     "PrefixFinding",
     "PruneRetrievalStage",
     "PruneToolsStage",
+    "ReasoningBudgetStage",
     "ReorderContextStage",
     "RouteModelsStage",
     "SemanticCacheStage",
@@ -150,6 +162,11 @@ def build_stages(
         stages.append(StructuredOutputStage())
     if config.concision:
         stages.append(ConcisionStage())
+    # reasoning_budget before adaptive_max_tokens (rule 7): the output ceiling
+    # has to clear the reasoning budget that will actually be sent, not the one
+    # the caller happened to start with.
+    if config.reasoning_budget:
+        stages.append(ReasoningBudgetStage())
     if config.adaptive_max_tokens:
         stages.append(AdaptiveMaxTokensStage())
 

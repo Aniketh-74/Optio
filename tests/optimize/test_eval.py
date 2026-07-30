@@ -20,6 +20,11 @@ from optio_optimize.eval.harness import (
 )
 from optio_optimize.stages.base import StageContext
 from optio_optimize.stages.compress import CompressPromptStage
+from optio_optimize.stages.output import (
+    MIN_OBSERVATIONS,
+    MIN_THINKING_BUDGET,
+    ReasoningBudgetStage,
+)
 from optio_optimize.stages.routing import RouteModelsStage
 from optio_optimize.stages.semantic_cache import SemanticCacheStage
 from optio_optimize.stages.summarize import SummarizeHistoryStage
@@ -207,3 +212,89 @@ class TestSummarizeHistoryPlumbing:
         failure = check_fact_preservation(stage, case, ctx)
 
         assert failure is None, failure.reason if failure else ""
+
+
+# ---------------------------------------------------------------------------
+# reasoning_budget: acts only where ADR-018 says it may. A decision-boundary
+# suite is the whole of what a model-free gate can check here -- whether a
+# reduced budget still reaches the right answer is a question only a live run
+# with graded tasks can answer, which is what ADR-018 requires before the flag
+# is ever recommended. What these cases do cover is the half that is checkable
+# and is also where the money-losing failures live: raising a budget, or
+# inventing one, would make a cost-reduction library increase the bill.
+# ---------------------------------------------------------------------------
+
+REASONING_CASES = (
+    DecisionBoundaryCase(
+        name="a_budget_far_above_observed_use_is_lowered",
+        request=_request("think about this", thinking_budget=32_000),
+        should_act=True,
+    ),
+    DecisionBoundaryCase(
+        name="a_request_with_no_budget_is_left_alone",
+        request=_request("think about this"),
+        should_act=False,
+    ),
+    DecisionBoundaryCase(
+        name="a_budget_already_at_the_provider_minimum_is_never_raised",
+        request=_request("think about this", thinking_budget=MIN_THINKING_BUDGET),
+        should_act=False,
+    ),
+    DecisionBoundaryCase(
+        name="a_budget_below_the_derived_ceiling_is_never_raised",
+        request=_request("think about this", thinking_budget=2_000),
+        should_act=False,
+    ),
+)
+
+
+def _warmed_reasoning_stage(observed_output_tokens: int = 2_000) -> ReasoningBudgetStage:
+    """A stage with a real observation history, which is what unlocks it.
+
+    Below :data:`MIN_OBSERVATIONS` the stage declines everything, so an
+    unwarmed instance would pass three of the four cases above for the wrong
+    reason and fail the fourth.
+    """
+    stage = ReasoningBudgetStage()
+    sent = _request("think about this", thinking_budget=32_000)
+    reply = LLMResponse(
+        content="x",
+        input_tokens=10,
+        output_tokens=observed_output_tokens,
+        model="gpt-4o",
+        finish_reason="stop",
+    )
+    for _ in range(MIN_OBSERVATIONS):
+        stage.after(sent, reply, _ctx(reasoning_budget=True))
+    return stage
+
+
+class TestReasoningBudgetDecisionBoundary:
+    @pytest.mark.parametrize("case", REASONING_CASES, ids=lambda c: c.name)
+    def test_case(self, case: DecisionBoundaryCase) -> None:
+        failure = check_decision_boundary(
+            _warmed_reasoning_stage(), case, _ctx(reasoning_budget=True)
+        )
+        assert failure is None, failure.reason
+
+    def test_the_full_suite_reports_a_clean_pass(self) -> None:
+        report = EvalReport()
+        for case in REASONING_CASES:
+            report.record(
+                check_decision_boundary(
+                    _warmed_reasoning_stage(), case, _ctx(reasoning_budget=True)
+                )
+            )
+
+        assert report.ok, [f.reason for f in report.failures]
+        assert report.total == len(REASONING_CASES)
+
+    def test_an_unwarmed_stage_declines_the_case_it_would_otherwise_act_on(self) -> None:
+        """No sample, no ceiling. The gate would otherwise pass vacuously."""
+        acting_case = REASONING_CASES[0]
+        failure = check_decision_boundary(
+            ReasoningBudgetStage(), acting_case, _ctx(reasoning_budget=True)
+        )
+
+        assert failure is not None
+        assert "declined" in failure.reason

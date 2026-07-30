@@ -40,6 +40,25 @@ MIN_OBSERVATIONS = 20
 #: this stage can produce.
 FLOOR_TOKENS = 256
 
+#: Completion tokens an output ceiling must leave *above* a reasoning budget.
+#: Reasoning tokens are drawn from the same ceiling as the answer, so a ceiling
+#: only just clear of the budget is legal and useless: thinking consumes it and
+#: generation stops before the answer begins. ADR-018 calls this floor required
+#: rather than optional.
+ANSWER_HEADROOM_TOKENS = 512
+
+#: Anthropic's own lower bound on ``thinking.budget_tokens``. Going under it is
+#: not a smaller budget, it is a 400 -- and fail-open then re-sends the request
+#: unoptimized at full price, so the stage would cost money while reporting a
+#: ceiling it imposed.
+MIN_THINKING_BUDGET = 1024
+
+#: Multiple of observed p95 output used as the reasoning ceiling. Deliberately
+#: the same generous factor as :data:`CEILING_MULTIPLIER`, and for a sharper
+#: version of the same asymmetry: guessing high forgoes a saving, guessing low
+#: truncates the model's thinking on the hardest question in the workload.
+REASONING_CEILING_MULTIPLIER = 2.0
+
 
 class AdaptiveMaxTokensStage(Stage):
     """Cap output length from what this workload actually produces.
@@ -79,6 +98,14 @@ class AdaptiveMaxTokensStage(Stage):
             return self.declines(request)
 
         ceiling = max(FLOOR_TOKENS, int(_percentile(self._lengths, 0.95) * CEILING_MULTIPLIER))
+        if request.thinking_budget is not None:
+            # The budget draws from this same ceiling, and Anthropic rejects a
+            # `max_tokens` at or below `thinking.budget_tokens` outright. A
+            # ceiling derived from observed *total* output can easily land under
+            # a caller's budget -- so the floor is not a nicety, it is the
+            # difference between a tighter ceiling and a failed call that
+            # fail-open re-sends unoptimized at full price (ADR-018).
+            ceiling = max(ceiling, request.thinking_budget + ANSWER_HEADROOM_TOKENS)
         typical = int(_percentile(self._lengths, 0.5))
         # The saving is the tail we expect not to generate, not the difference
         # from an imaginary unbounded reply. Reporting `ceiling` as saved would
@@ -332,6 +359,108 @@ class ChainOfDraftStage(Stage):
             request=request.with_messages(tuple(messages)),
             note=f"reasoning constrained to shorthand (costs {instruction_cost} input tokens)",
         )
+
+
+class ReasoningBudgetStage(Stage):
+    """Lower a caller's reasoning budget toward what the workload actually uses.
+
+    Reasoning tokens are the most expensive tokens in a request: they bill at
+    the completion rate, 4-5x input on every model in ``PRICING``, and on a
+    reasoning model the thinking trace routinely runs several times the length
+    of the visible answer. They are also the only tokens this package had no
+    ability to influence until ADR-018, while nineteen stages aimed at the
+    cheaper half of the bill.
+
+    The policy is deliberately narrow, and each clause is a rule from ADR-018:
+
+    * **Never sets a budget where the caller set none.** That would impose a
+      ceiling the provider's default did not have.
+    * **Never raises one.** A cost-reduction library that increases the bill is
+      the outcome ADR-013's rule 1 exists to forbid.
+    * **Never lowers below** :data:`MIN_THINKING_BUDGET`, which the provider
+      rejects outright.
+    * **Acts only on a real sample** -- :data:`MIN_OBSERVATIONS` completed
+      reasoning calls -- so the ceiling is derived rather than invented. This
+      package has twice published an invented number that a live run then
+      corrected, and ADR-018 rejected budget-from-prompt-complexity for
+      precisely that reason.
+
+    The ceiling comes from observed *total* output, which is an upper bound on
+    the thinking inside it: no provider in ``PRICING`` reports the two apart.
+    That bound is what makes the reduction defensible -- the budget is lowered
+    only to a figure no observed call exceeded in thinking *and* answer
+    combined, so on the observed distribution it cannot bind.
+
+    ``ALTERED`` regardless, and off by default. Fidelity is a claim about the
+    response, not the request, and the prompt here is untouched byte for byte:
+    a bound that holds across two hundred observed calls says nothing about the
+    two hundred and first, and "the request that needed more thinking" is the
+    hard one -- which is why someone chose a reasoning model. The failure mode
+    is a confident, well-formed, wrong answer that the savings report scores as
+    a win, because the report measures tokens.
+
+    **Claims no saving.** Like :class:`ChainOfDraftStage`, what it avoids is
+    some fraction of reasoning the stage cannot see, and this also settles the
+    overlap ADR-018 records between the two: neither credits a completion token,
+    so no arrangement of them can count one twice -- the property rule 5 of
+    :mod:`optio_optimize.stages` protects between ``minify_tools`` and
+    ``prune_tools`` by ordering alone.
+    """
+
+    fidelity = Fidelity.ALTERED
+
+    def __init__(self) -> None:
+        """Build the stage with an empty observation history."""
+        self._lengths: list[int] = []
+
+    @property
+    def name(self) -> str:
+        """Stable identifier."""
+        return "reasoning_budget"
+
+    def before(self, request: LLMRequest, ctx: StageContext) -> StageResult:
+        """Reduce an over-provisioned reasoning budget, or decline."""
+        if request.thinking_budget is None:
+            return self.declines(request)
+        if ctx.config.chain_of_draft:
+            # Both stages target reasoning verbosity, and neither has live
+            # evidence. Stacking two unmeasured reductions on one axis compounds
+            # a degradation that nothing here can detect, so the pair never both
+            # act -- and `chain_of_draft` is the one the caller can see in the
+            # prompt, which makes it the one to leave running.
+            return self.declines(request)
+        if len(self._lengths) < MIN_OBSERVATIONS:
+            return self.declines(request)
+
+        observed = _percentile(self._lengths, 0.95)
+        ceiling = max(MIN_THINKING_BUDGET, int(observed * REASONING_CEILING_MULTIPLIER))
+        if ceiling >= request.thinking_budget:
+            return self.declines(request)
+
+        from dataclasses import replace
+
+        return StageResult(
+            request=replace(request, thinking_budget=ceiling),
+            note=f"reasoning budget {request.thinking_budget} -> {ceiling} "
+            f"(p95 observed output {int(observed)})",
+        )
+
+    def after(self, request: LLMRequest, response: LLMResponse, ctx: StageContext) -> None:
+        """Record the length of a completed reasoning call."""
+        if response.served_from is not None:
+            return  # A cached reply is not a fresh observation.
+        if request.thinking_budget is None:
+            # A call that did no thinking says nothing about how long thinking
+            # runs, and folding its short reply in would drag the p95 down until
+            # the ceiling landed *below* what real reasoning calls need -- the
+            # exact failure this stage exists to avoid.
+            return
+        if response.output_tokens > 0:
+            self._lengths.append(response.output_tokens)
+            # Bounded: this lives for the process lifetime, and §11's memory
+            # rule applies to this package too.
+            if len(self._lengths) > 1000:
+                del self._lengths[:500]
 
 
 def _percentile(values: list[int], fraction: float) -> float:
