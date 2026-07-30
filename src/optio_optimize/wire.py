@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 from optio_optimize.types import LLMResponse
 
 if TYPE_CHECKING:
-    from optio_optimize.types import LLMRequest
+    from optio_optimize.types import LLMRequest, Message
 
 #: Anthropic's only cache-control type. Named so the three places that emit it
 #: -- system blocks, marked turns, and the adapter's raw-param path -- cannot
@@ -194,6 +194,10 @@ def anthropic_system_and_turns(
             if message.cacheable:
                 block["cache_control"] = dict(EPHEMERAL_CACHE_CONTROL)
             system_blocks.append(block)
+        elif message.role == "tool":
+            _append_tool_result(turns, message)
+        elif message.extra.get("tool_calls"):
+            turns.append(_assistant_with_tool_calls(message))
         elif message.cacheable:
             turns.append(
                 {
@@ -210,6 +214,67 @@ def anthropic_system_and_turns(
         else:
             turns.append({"role": message.role, "content": message.content})
     return system_blocks, turns
+
+
+def _append_tool_result(turns: list[dict[str, Any]], message: Message) -> None:
+    """Add one ``tool_result`` block, merging into the previous user turn.
+
+    Anthropic requires alternating roles, so parallel tool calls -- two
+    ``role="tool"`` messages in a row -- must become **one** user turn carrying
+    two blocks, not two user turns, which is a 400 (ADR-025).
+    """
+    block: dict[str, Any] = {
+        "type": "tool_result",
+        "tool_use_id": message.extra.get("tool_call_id", ""),
+        "content": message.content,
+    }
+    if message.cacheable:
+        block["cache_control"] = dict(EPHEMERAL_CACHE_CONTROL)
+    if turns and turns[-1]["role"] == "user" and isinstance(turns[-1]["content"], list):
+        turns[-1]["content"].append(block)
+        return
+    turns.append({"role": "user", "content": [block]})
+
+
+def _assistant_with_tool_calls(message: Message) -> dict[str, Any]:
+    """Translate an assistant turn proposing tool calls into ``tool_use`` blocks.
+
+    The neutral shape is OpenAI's -- ``arguments`` a JSON *string* -- and
+    Anthropic's ``input`` is an object, so it is parsed rather than forwarded.
+    Any narration alongside the call is kept as a leading text block: a model may
+    explain itself before calling, and dropping that loses content the caller was
+    billed for and the model may refer back to.
+
+    Raises:
+        ValueError: If ``arguments`` is not valid JSON. Neither alternative is
+            safe -- dropping the block orphans the ``tool_result`` answering it,
+            and ``{}`` sends a call the model never made -- so this reaches the
+            pipeline's per-stage fail-open and the request goes unoptimized.
+    """
+    content: list[dict[str, Any]] = []
+    if message.content:
+        content.append({"type": "text", "text": message.content})
+    for call in message.extra["tool_calls"]:
+        function = call.get("function", {}) if isinstance(call, dict) else {}
+        raw = function.get("arguments", "{}")
+        try:
+            arguments = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"tool_calls: arguments for {function.get('name', '?')!r} are not valid JSON, "
+                f"so this call cannot be represented in Anthropic's shape"
+            ) from exc
+        content.append(
+            {
+                "type": "tool_use",
+                "id": call.get("id", ""),
+                "name": function.get("name", ""),
+                "input": arguments,
+            }
+        )
+    if message.cacheable and content:
+        content[-1]["cache_control"] = dict(EPHEMERAL_CACHE_CONTROL)
+    return {"role": "assistant", "content": content}
 
 
 def anthropic_tools(request: LLMRequest) -> list[dict[str, Any]] | None:
