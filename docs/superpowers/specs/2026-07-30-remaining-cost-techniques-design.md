@@ -131,6 +131,14 @@ cache-hit replay; do not pretend the full pipeline works on a stream.
 **Gate.** ADR-016 in-scope test, plus live confirmation that a streamed Anthropic call carries the
 `cache_control` breakpoint.
 
+**Done, 2026-07-30, and the gate was met.** ADR-019 records the decision: every `before` hook runs,
+the `after` hooks run from a passthrough proxy when the stream finishes, an abandoned stream
+completes nothing, and a cache hit is replayed as synthesized events. 19 new tests, 11 of which fail
+without the wiring. Live: two streamed calls sharing a 4,217-token prefix wrote 4,217 tokens and then
+**read 4,217 at 0.1x**, with the report's own cached/written figures matching the provider's exactly
+— the half that proves the accumulator noticed the discount rather than only the provider granting
+it. Scope was Anthropic sync and async; OpenAI streaming stays unoptimized and keeps saying so.
+
 ### 3. Fan-out cache warm-up ordering
 
 **Mechanism.** N cold parallel calls sharing a prefix each pay the 1.25x write premium, because

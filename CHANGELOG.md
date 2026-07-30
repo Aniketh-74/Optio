@@ -23,6 +23,37 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **Streaming is optimized on Anthropic, sync and async
+  ([ADR-019](docs/design/adr/adr-019-a-streamed-call-gets-the-request-side-pipeline.md)).** A
+  `stream=True` call used to bypass the wrapper entirely, on the stated grounds that a pipeline
+  built around one request producing one response "can only buffer a token stream". That holds for
+  the few stages which read a reply and not for the majority, which only rewrite the request — so a
+  streaming caller was getting **zero of nineteen stages**, including `prefix_cache`, the largest
+  lossless saving in the package and the only reason Anthropic caches anything at all. For anything
+  user-facing, streaming *is* the production mode; "plug and play except in the mode you ship" was
+  the defect.
+
+  Every `before` hook now runs and the transformed request is what goes on the wire. The `after`
+  hooks run when the stream finishes, from a proxy that forwards each event unchanged and
+  immediately while accumulating alongside — nothing is withheld, so the first token arrives exactly
+  as soon as it would without this package, and only the bookkeeping is deferred. A cache hit is
+  replayed as a synthesized event sequence built through the SDK's own pydantic types, so a
+  streaming caller gets cache hits without needing to know they can happen.
+
+  **An abandoned stream completes nothing.** No cache write, no observation, no report row. A
+  half-read reply stored by `exact_cache` would be served confidently and permanently to everyone
+  who later asked the same question; the report undercounting an abandoned stream costs a number
+  instead.
+
+  Live gate: two streamed calls sharing a 4,217-token system prefix — 4,217 written on the first,
+  **4,217 read at 0.1x on the second**, and the savings report's own cached/written figures match
+  the provider's exactly, which is what proves the accumulator threaded the usage through rather
+  than the discount being granted and unnoticed.
+
+  **OpenAI streaming remains unoptimized and still says so.** `ChatCompletionChunk` is a different
+  shape with different rules; shipping "streaming works" while one of two adapters silently did
+  nothing would repeat the defect one level up.
+
 - **`reasoning_budget`: the most expensive tokens in a request finally have a lever
   ([ADR-018](docs/design/adr/adr-018-reasoning-budget-is-a-cost-lever-and-an-altered-one.md)).**
   Reasoning tokens bill at the completion rate — 4–5x input on every model in `PRICING` — and on a
