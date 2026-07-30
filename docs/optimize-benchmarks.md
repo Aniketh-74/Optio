@@ -930,12 +930,32 @@ Two consequences worth carrying:
   breakpoint was ignored while reads-0/writes-positive means the prefix is
   changing between calls. Those are different bugs and the totals cannot tell
   them apart.
-- **`MIN_PREFIX_TOKENS` is wrong for Haiku-class models** and is recorded here
-  as an open defect rather than fixed in passing. Below 2048 on those models the
-  stage places a marker, reports the work, and buys nothing — "work done for no
-  effect", which is the outcome the stage's own comment says it exists to avoid.
-  Making the floor model-aware changes behaviour for every Anthropic caller and
-  deserves its own measured decision.
+- **`MIN_PREFIX_TOKENS` was wrong for Haiku-class models. Fixed 2026-07-31 by
+  ADR-027**, which makes the floor a per-model lookup and leaves the old constant
+  as the unknown-model fallback. What forced it: `AnthropicProvider`'s default
+  became `claude-haiku-4-5` (floor 4,096), and **eleven of twelve workloads have
+  prompts below that**, so the full live run reported zero cache reads everywhere
+  with nothing explaining why.
+
+  The stage now declines below the floor and names the model and the figure, so
+  a zero-read result is diagnosable from the report. Running that against
+  `mcp_agent` — the one workload whose *prompt* clears 4,096, at 11,799 tokens —
+  produced the finding this table could not have shown:
+
+  > `prefix is ~1387 tokens, below claude-haiku-4-5's 4096-token cacheable minimum`
+
+  **The stable prefix is ~1,400 tokens, not 11,799.** The rest is tool results
+  that change every step and were never cacheable. So under the old constant this
+  prefix cleared 1,024, got a marker, and had it discarded — "work done for no
+  effect" reported as success, on the workload the suite is proudest of.
+
+  The practical consequence, worth stating for anyone choosing a model: this
+  package's largest lossless lever needs a *stable* prefix above the model's
+  floor, and typical agent traffic carries 1,000–2,000 tokens of stable head. That
+  clears Opus 5 (512) comfortably, clears the 1,024 tier often, and **rarely
+  clears Haiku 4.5's 4,096** unless the system prompt and tool schemas are large.
+  The suite currently cannot demonstrate `prefix_cache` on its own default model —
+  recorded as the next open item rather than papered over.
 
 ## Batch dispatch: a weaker class of evidence, stated as such (ADR-017)
 

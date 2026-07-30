@@ -35,6 +35,12 @@ class ArmResult:
         provider_calls: Requests that actually reached the provider.
         input_tokens: Prompt tokens billed.
         output_tokens: Completion tokens billed.
+        cache_write_tokens: Prompt tokens the provider charged a **premium** to
+            write into its cache. Tracked separately from reads because
+            reads-0 means two different things and only this tells them
+            apart: reads 0 / writes 0 is a breakpoint the provider ignored,
+            reads 0 / writes N is one that worked over a prefix that then
+            changed.
         cached_input_tokens: Prompt tokens served by the provider's own prefix
             cache -- discounted, not free.
         wall_seconds: Total elapsed time, including our overhead.
@@ -53,6 +59,7 @@ class ArmResult:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_input_tokens: int = 0
+    cache_write_tokens: int = 0
     wall_seconds: float = 0.0
     provider_seconds: float = 0.0
     peak_memory_bytes: int = 0
@@ -203,7 +210,20 @@ class ABResult:
         pricing = PRICING.get(self.model)
         if pricing is None:
             return None
-        return _cost(pricing, arm.input_tokens, arm.output_tokens, arm.cached_input_tokens)
+        # Writes are passed through, not dropped. Until 2026-07-31 this
+        # priced every prompt token at the base or cached rate and never at
+        # the 1.25x write premium, so the arm that places breakpoints was
+        # billed 1.25x tokens at 1.0x -- the identical asymmetry ADR-021
+        # removed from SavingsReport, reproduced inside the benchmark that
+        # measures it, and flattering the optimized arm every time
+        # prefix_cache wrote.
+        return _cost(
+            pricing,
+            arm.input_tokens,
+            arm.output_tokens,
+            arm.cached_input_tokens,
+            arm.cache_write_tokens,
+        )
 
     @property
     def cost_reduction(self) -> float | None:

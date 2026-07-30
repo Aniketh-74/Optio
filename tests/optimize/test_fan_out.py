@@ -36,7 +36,7 @@ pytestmark = pytest.mark.optimize
 
 def _long_system() -> str:
     """A system prompt comfortably above ``MIN_PREFIX_TOKENS``."""
-    return "You are a meticulous claims adjuster. Follow the schedule exactly. " * 200
+    return "You are a meticulous claims adjuster. Follow the schedule exactly. " * 600
 
 
 def _shared_prefix_requests(count: int = 4, *, system: str | None = None) -> list[LLMRequest]:

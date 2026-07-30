@@ -153,7 +153,7 @@ class TestThePrefixMarkerBecomesCacheControl:
         asyncio.run(
             async_client.messages.create(
                 **_kwargs(
-                    system="You are a careful assistant. " * 400,
+                    system="You are a careful assistant. " * 900,
                     messages=[
                         {"role": "user", "content": "q1"},
                         {"role": "assistant", "content": "a1"},
@@ -179,7 +179,7 @@ class TestThePrefixMarkerBecomesCacheControl:
         asyncio.run(
             async_client.messages.create(
                 **_kwargs(
-                    system="You are a careful assistant. " * 400,
+                    system="You are a careful assistant. " * 900,
                     messages=[
                         {"role": "user", "content": "q1"},
                         {"role": "assistant", "content": "a1"},
@@ -484,7 +484,7 @@ class TestTheCallersOwnCacheControlIsNotClobbered:
         # on a *turn* and the system block correctly carries no marker -- the
         # first version of this test used 12 turns and failed for that reason,
         # asserting the stage's behaviour rather than this function's.
-        sync_client.messages.create(**_kwargs(system="You are terse. " * 400))
+        sync_client.messages.create(**_kwargs(system="You are terse. " * 1200))
         assert fake.requests[0]["system"][0]["cache_control"] == {"type": "ephemeral"}
 
     def test_an_unmodelled_system_block_field_is_preserved(self):

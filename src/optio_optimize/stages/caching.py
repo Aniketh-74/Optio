@@ -48,11 +48,62 @@ _KEY = "exact_cache_key"
 #: worked -- and too low for four models, where it places one the provider
 #: silently discards while the stage's note claims a breakpoint.
 #:
-#: Left as one number deliberately: a per-model table changes what every
-#: Anthropic caller sends, and ADR-016 does not let one measurement carry that.
-#: The cost of being wrong is a marker that does nothing, never a wrong answer.
-#: ``docs/optimize-benchmarks.md`` records the full table.
+#: **Now the fallback for an unrecognized model only** (ADR-027). It was the
+#: single floor for every model until 2026-07-31, left that way on ADR-016's
+#: grounds that a per-model table changes what every Anthropic caller sends. What
+#: forced the change: the benchmark's default model became ``claude-haiku-4-5``,
+#: whose floor is 4,096, and **eleven of its twelve workloads sit below that** --
+#: so the live run reported zero cache reads everywhere and nothing said why.
+#:
+#: Kept as the unknown-model default rather than the lowest or highest floor: the
+#: lowest would place markers four known models discard, the highest would
+#: decline breakpoints that work on most, and this value leaves an unrecognized
+#: name behaving exactly as it did before.
 MIN_PREFIX_TOKENS = 1024
+
+#: Anthropic's published minimum cacheable prefix, by model-name prefix.
+#:
+#: Matched longest-first, so a dated id (``claude-haiku-4-5-20251001``) resolves
+#: through its alias -- the API reports the dated form back on every response, so
+#: a table knowing only the alias would return the wrong floor for half the
+#: lookups.
+#:
+#: Data, auditable against the vendor's page, and stale the moment Anthropic
+#: changes it. Same standing caveat as ``PRICING``, and the same mitigation: this
+#: is one dict, not logic.
+MIN_PREFIX_TOKENS_BY_MODEL: dict[str, int] = {
+    "claude-opus-5": 512,
+    "claude-sonnet-5": 1024,
+    "claude-opus-4-8": 1024,
+    "claude-sonnet-4-6": 1024,
+    "claude-sonnet-4-5": 1024,
+    "claude-opus-4-7": 2048,
+    "claude-haiku-3-5": 2048,
+    "claude-haiku-4-5": 4096,
+    "claude-opus-4-6": 4096,
+    "claude-opus-4-5": 4096,
+}
+
+
+def model_floor_note(model: str, floor: int) -> str:
+    """A decline reason naming both the model and the floor it missed."""
+    return f"{model}'s {floor}-token cacheable minimum"
+
+
+def min_prefix_tokens_for(model: str) -> int:
+    """Return the minimum cacheable prefix for ``model``.
+
+    Longest-prefix match against :data:`MIN_PREFIX_TOKENS_BY_MODEL`, falling
+    back to :data:`MIN_PREFIX_TOKENS` for anything unrecognized -- including
+    every OpenAI model, where the marker is inert anyway because that provider
+    caches automatically.
+    """
+    best = ""
+    for name in MIN_PREFIX_TOKENS_BY_MODEL:
+        if model.startswith(name) and len(name) > len(best):
+            best = name
+    return MIN_PREFIX_TOKENS_BY_MODEL[best] if best else MIN_PREFIX_TOKENS
+
 
 #: How long Anthropic's default cache entry lives. A gap longer than this means
 #: the entry the previous call wrote is gone, so the next call pays a fresh
@@ -227,6 +278,9 @@ class PrefixCacheStage(Stage):
                 confirm an entry actually expired.
         """
         self._clock = clock if clock is not None else time.monotonic
+        #: Why the last call declined, for reports and diagnostics. Never
+        #: contains prompt content -- only a model name and a token count.
+        self.last_decline_reason = ""
         # Prefix digest -> when it was last sent. An OrderedDict so the bound
         # below evicts the least recently seen rather than an arbitrary entry.
         self._last_seen: OrderedDict[str, float] = OrderedDict()
@@ -249,9 +303,18 @@ class PrefixCacheStage(Stage):
         prefix_tokens = sum(
             ctx.counter.count_text(m.content, request.model) for m in request.messages[:boundary]
         )
-        if prefix_tokens < MIN_PREFIX_TOKENS:
+        floor = min_prefix_tokens_for(request.model)
+        if prefix_tokens < floor:
             # Below the provider's floor the marker is ignored. Placing it
             # anyway would show up in reports as work done for no effect.
+            #
+            # The reason is recorded rather than silent (ADR-027): the live
+            # Anthropic run reported zero cache reads on eleven of twelve
+            # workloads and said nothing about why, which reads like a broken
+            # stage instead of a prompt that was never eligible.
+            self.last_decline_reason = (
+                f"prefix is ~{prefix_tokens} tokens, below {model_floor_note(request.model, floor)}"
+            )
             return self.declines(request)
 
         ttl = self._ttl_for(request, boundary, enabled=ctx.config.cache_ttl_selection)

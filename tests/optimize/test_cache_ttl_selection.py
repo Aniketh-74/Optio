@@ -50,7 +50,7 @@ def _ctx(**overrides: object) -> StageContext:
 
 def _request(*, tail: str = "latest question") -> LLMRequest:
     """A request whose prefix clears the cacheable floor."""
-    system = "You are a meticulous claims adjuster. Follow the schedule exactly. " * 200
+    system = "You are a meticulous claims adjuster. Follow the schedule exactly. " * 600
     return LLMRequest(
         model="claude-haiku-4-5",
         messages=(
@@ -150,7 +150,7 @@ class TestAnHourIsRequestedOnlyAfterObservedExpiry:
         other = LLMRequest(
             model="claude-haiku-4-5",
             messages=(
-                Message(role="system", content="A completely different brief. " * 300),
+                Message(role="system", content="A completely different brief. " * 900),
                 Message(role="user", content="q"),
                 Message(role="assistant", content="a"),
                 Message(role="user", content="q2"),
@@ -176,7 +176,7 @@ class TestTheBookkeepingIsSafeToKeep:
         clock = _Clock(0.0)
         stage = PrefixCacheStage(clock=clock)
         ctx = _ctx(cache_ttl_selection=True)
-        secret = "the patient's diagnosis is confidential " * 200
+        secret = "the patient's diagnosis is confidential " * 1200
         request = LLMRequest(
             model="claude-haiku-4-5",
             messages=(
@@ -214,7 +214,7 @@ class TestTheBookkeepingIsSafeToKeep:
                 LLMRequest(
                     model="claude-haiku-4-5",
                     messages=(
-                        Message(role="system", content=f"brief {index} " + "filler " * 700),
+                        Message(role="system", content=f"brief {index} " + "filler " * 4400),
                         Message(role="user", content="q"),
                         Message(role="assistant", content="a"),
                         Message(role="user", content="q2"),
