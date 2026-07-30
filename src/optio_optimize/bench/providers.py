@@ -460,7 +460,15 @@ class AnthropicProvider:
     assumed.
     """
 
-    def __init__(self, model: str = "claude-haiku-4", guard: SpendGuard | None = None) -> None:
+    #: Default model. **Verified against `models.list` on 2026-07-31**, which is
+    #: not pedantry: this was `claude-haiku-4`, and that name returns `404
+    #: not_found_error`. So did `claude-sonnet-4` and `claude-opus-4`. Those three
+    #: are family keys in `PRICING`, not model IDs the API will serve, and using
+    #: one as the default meant no live Anthropic benchmark had ever completed a
+    #: single call.
+    DEFAULT_MODEL = "claude-haiku-4-5"
+
+    def __init__(self, model: str = DEFAULT_MODEL, guard: SpendGuard | None = None) -> None:
         """Build the adapter.
 
         Raises:
@@ -521,24 +529,39 @@ class AnthropicProvider:
 
         from anthropic.types import MessageParam, TextBlock
 
+        # `tools` and `stop_sequences` are **omitted when empty, never passed as
+        # None**, and the difference is not cosmetic: Anthropic rejects a null
+        # with `400 tools: Input should be a valid array`. The first live
+        # benchmark run against Anthropic failed all twelve calls on exactly
+        # this. `system` really does accept None -- the comment that used to sit
+        # here reasoned that out correctly and then applied it one argument too
+        # far. `adapters/anthropic.py` had it right all along, which is why every
+        # live measurement script worked while this provider had never once
+        # succeeded.
+        optional: dict[str, Any] = {}
+        # `system` too, and this one was asserted otherwise in a comment: "every
+        # anthropic version accepts None here as 'no system prompt'". Current
+        # Anthropic answers `400 system: Input should be a valid array`. It only
+        # surfaced after the `tools` fix, because each rejection hides the next.
+        if system_blocks:
+            optional["system"] = cast("Any", system_blocks)
+        # Anthropic's schema shape differs from OpenAI's -- name and
+        # input_schema at the top level rather than nested under "function" --
+        # so a request built for one is translated rather than forwarded. Same
+        # omission as OpenAIProvider had, and it would fail the same silent
+        # way: tools rewritten by a stage, then never sent.
+        tools = wire.anthropic_tools(request)
+        if tools:
+            optional["tools"] = tools
+        if request.stop:
+            optional["stop_sequences"] = list(request.stop)
+
         reply = self._client.messages.create(
             model=self.model,
             max_tokens=request.max_tokens or 1024,
-            # `None` rather than the SDK's own omit sentinel (`NotGiven`),
-            # same reasoning as OpenAIProvider above: every anthropic version
-            # accepts None here as "no system prompt", so casting to Any
-            # avoids pinning to a sentinel name that has changed across SDKs.
-            system=cast("Any", system_blocks or None),
             messages=cast("list[MessageParam]", turns),
             temperature=request.temperature if request.temperature is not None else 1.0,
-            # Anthropic's schema shape differs from OpenAI's -- name and
-            # input_schema at the top level rather than nested under
-            # "function" -- so a request built for one is translated rather
-            # than forwarded. Same omission as OpenAIProvider had, and it would
-            # fail the same silent way: tools rewritten by a stage, then never
-            # sent.
-            tools=cast("Any", wire.anthropic_tools(request)),
-            stop_sequences=cast("Any", list(request.stop) or None),
+            **optional,
         )
         usage = reply.usage
         cached = getattr(usage, "cache_read_input_tokens", 0) or 0
