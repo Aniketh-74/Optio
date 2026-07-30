@@ -23,6 +23,44 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **`reasoning_budget`: the most expensive tokens in a request finally have a lever
+  ([ADR-018](docs/design/adr/adr-018-reasoning-budget-is-a-cost-lever-and-an-altered-one.md)).**
+  Reasoning tokens bill at the completion rate — 4–5x input on every model in `PRICING` — and on a
+  reasoning model the thinking trace routinely runs several times the length of the visible answer.
+  They were the only tokens this package could not influence, while nineteen stages aimed at the
+  cheaper half of the bill.
+
+  `ReasoningBudgetStage` lowers a caller-set budget toward the p95 of observed output and does
+  nothing else: never raises one, never invents one where the caller set none, never goes under
+  Anthropic's 1,024 floor, never acts before twenty real observations exist. `ALTERED` and off by
+  default. It claims no saving — `output_tokens` bundles thinking with the answer on every provider
+  in `PRICING`, so what a lowered budget avoids is unknowable from inside the stage. That also
+  settles the `chain_of_draft` overlap more firmly than an ordering could: neither stage credits a
+  completion token, so no arrangement of the two can count one twice.
+
+  **The live run found the saving and then demolished the reason it looked safe.** Three arms,
+  control-treated-control on `claude-haiku-4-5`, twenty graded tasks: **−21.9%** against the mean of
+  two bracketing controls, below both, against a control-to-control noise floor of 11.7%, with
+  accuracy unchanged and nothing truncated. But **zero of forty control calls exceeded the ceiling**
+  — the longest unconstrained trace was 2,480 tokens against a 4,438-token ceiling. So the reduction
+  is not the ceiling truncating anything. `budget_tokens` is a target that shapes how long the model
+  thinks, not merely a cap, and the stage's original defence ("it cannot bind on the observed
+  distribution") was answering a question nobody had asked. The flag stays off.
+
+  Two limits on that evidence, recorded rather than glossed: every arm scored 100% on both task
+  sets, so the accuracy column cannot detect degradation and measures only that Haiku 4.5 finds
+  these ten tasks easy; and it is one model, one workload, one treated arm.
+
+### Fixed
+
+- **`adaptive_max_tokens` could turn a working reasoning call into a failed one.** It is on by
+  default and derives its ceiling from observed *total* output — 600 tokens on a workload whose
+  replies run 300. Anthropic rejects a `max_tokens` at or below `thinking.budget_tokens`, so once
+  `thinking_budget` reached the wire, that pairing became a 400 and a fail-open call at full price
+  while the report showed a saving. The ceiling is now floored to the budget plus 512 tokens of
+  answer headroom, and rule 7 in `stages/__init__.py` puts the budget reduction first so the ceiling
+  clears the budget that will actually be sent. Found by a test written before the stage existed.
+
 - **`BatchOptimizer`: a second public entry point, for work that tolerates hours of latency
   ([ADR-017](docs/design/adr/adr-017-batch-dispatch-is-a-second-surface.md)).** Providers sell
   asynchronous processing at roughly half price with no quality trade at all — the same model

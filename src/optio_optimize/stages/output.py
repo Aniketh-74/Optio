@@ -386,18 +386,32 @@ class ReasoningBudgetStage(Stage):
       precisely that reason.
 
     The ceiling comes from observed *total* output, which is an upper bound on
-    the thinking inside it: no provider in ``PRICING`` reports the two apart.
-    That bound is what makes the reduction defensible -- the budget is lowered
-    only to a figure no observed call exceeded in thinking *and* answer
-    combined, so on the observed distribution it cannot bind.
+    the thinking inside it: no provider in ``PRICING`` reports the two apart. The
+    budget is therefore lowered only to a figure no observed call exceeded in
+    thinking *and* answer combined.
 
-    ``ALTERED`` regardless, and off by default. Fidelity is a claim about the
-    response, not the request, and the prompt here is untouched byte for byte:
-    a bound that holds across two hundred observed calls says nothing about the
-    two hundred and first, and "the request that needed more thinking" is the
-    hard one -- which is why someone chose a reasoning model. The failure mode
-    is a confident, well-formed, wrong answer that the savings report scores as
-    a win, because the report measures tokens.
+    **That last sentence was written as the safety argument, and the live run
+    retired it.** On ``claude-haiku-4-5``, forty control calls at a 16,000-token
+    budget produced a longest trace of 2,480 tokens -- not one of them came near
+    the 4,438-token ceiling the stage chose -- and the treated arm still spent
+    **21.9% less** than the mean of two bracketing controls, below both of them,
+    against a control-to-control noise floor of 11.7%. Nothing was truncated. So
+    ``budget_tokens`` is a *target* that shapes how long the model thinks, not
+    merely a cap that stops it: the model thought less for having been told it
+    had less room, on questions where the ceiling could not possibly have bound.
+
+    The saving is real. The reasoning that made it look safe is not, and that is
+    the more important half: "it cannot bind on the observed distribution" is no
+    defence at all if binding was never the mechanism.
+
+    ``ALTERED``, and off by default. Fidelity is a claim about the response, not
+    the request, and the prompt here is untouched byte for byte. Accuracy held at
+    100% on both the easy and hard sets in all three arms of that run -- and that
+    is close to vacuous evidence, because a set every arm scores 100% on cannot
+    detect degradation. Ten tasks Haiku 4.5 finds easy is not evidence a reduced
+    budget is safe. The failure mode remains a confident, well-formed, wrong
+    answer that the savings report scores as a win, because the report measures
+    tokens. See ``scripts/measure_reasoning_budget.py``.
 
     **Claims no saving.** Like :class:`ChainOfDraftStage`, what it avoids is
     some fraction of reasoning the stage cannot see, and this also settles the

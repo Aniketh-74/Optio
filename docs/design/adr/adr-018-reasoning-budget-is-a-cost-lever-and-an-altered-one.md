@@ -103,6 +103,45 @@ Raising it would spend money the caller did not ask to spend — a cost-reductio
 cost increase, the outcome ADR-013's rule 1 exists to forbid. Setting one where there was none
 would impose a ceiling the provider's default did not have.
 
+### Amendment, 2026-07-30: the live run found the saving and demolished the safety argument
+
+`scripts/measure_reasoning_budget.py`, three arms control-treated-control on `claude-haiku-4-5`,
+twenty graded tasks at two difficulty levels, budget 16,000 lowered by the stage to 4,438:
+
+| arm | output tokens | longest | cost | easy | hard |
+|---|---|---|---|---|---|
+| control | 12,892 | 2,219 | $0.06610 | 100% | 100% |
+| treated | 10,644 | 1,742 | $0.05486 | 100% | 100% |
+| control-2 | 14,537 | 2,480 | $0.07432 | 100% | 100% |
+
+**−21.9%** against the mean of the two controls, below both of them, against a control-to-control
+spread of 11.7%. Nothing truncated. Accuracy unchanged.
+
+The number that matters is none of those: **zero of forty control calls exceeded the ceiling.** The
+longest unconstrained trace was 2,480 tokens against a 4,438-token ceiling, so the ceiling cannot
+have cut anything off — and the treated arm was still a fifth cheaper. `budget_tokens` is a *target*
+that shapes how long the model thinks, not only a cap that stops it.
+
+That retires the argument the stage was built on. Its docstring claimed the reduction was safe
+because the budget is lowered only to a figure no observed call exceeded, "so on the observed
+distribution it cannot bind". Binding was never the mechanism. The model thinks less for having been
+told it has less room, on questions where the ceiling was unreachable — which is the failure ADR-018
+feared, operating in the one regime that was supposed to be free.
+
+Two further limits on this evidence, stated because a reader would otherwise take the table for more
+than it is:
+
+- **The accuracy column is close to vacuous.** Every arm scored 100% on both sets. A hard set that
+  nothing fails cannot detect degradation; it measures that Haiku 4.5 finds these ten tasks easy. The
+  next run of this script needs tasks the control arm sometimes gets wrong, or the accuracy half of
+  ADR-018's requirement is being satisfied in form only.
+- **One model, one workload, n=1 on the treated arm.** The 11.7% spread between two identical control
+  arms is the honest scale of what a single run here resolves.
+
+**The decision does not change: still `ALTERED`, still off by default.** The cost result argues for
+it and the mechanism result argues harder against it, and ADR-015's bar is evidence that correctness
+holds — which this run did not supply and, as built, could not have.
+
 ## Consequences
 
 - The most valuable technique in the package ships **off**, and stays off unless a live run shows
