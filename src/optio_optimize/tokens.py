@@ -30,6 +30,8 @@ import threading
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Protocol
 
+from optio_optimize.images import message_image_tokens
+
 if TYPE_CHECKING:
     from optio_optimize.types import LLMRequest, Message
 
@@ -238,11 +240,16 @@ def default_counter() -> TokenCounter:
 
 
 def count_message(message: Message, counter: TokenCounter, model: str) -> int:
-    """Return the token cost of one message, including role framing."""
+    """Return the token cost of one message, including role framing and images.
+
+    Images are counted from block metadata rather than by the text counter, which
+    has no way to see them: ``Message.content`` holds only extracted text, so a
+    vision message used to cost 8 tokens against a real ~1,535 (ADR-022).
+    """
     total = counter.count_text(message.content, model) + _PER_MESSAGE_OVERHEAD
     if message.name:
         total += counter.count_text(message.name, model)
-    return total
+    return total + message_image_tokens(message, model=model)
 
 
 def count_request(request: LLMRequest, counter: TokenCounter | None = None) -> int:
