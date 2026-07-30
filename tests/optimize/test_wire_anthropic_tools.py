@@ -26,6 +26,7 @@ makes every tool-calling workload fail with a 400."
 from __future__ import annotations
 
 import json
+from itertools import pairwise
 from typing import Any
 
 import pytest
@@ -58,9 +59,7 @@ class TestAToolResultBecomesAUserTurn:
         """
         request = _conversation(
             Message(role="user", content="what is the weather?"),
-            Message(
-                role="assistant", content="", extra={"tool_calls": [_tool_call(city="Paris")]}
-            ),
+            Message(role="assistant", content="", extra={"tool_calls": [_tool_call(city="Paris")]}),
             Message(role="tool", content="18C", name="search", extra={"tool_call_id": "call_1"}),
         )
 
@@ -120,7 +119,7 @@ class TestAToolResultBecomesAUserTurn:
 
         roles = [t["role"] for t in turns]
         assert roles == ["user", "assistant", "user", "assistant"]
-        assert all(a != b for a, b in zip(roles, roles[1:], strict=False))
+        assert all(a != b for a, b in pairwise(roles))
 
 
 class TestAProposedCallBecomesAToolUseBlock:
