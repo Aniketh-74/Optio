@@ -28,11 +28,14 @@ them in the form its transport needs.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from optio_optimize.types import LLMResponse
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from optio_optimize.types import LLMRequest, Message
 
 #: Anthropic's only cache-control type. Named so the three places that emit it
@@ -90,6 +93,120 @@ def block_text(block: Any) -> str:
     if isinstance(block, dict):
         return str(block.get("text", ""))
     return str(getattr(block, "text", ""))
+
+
+def as_block_dict(block: Any) -> dict[str, Any] | None:
+    """A content block as a plain dict, or ``None`` if it cannot be rendered as one.
+
+    The same ``model_dump`` normalization :func:`canonical_block` performs, kept
+    separate because one caller wants a hashable string and the other wants to
+    edit a field and put the block back.
+    """
+    if isinstance(block, dict):
+        return dict(block)
+    dump = getattr(block, "model_dump", None)
+    if callable(dump):
+        dumped = dump()
+        return dict(dumped) if isinstance(dumped, dict) else None
+    return None
+
+
+def _raw_content_blocks(message: Message) -> list[Any] | None:
+    """The caller's original content block list, when there is one."""
+    raw = message.extra.get(RAW_CONTENT_KEY)
+    if not isinstance(raw, dict):
+        return None
+    content = raw.get("content")
+    return content if isinstance(content, list) else None
+
+
+def tool_result_payload(block: Any) -> str | None:
+    """The text a ``tool_result`` block carries, or ``None`` for other blocks.
+
+    Anthropic accepts either a string or a list of blocks as a tool result's
+    ``content``; both are handled, and a list contributes only its text.
+    """
+    data = as_block_dict(block)
+    if data is None or data.get("type") != "tool_result":
+        return None
+    content = data.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(block_text(b) for b in content if is_text_block(b))
+    return ""
+
+
+def tool_result_payloads(message: Message) -> list[str]:
+    """Every ``tool_result`` payload this message carries, in order.
+
+    Empty for a message that carries none, including one whose tool result is a
+    plain ``role="tool"`` message -- that shape keeps its payload in
+    ``Message.content`` and needs no unwrapping.
+
+    Exists because ``cap_tool_results`` could not see this content at all: a
+    tool result reaching :func:`wrap_anthropic_client` is a block inside a
+    ``role="user"`` turn, and the text derivation deliberately contributes
+    nothing for a non-text block. An 8,001-token payload measured as 0 tokens
+    and went to the wire uncapped (ADR-032).
+    """
+    blocks = _raw_content_blocks(message)
+    if blocks is None:
+        return []
+    payloads = [tool_result_payload(block) for block in blocks]
+    return [payload for payload in payloads if payload is not None]
+
+
+def with_capped_tool_results(message: Message, cap: Callable[[str], str]) -> Message:
+    """A copy of ``message`` with each ``tool_result`` payload passed through ``cap``.
+
+    ``cap`` owns the truncation policy -- the ceiling and the notice belong to
+    the stage -- while the shape of the thing being truncated stays here.
+    ADR-022's rule: a second, subtly different reading of the same wire shape is
+    the divergence this module exists to prevent.
+
+    The caller's own dict is never edited. A new raw param is built, which
+    ADR-016 requires independently of whether mutating in place would happen to
+    reach the wire (it would: ``_param_from_message`` returns the raw param
+    untouched when the derived text is unchanged, and for a ``tool_result``
+    block it is ``""`` on both sides).
+
+    A capped block's ``content`` is written back as a **string**. Anthropic
+    accepts that shape, and preserving a truncated list's block structure would
+    mean deciding which of several blocks absorbed the cut.
+    """
+    blocks = _raw_content_blocks(message)
+    if blocks is None:
+        return message
+    raw = message.extra[RAW_CONTENT_KEY]
+    if not isinstance(raw, dict):
+        return message
+
+    changed = False
+    rebuilt: list[Any] = []
+    for block in blocks:
+        payload = tool_result_payload(block)
+        if payload is None:
+            rebuilt.append(block)
+            continue
+        capped = cap(payload)
+        if capped == payload:
+            rebuilt.append(block)
+            continue
+        data = as_block_dict(block)
+        if data is None:
+            rebuilt.append(block)
+            continue
+        data["content"] = capped
+        rebuilt.append(data)
+        changed = True
+
+    if not changed:
+        return message
+    return replace(
+        message,
+        extra={**message.extra, RAW_CONTENT_KEY: {**raw, "content": rebuilt}},
+    )
 
 
 def canonical_block(block: Any) -> str:

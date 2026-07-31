@@ -21,6 +21,29 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`cap_tool_results` now sees the shape Anthropic callers actually send
+  ([ADR-032](docs/design/adr/adr-032-cap-tool-results-is-blind-to-the-shape-anthropic-callers-send.md)).**
+  The stage saved **7,831 tokens on `mcp_agent`** in the live suite — the second-largest saving
+  there — and was a **complete no-op for every `wrap_anthropic_client` user**, the flagship
+  integration. Measured on an 8,001-token payload in both shapes:
+
+  ```
+  bench shape (role='tool')   content_tokens=8001   saved=5981
+  adapter shape               content_tokens=   0   saved=   0
+  ```
+
+  Zero for two independent reasons: the stage skipped any message whose `role != "tool"`, and the
+  adapter preserves the caller's role, so a tool result arrives as `"user"`. Even without the role
+  filter it would have found nothing — a `tool_result` is a non-text block, so `message.content` is
+  `""` and the payload sits in `extra[RAW_CONTENT_KEY]`, where the stage never looked. ADR-022
+  settled this principle for the cache key (two different images hashed identically); it was never
+  carried to the stage whose whole purpose is bounding the largest non-text payload there is.
+
+  Both shapes now cap identically. The wire shape is read through `wire` rather than parsed in the
+  stage, and capping rebuilds the raw content instead of editing the caller's dict.
+
 ### Added
 
 - **The full published Anthropic price list, both tables
