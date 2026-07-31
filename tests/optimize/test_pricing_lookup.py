@@ -61,10 +61,15 @@ class TestADatedIdResolvesThroughItsAlias:
 
 class TestAVersionBumpIsADifferentModel:
     @pytest.mark.parametrize(
-        "model", ["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-4-6"]
+        "model", ["claude-opus-4-9", "claude-opus-6", "claude-sonnet-4-7", "claude-haiku-4-6"]
     )
     def test_a_later_opus_does_not_inherit_an_earlier_rate(self, model: str) -> None:
-        """The same rule as core's, for the same reason (ADR-029)."""
+        """The same rule as core's, for the same reason (ADR-029).
+
+        These were four served-but-unpriced models when the test was written;
+        ADR-031 supplied the page and priced them. The rule is unchanged, so
+        the cases moved to generations that do not exist yet.
+        """
         assert pricing_for(model) is None
 
     def test_an_unknown_model_is_none_not_a_guess(self) -> None:
@@ -133,18 +138,14 @@ class TestNothingPointsAtAModelThatDoesNotExist:
 
 
 class TestCoverageOfWhatTheApiServes:
-    def test_the_priced_models_are_reachable_by_their_served_id(self) -> None:
-        """Not "everything is priced" -- seven are deliberately not (ADR-029).
+    def test_every_served_model_is_priced(self) -> None:
+        """Now genuinely everything, by the id the API reports back.
 
-        This pins the four that are, by the id the API reports rather than the
-        alias a caller writes, which is the half of the lookups exact matching
-        used to miss.
+        This asserted four of eleven when ADR-029 wrote it, because seven had
+        no sourced rate. ADR-031 closed that with the published page, so the
+        assertion is the strong one: a caller on any model Anthropic serves
+        gets dollar figures rather than ``None``.
         """
-        priced = [model for model in SERVED if pricing_for(model) is not None]
+        unpriced = [model for model in SERVED if pricing_for(model) is None]
 
-        assert priced == [
-            "claude-opus-4-5-20251101",
-            "claude-haiku-4-5-20251001",
-            "claude-sonnet-4-5-20250929",
-            "claude-opus-4-1-20250805",
-        ]
+        assert unpriced == []

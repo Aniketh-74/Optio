@@ -63,22 +63,24 @@ class TestAVersionBumpIsADifferentModel:
     @pytest.mark.parametrize(
         "model",
         [
-            "claude-opus-4-6",
-            "claude-opus-4-7",
-            "claude-opus-4-8",
-            "claude-sonnet-4-6",
-            "claude-opus-5",
-            "claude-sonnet-5",
-            "claude-fable-5",
+            "claude-opus-4-9",
+            "claude-opus-6",
+            "claude-sonnet-4-7",
+            "claude-sonnet-6",
+            "claude-haiku-5",
+            "claude-haiku-4-6",
         ],
     )
     def test_an_unpriced_generation_returns_none(
         self, provider: StaticPricingProvider, model: str
     ) -> None:
-        """Seven served models we have no published rate for.
+        """A generation the table does not carry gets ``None``, not a neighbour.
 
-        ``None`` is the correct output for a price nobody here has read off the
-        vendor's page. Before this, four of them inherited a predecessor's row.
+        When this test was written these were the seven models Anthropic served
+        and nobody here had a published rate for; ADR-031 supplied the page and
+        priced all seven. The *rule* is what mattered and it is unchanged, so
+        the cases moved to generations that do not exist yet -- which is where
+        the next instance of this bug would appear.
         """
         assert provider.price_for(model) is None
 
@@ -158,15 +160,15 @@ class TestAnUnpricedModelSaysSo:
     ) -> None:
         """Silence would read as a broken cost lane rather than a missing row."""
         with caplog.at_level(logging.WARNING):
-            provider.price_for("claude-sonnet-5")
+            provider.price_for("claude-vega-7")
 
-        assert "claude-sonnet-5" in caplog.text
+        assert "claude-vega-7" in caplog.text
 
     def test_the_message_points_at_the_way_out(
         self, provider: StaticPricingProvider, caplog: pytest.LogCaptureFixture
     ) -> None:
         with caplog.at_level(logging.WARNING):
-            provider.price_for("claude-sonnet-5")
+            provider.price_for("claude-vega-7")
 
         assert "PricingProvider" in caplog.text
 
@@ -176,19 +178,19 @@ class TestAnUnpricedModelSaysSo:
         """ADR-004: a pricing gap may never become a log flood."""
         with caplog.at_level(logging.WARNING):
             for _ in range(50):
-                provider.price_for("claude-sonnet-5")
+                provider.price_for("claude-vega-7")
 
-        assert caplog.text.count("claude-sonnet-5") == 1
+        assert caplog.text.count("claude-vega-7") == 1
 
     def test_each_unknown_model_gets_its_own_warning(
         self, provider: StaticPricingProvider, caplog: pytest.LogCaptureFixture
     ) -> None:
         with caplog.at_level(logging.WARNING):
-            provider.price_for("claude-sonnet-5")
-            provider.price_for("claude-opus-5")
+            provider.price_for("claude-vega-7")
+            provider.price_for("claude-vega-8")
 
-        assert "claude-sonnet-5" in caplog.text
-        assert "claude-opus-5" in caplog.text
+        assert "claude-vega-7" in caplog.text
+        assert "claude-vega-8" in caplog.text
 
     def test_a_known_model_logs_nothing(
         self, provider: StaticPricingProvider, caplog: pytest.LogCaptureFixture

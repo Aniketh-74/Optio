@@ -25,8 +25,10 @@ not added -- supply their own :class:`PricingProvider` instead of waiting on us.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final, Protocol, runtime_checkable
 
@@ -90,22 +92,35 @@ _PRICES: Final[dict[str, ModelPrice]] = {
     "o1": ModelPrice(15.00, 60.00),
     "o1-mini": ModelPrice(1.10, 4.40),
     "o3-mini": ModelPrice(1.10, 4.40),
-    # Anthropic
-    "claude-opus-4": ModelPrice(15.00, 75.00),
-    "claude-sonnet-4": ModelPrice(3.00, 15.00),
-    # Each of the four below used to be answered by one of the two rows above,
-    # via a match that could not tell a later generation from a dated snapshot
-    # of the same one. Anthropic cut Opus list pricing at 4.5, so
-    # `claude-opus-4-5` was reported at $15/$75 against a $10 bill on a
-    # million-token call -- 3x over, silently (ADR-029). The numbers here are
-    # asserted rather than inferred; the two that did not change value changed
-    # from a guess that happened to be right into a row.
+    # Anthropic. Transcribed from the published price list of 2026-07-31
+    # (ADR-031), which also confirmed the four rows ADR-029 had added and the
+    # 3x Opus overstatement it removed: Opus 4.5 really is $5/$25 and really was
+    # being answered by Opus 4's $15/$75 row.
+    "claude-fable-5": ModelPrice(10.00, 50.00),
+    # Limited availability, and absent from `models.list`. Carried anyway: a
+    # price for a model the caller cannot reach costs nothing, while a missing
+    # price for one they can costs the cost signal entirely.
+    "claude-mythos-5": ModelPrice(10.00, 50.00),
+    "claude-opus-5": ModelPrice(5.00, 25.00),
+    "claude-opus-4-8": ModelPrice(5.00, 25.00),
+    "claude-opus-4-7": ModelPrice(5.00, 25.00),
+    "claude-opus-4-6": ModelPrice(5.00, 25.00),
     "claude-opus-4-5": ModelPrice(5.00, 25.00),
     "claude-opus-4-1": ModelPrice(15.00, 75.00),
+    # Retired, and still reachable through Google Cloud, which is why it stays.
+    "claude-opus-4": ModelPrice(15.00, 75.00),
+    # The price in force *before* the first entry in `_SCHEDULED` below.
+    "claude-sonnet-5": ModelPrice(2.00, 10.00),
+    "claude-sonnet-4-6": ModelPrice(3.00, 15.00),
     "claude-sonnet-4-5": ModelPrice(3.00, 15.00),
+    "claude-sonnet-4": ModelPrice(3.00, 15.00),
     "claude-haiku-4-5": ModelPrice(1.00, 5.00),
-    "claude-3-5-sonnet": ModelPrice(3.00, 15.00),
+    # Both spellings of the 3.5 generation. The vendor's page writes
+    # `Claude Haiku 3.5` while the older ids read `claude-3-5-haiku`, and a
+    # table carrying one of them returns None for the other.
+    "claude-haiku-3-5": ModelPrice(0.80, 4.00),
     "claude-3-5-haiku": ModelPrice(0.80, 4.00),
+    "claude-3-5-sonnet": ModelPrice(3.00, 15.00),
     "claude-3-opus": ModelPrice(15.00, 75.00),
     "claude-3-sonnet": ModelPrice(3.00, 15.00),
     "claude-3-haiku": ModelPrice(0.25, 1.25),
@@ -113,6 +128,27 @@ _PRICES: Final[dict[str, ModelPrice]] = {
     "gemini-2.0-flash": ModelPrice(0.10, 0.40),
     "gemini-1.5-pro": ModelPrice(1.25, 5.00),
     "gemini-1.5-flash": ModelPrice(0.075, 0.30),
+}
+
+
+#: Published price changes with a known effective date, newest last.
+#:
+#: The vendor's page lists Sonnet 5 twice -- ``2 / 10`` "through Aug 31, 2026"
+#: and ``3 / 15`` "from Sep 1, 2026" -- and a ``dict[str, ModelPrice]`` cannot
+#: hold that. Whichever single number were written would be wrong on one side of
+#: the boundary and wrong by 50%, which is larger than most savings this project
+#: reports.
+#:
+#: Recording it is not the prediction this package has a standing rule against.
+#: A prediction is a guess about what a vendor will do; this is a published,
+#: dated commitment on the vendor's own page, exactly as auditable as the row
+#: above it. Declining to record it would mean knowingly shipping a number that
+#: becomes wrong on a date already known (ADR-031).
+#:
+#: :data:`_PRICES` holds the rate in force before the first date here; each
+#: entry replaces it from its date onward.
+_SCHEDULED: Final[dict[str, tuple[tuple[dt.date, ModelPrice], ...]]] = {
+    "claude-sonnet-5": ((dt.date(2026, 9, 1), ModelPrice(3.00, 15.00)),),
 }
 
 
@@ -178,12 +214,22 @@ class StaticPricingProvider:
         version: The table version this provider was built from.
     """
 
-    def __init__(self, prices: dict[str, ModelPrice] | None = None) -> None:
+    def __init__(
+        self,
+        prices: dict[str, ModelPrice] | None = None,
+        *,
+        today: Callable[[], dt.date] | None = None,
+    ) -> None:
         """Build a provider.
 
         Args:
             prices: Price table. Defaults to the built-in one.
+            today: Source of the current date, for resolving a scheduled price
+                change. Injectable because a table whose correctness depends on
+                the calendar needs tests that can stand on both sides of a
+                boundary without waiting five weeks for it.
         """
+        self._today = today if today is not None else dt.date.today
         source = _PRICES if prices is None else prices
         self._prices = {name.lower(): price for name, price in source.items()}
         # Longest first so `gpt-4o-mini` wins over `gpt-4o` for a prefix match.
@@ -204,12 +250,19 @@ class StaticPricingProvider:
             return None
 
         normalised = model.strip().lower()
-        price = self._lookup(normalised)
-        if price is None:
+        matched = self._lookup(normalised)
+        if matched is None:
             self._warn_unknown(normalised)
+            return None
+        name, price = matched
+        # Resolved here rather than at construction, so a process running across
+        # an effective date does not keep serving the stale rate (ADR-031).
+        for effective, scheduled in _SCHEDULED.get(name, ()):
+            if self._today() >= effective:
+                price = scheduled
         return price
 
-    def _lookup(self, normalised: str) -> ModelPrice | None:
+    def _lookup(self, normalised: str) -> tuple[str, ModelPrice] | None:
         """Resolve an id to a row, or ``None`` rather than to something close.
 
         Exact first, then the same id with a vendor prefix removed, then a
@@ -225,17 +278,17 @@ class StaticPricingProvider:
         """
         exact = self._prices.get(normalised)
         if exact is not None:
-            return exact
+            return normalised, exact
 
         bare = _without_vendor(normalised)
         if bare != normalised:
             exact = self._prices.get(bare)
             if exact is not None:
-                return exact
+                return bare, exact
 
         for name in self._by_length:
             if _is_same_model(bare, name):
-                return self._prices[name]
+                return name, self._prices[name]
 
         return None
 
