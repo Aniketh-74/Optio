@@ -176,6 +176,16 @@ class OptimizeConfig:
         semantic_threshold: Similarity required for a semantic cache hit.
         latency_budget_ms: Whole-pipeline ceiling.
         context_limit: Model context window, when the caller knows it.
+            **Accepted and validated, and read by no stage today.** Setting it
+            changes nothing. Recorded here rather than quietly left looking
+            functional, because a configuration field is a claim and this one
+            currently promises a behaviour the package does not have. The
+            natural consumer would be a window-pressure diagnostic in the shape
+            of ``detect_unstable_prefix`` -- observe and report, never enforce
+            (ADR-001) -- which would also give
+            :func:`~optio_optimize.tokens.fits_in_window` its first production
+            caller. That is a feature decision, not a defect fix, so it waits
+            for one rather than being invented here.
         cheap_model: Model the routing stage may downgrade to.
         disabled_stages: Stage names to skip regardless of other settings. The
             escape hatch for "this one misbehaves on my workload".

@@ -192,25 +192,60 @@ claim (it has, twice, over two workloads: multi_turn_chat was measured at +36.3%
 live in one round, and simulation vs. live cost direction flipped again for `trim_history` under
 OpenAI's automatic prefix caching in the next). Against `gpt-4o-mini`:
 
-| Workload | Cost reduction (live) |
-|---|---|
-| `retry_storm` | **93.5%** |
-| `tool_loop` | **80.8%** |
-| `fan_out` | **68.2%** |
-| `rag_queries` | **16.5%** |
-| `multi_turn_chat` | **8.4%** |
+| Workload | `gpt-4o-mini` | `claude-sonnet-4-5` |
+|---|---|---|
+| `retry_storm` | **93.5%** | **97.8%** |
+| `tool_loop` | **80.8%** | **93.7%** |
+| `multi_turn_chat_long` | — | **86.2%** |
+| `mcp_agent` | — | **84.0%** |
+| `fan_out` | **68.2%** | **83.7%** |
+| `multi_turn_chat` | **8.4%** | **82.2%** |
+| `tool_calling_chat` | — | **81.3%** |
+| `large_system_agent` | — | **81.0%** |
+| `rag_queries` | **16.5%** | **76.2%** |
 
-**One adapter today: the OpenAI Agents SDK**, via `optio_optimize.adapters.openai_agents.wrap_openai_client`.
-Requires `pip install openai` (and `openai-agents` for the SDK itself) — neither ships with
-`optio[optimize]`; this is the one place in the package that reads prompt content, so it stays
-opt-in down to its own dependency. The wrapper intercepts an `AsyncOpenAI` client's
-`chat.completions.create`, the SDK's own extension point for a Chat-Completions-backed model,
-rather than reimplementing its Responses-API `Model` protocol. Streaming calls pass through
-unmodified; a translation failure falls back to the unwrapped client rather than raising. Two real
-bugs were found and fixed building it — a cache hit that returned the *original* call's non-zero
-token usage, and the Agents SDK's `Omit` sentinel (not `None`) for unset fields being read as "the
-caller already set this" — both caught only by driving the real SDK, not by hand-written test
-input; see the adapter's module docstring and `tests/optimize/test_adapters_openai_agents.py`.
+**The two columns differ by an order of magnitude on `multi_turn_chat`, and the reason is the
+product's central fact.** OpenAI populates its prefix cache automatically, so the largest lever here
+— placing explicit cache breakpoints — has nothing to do on that vendor and the column shows only
+what the other stages manage. Anthropic caches *only* what you mark, which is where a library that
+marks correctly is worth 80%+ on ordinary conversation traffic.
+
+Three of the Anthropic figures — `multi_turn_chat`, `tool_calling_chat`, `mcp_agent` — come with
+**100% byte-identical output**, and two of them reduce *zero tokens*: prefix caching changes the rate
+those tokens are billed at, not the volume. A tool reporting only "tokens saved" scores them at 0.0%.
+
+Two workloads are excluded from the table because the suite reports them as *not attributable* — the
+optimizer provably did nothing, so the measured delta is the provider's own nondeterminism rather
+than a result. They exist to keep the suite honest about its limits.
+
+**Two adapters: Anthropic and the OpenAI Agents SDK.** Both are opt-in down to their own dependency
+— this is the one place in the package that reads prompt content, so neither SDK ships with
+`optio[optimize]`.
+
+`optio_optimize.adapters.anthropic.wrap_anthropic_client` wraps a real `Anthropic` client's
+`messages.create`, sync and streaming. It is the adapter the numbers above come from, because
+Anthropic is where explicit cache breakpoints matter. **Streaming is supported rather than bypassed**
+(ADR-019): each event is forwarded the instant it arrives and accounted for alongside, so the caller
+sees the first token exactly as soon as they would without this package — measured live at 6,317
+tokens written on one streamed call and all 6,317 read back on the next. Only the terminal event
+completes a request; a stream that dies mid-generation, or a caller who stops reading, caches
+nothing, because serving half an answer from cache would be permanent and confident.
+
+`optio_optimize.adapters.openai_agents.wrap_openai_client` intercepts an `AsyncOpenAI` client's
+`chat.completions.create`, the SDK's own extension point for a Chat-Completions-backed model, rather
+than reimplementing its Responses-API `Model` protocol. A translation failure falls back to the
+unwrapped client rather than raising. Two real bugs were found and fixed building it — a cache hit
+that returned the *original* call's non-zero token usage, and the Agents SDK's `Omit` sentinel (not
+`None`) for unset fields being read as "the caller already set this" — both caught only by driving
+the real SDK, not by hand-written test input; see the adapter's module docstring and
+`tests/optimize/test_adapters_openai_agents.py`.
+
+```python
+from anthropic import Anthropic
+from optio_optimize.adapters.anthropic import wrap_anthropic_client
+
+client = wrap_anthropic_client(Anthropic())  # every call now optimized, lossless by default
+```
 
 ```python
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
