@@ -21,7 +21,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from optio_optimize.config import PRICING
+from optio_optimize.config import pricing_for
 
 if TYPE_CHECKING:
     from optio_optimize.config import ModelPricing
@@ -130,7 +130,7 @@ class SavingsReport:
         the same absence-is-not-zero rule the cost lane follows, and for the
         same reason: a fabricated zero would be read as "this was free".
         """
-        pricing = PRICING.get(model)
+        pricing = pricing_for(model)
         if pricing is None:
             return None
         return _cost(
@@ -151,7 +151,7 @@ class SavingsReport:
         charges a premium. Pricing the baseline's writes too would cancel the
         premium out of both sides and hide it.
         """
-        pricing = PRICING.get(model)
+        pricing = pricing_for(model)
         if pricing is None:
             return None
         baseline = _cost(pricing, self.baseline_input_tokens, self.baseline_output_tokens, cached=0)

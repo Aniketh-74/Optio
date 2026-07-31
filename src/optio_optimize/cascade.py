@@ -260,12 +260,12 @@ class ModelJudge:
 
     def pop_cost(self) -> tuple[int, int, float]:
         """Return and reset (input_tokens, output_tokens, usd) of the last judgment."""
-        from optio_optimize.config import PRICING
+        from optio_optimize.config import pricing_for
         from optio_optimize.savings import _cost
 
         vin, vout = self._last
         self._last = (0, 0)
-        pricing = PRICING.get(self.model)
+        pricing = pricing_for(self.model)
         usd = _cost(pricing, vin, vout, cached=0) if pricing is not None else 0.0
         return vin, vout, usd
 
@@ -384,11 +384,11 @@ class CascadeStats:
         model (returns ``None`` rather than assuming one), and labels the single
         estimated figure as such -- see :class:`CascadeCost`.
         """
-        from optio_optimize.config import PRICING
+        from optio_optimize.config import pricing_for
         from optio_optimize.savings import _cost
 
-        exp = PRICING.get(expensive_model)
-        cheap = PRICING.get(cheap_model)
+        exp = pricing_for(expensive_model)
+        cheap = pricing_for(cheap_model)
         if exp is None or cheap is None:
             return None
 

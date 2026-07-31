@@ -252,10 +252,10 @@ class ABResult:
 
     def cost_usd(self, arm: ArmResult) -> float | None:
         """Cost of one arm, or ``None`` for an unpriced model."""
-        from optio_optimize.config import PRICING
+        from optio_optimize.config import pricing_for
         from optio_optimize.savings import _cost
 
-        pricing = PRICING.get(self.model)
+        pricing = pricing_for(self.model)
         if pricing is None:
             return None
         # Writes are passed through, not dropped. Until 2026-07-31 this

@@ -16,6 +16,7 @@ work" long after the typo.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, fields
 from typing import Any
 
@@ -429,16 +430,26 @@ PRICING: dict[str, ModelPricing] = {
     # OpenAI rows leave both None: OpenAI populates its cache for free and offers
     # no TTL control, and stating an explicit 1.0x multiple would imply someone
     # had checked a rate that does not exist.
-    "claude-opus-4": ModelPricing(15.00, 75.00, 1.50, 18.75, 30.00),
-    "claude-sonnet-4": ModelPricing(3.00, 15.00, 0.30, 3.75, 6.00),
-    "claude-haiku-4": ModelPricing(0.80, 4.00, 0.08, 1.00, 1.60),
+    # Anthropic rows are keyed by the alias a caller writes. The API reports a
+    # *dated* id back on every response, and `pricing_for` resolves one to the
+    # other -- a second row per model was the previous answer and it scaled
+    # badly, since every model needs one and a missing one is invisible.
+    #
+    # `claude-opus-4`, `claude-sonnet-4` and `claude-haiku-4` used to sit here.
+    # All three return `404 not_found_error`: they were family keys, not model
+    # ids, and one of them being the benchmark's default meant no live
+    # Anthropic run had ever completed a call (ADR-029).
+    #
+    # Rates are the published list price at time of writing and share this
+    # table's standing staleness caveat -- data, auditable against the vendor's
+    # page, overridable. Seven models Anthropic currently serves are
+    # deliberately absent, because nobody here has read their rates off that
+    # page: opus-5, sonnet-5, fable-5, opus-4-6/4-7/4-8, sonnet-4-6.
+    "claude-opus-4-5": ModelPricing(5.00, 25.00, 0.50, 6.25, 10.00),
+    "claude-opus-4-1": ModelPricing(15.00, 75.00, 1.50, 18.75, 30.00),
+    "claude-sonnet-4-5": ModelPricing(3.00, 15.00, 0.30, 3.75, 6.00),
     # Haiku 4.5, added 2026-07-30 for the Anthropic prefix-cache measurement.
-    # Both the alias and the dated id: callers write the alias, and the API
-    # reports the dated one back on every response, so a table with only one of
-    # them makes half the lookups return None. Rates are the published list
-    # price at time of writing and share this table's standing staleness
-    # caveat -- it is data, auditable against the vendor's page, and
-    # overridable. The measurement that motivated the entry is a *token* count
+    # The measurement that motivated the entry is a *token* count
     # (`cache_read_input_tokens`); the dollar figure derived from it is only as
     # current as this row.
     #
@@ -447,15 +458,56 @@ PRICING: dict[str, ModelPricing] = {
     # write tokens at 1.00 instead of 1.25 and reported a 53.7% saving where the
     # true figure is 50.1%. An error in the direction that flatters the library.
     "claude-haiku-4-5": ModelPricing(1.00, 5.00, 0.10, 1.25, 2.00),
-    "claude-haiku-4-5-20251001": ModelPricing(1.00, 5.00, 0.10, 1.25, 2.00),
     "gemini-2.0-flash": ModelPricing(0.10, 0.40, 0.025),
 }
+
+#: A suffix that names the same model rather than a newer one: a release date
+#: or a Bedrock revision tag. The rule, and the reasoning behind the four-digit
+#: discriminator, is ADR-029's -- `-20251101` is a snapshot of one model and
+#: `-5` is the next one. Duplicated from `optio.lanes.cost.pricing` rather than
+#: imported: `optio_optimize` has no dependency on `optio` and ADR-013 exists to
+#: keep it that way, so five lines of regex is the cheaper of the two prices.
+_SAME_MODEL_SUFFIX = re.compile(r"^-(?:\d{4,}|v\d+(?::\d+)?)(?:-|$)")
+
+
+def pricing_for(model: str) -> ModelPricing | None:
+    """Look up a model's rates, or ``None`` rather than something close.
+
+    Exact match first, then a prefix match restricted to suffixes that denote
+    the same model. Of the eleven ids ``models.list`` returned on 2026-07-31,
+    exact matching alone priced one.
+
+    Args:
+        model: Model id, as a caller wrote it or as the API reported it back.
+
+    Returns:
+        The rates, or ``None`` for a model this table does not carry. Never a
+        neighbouring generation's row: Anthropic cut Opus list pricing at 4.5,
+        so inferring across generations is how a $10 bill gets reported as $30
+        (ADR-029).
+    """
+    if not model:
+        return None
+    exact = PRICING.get(model)
+    if exact is not None:
+        return exact
+    for name in sorted(PRICING, key=len, reverse=True):
+        if model.startswith(name) and _SAME_MODEL_SUFFIX.match(model[len(name) :]):
+            return PRICING[name]
+    return None
+
 
 #: Cheap counterpart per model family, used when routing is on and no explicit
 #: ``cheap_model`` fits. Only same-vendor pairs: crossing vendors changes
 #: tokenizer, tool-call format and refusal behaviour all at once.
 CHEAP_COUNTERPART: dict[str, str] = {
     "gpt-4o": "gpt-4o-mini",
-    "claude-opus-4": "claude-haiku-4",
-    "claude-sonnet-4": "claude-haiku-4",
+    # Both sides used to name models that do not exist -- Opus and Sonnet
+    # mapped to `claude-haiku-4`, which 404s, so every Anthropic routing run
+    # this table configured would have failed on its first downgraded call
+    # (ADR-029). Benchmark-only: production routing reads `config.cheap_model`,
+    # which the caller sets.
+    "claude-opus-4-5": "claude-haiku-4-5",
+    "claude-opus-4-1": "claude-haiku-4-5",
+    "claude-sonnet-4-5": "claude-haiku-4-5",
 }

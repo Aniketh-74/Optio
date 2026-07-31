@@ -34,7 +34,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
-from optio_optimize.config import PRICING, OptimizeConfig
+from optio_optimize.config import OptimizeConfig, pricing_for
 from optio_optimize.optimizer import Optimizer
 from optio_optimize.stages.base import StageContext
 from optio_optimize.stages.routing import RouteModelsStage
@@ -270,8 +270,8 @@ class RoutingAuditReport:
     @property
     def cost_ratio(self) -> float | None:
         """How much cheaper the cheap model's input tokens are, if both priced."""
-        expensive = PRICING.get(self.expensive_model)
-        cheap = PRICING.get(self.cheap_model)
+        expensive = pricing_for(self.expensive_model)
+        cheap = pricing_for(self.cheap_model)
         if expensive is None or cheap is None or cheap.input_usd_per_m == 0:
             return None
         return expensive.input_usd_per_m / cheap.input_usd_per_m

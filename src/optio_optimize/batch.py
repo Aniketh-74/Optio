@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol
 
-from optio_optimize.config import PRICING
+from optio_optimize.config import pricing_for
 from optio_optimize.errors import OptimizeError
 from optio_optimize.optimizer import Optimizer
 
@@ -348,7 +348,7 @@ class BatchReport:
             do not know this model's price" -- the absence-is-not-zero rule the
             rest of the package follows.
         """
-        pricing = PRICING.get(model)
+        pricing = pricing_for(model)
         if pricing is None:
             return None
         full_rate = (
