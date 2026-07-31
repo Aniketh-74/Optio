@@ -38,6 +38,19 @@ be promoted to the top level deliberately.
   Two per-model tables, both populated from Anthropic's own 400s. They record only what the API
   stated: a model whose window is known merely to *exceed* the probe is absent rather than guessed.
 
+### Changed
+
+- **The real-framework matrix now runs locally, crewai included.** `crewai` declares
+  `requires_python = <3.14,>=3.10`, so it cannot be installed into a 3.14 environment: pip resolves
+  back to 0.11.2 (a 2024 release) and then fails building an old `numpy`. The compiler error that
+  produces is a red herring — the binding constraint is the interpreter, and no toolchain fixes it.
+  A Python 3.13 venv (`.venv-frameworks`, gitignored) runs all four adapters with
+  `OPTIO_REQUIRE_FRAMEWORKS=1`, so nothing passes by skipping. See the module docstring in
+  `tests/frameworks/test_real_frameworks.py` for the commands.
+
+  That venv is also the first check that `requires-python = ">=3.10"` is true below 3.14. The full
+  suite passes on 3.13.
+
 ### Fixed
 
 - **The first request through any optimizer lost most of the pipeline

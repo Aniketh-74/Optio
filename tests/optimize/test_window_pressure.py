@@ -191,6 +191,130 @@ class TestItChangesNothing:
         assert result.request.max_tokens == 60_000
 
 
+class TestTheCheapGuardCannotSkipARealFinding:
+    """The guard skips work; it must never skip a finding.
+
+    It exists because counting a 2.7 MB conversation costs 152 ms and this stage
+    saves nothing. Its correctness rests on characters being an upper bound on
+    tokens -- true for message text, and **false** for the two things
+    ``count_request`` also counts:
+
+    * **tool schemas**, which live in ``request.tools`` and contribute nothing to
+      any message's ``content``;
+    * **images**, which contribute ~1,600 tokens each while ``Message.content``
+      holds only extracted text (ADR-022).
+
+    Either one lets a request that will certainly be rejected slip past a guard
+    that was written as though messages were the whole prompt -- the same
+    flattering assumption that cost $7.60 in the probe that produced ADR-037.
+    """
+
+    def test_a_prompt_that_is_mostly_tool_schemas_is_still_measured(self) -> None:
+        stage = WindowPressureStage()
+        tools = tuple(
+            {
+                "type": "function",
+                "function": {
+                    "name": f"tool_{n}",
+                    "description": "reconcile " * 400,
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+            for n in range(200)
+        )
+        request = LLMRequest(
+            model="claude-haiku-4-5",
+            messages=(Message(role="user", content="go"),),
+            tools=tools,
+            temperature=0.0,
+        )
+
+        stage.before(request, _ctx(context_limit=1_000))
+
+        assert [f.kind for f in stage.findings] == ["prompt_exceeds_context_window"]
+
+    def test_many_small_messages_add_up(self) -> None:
+        """A long conversation is many small turns, not one big one.
+
+        The shape the bound is most likely to be written wrongly for, and the
+        shape real agent traffic actually has.
+        """
+        stage = WindowPressureStage()
+        request = LLMRequest(
+            model="claude-haiku-4-5",
+            messages=tuple(Message(role="user", content="reconcile " * 20) for _ in range(200)),
+            temperature=0.0,
+        )
+
+        stage.before(request, _ctx(context_limit=1_000))
+
+        assert stage.findings
+
+    def test_an_ordinary_request_never_reaches_the_tokenizer(self) -> None:
+        """The guard's whole purpose, pinned without a timing assertion.
+
+        Counting an 81-turn conversation costs 152 ms and this stage saves
+        nothing, so on ordinary traffic it must not count at all. Asserting on
+        elapsed time would be flaky; asserting the counter was never called is
+        exact.
+        """
+
+        class _RecordingCounter:
+            is_exact = False
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def count_text(self, text: str, model: str = "") -> int:
+                self.calls += 1
+                return len(text) // 4
+
+        counter = _RecordingCounter()
+        ctx = StageContext(config=OptimizeConfig(), counter=counter)  # type: ignore[arg-type]
+        stage = WindowPressureStage()
+
+        stage.before(_request("claude-haiku-4-5", words=50), ctx)
+
+        assert counter.calls == 0
+
+    def test_an_image_heavy_prompt_is_still_measured(self) -> None:
+        """``Message.content`` holds extracted text, so an image is ~0 characters.
+
+        A vision request used to count 8 tokens against a real ~1,535 for
+        exactly this reason (ADR-022).
+        """
+        stage = WindowPressureStage()
+        request = LLMRequest(
+            model="claude-haiku-4-5",
+            messages=tuple(
+                Message(
+                    role="user",
+                    content="see",
+                    extra={
+                        "_raw": {
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/png",
+                                        "data": "",
+                                    },
+                                }
+                            ]
+                        }
+                    },
+                )
+                for _ in range(30)
+            ),
+            temperature=0.0,
+        )
+
+        stage.before(request, _ctx(context_limit=1_000))
+
+        assert stage.findings
+
+
 class TestItRunsAfterTheStagesThatShrinkThePrompt:
     """Placement is load-bearing here, and the first draft had it wrong.
 

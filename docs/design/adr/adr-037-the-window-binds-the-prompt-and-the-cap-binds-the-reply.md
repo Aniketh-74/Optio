@@ -59,6 +59,18 @@ whose cap is 32,000, an observed p95 of 16,001 yields 32,002 — over the cap, r
 then re-sends the request unoptimized at full price. The stage that exists to lower cost would be
 raising it, which is precisely what ADR-013 rule 1 forbids.
 
+**How reachable that is, stated precisely.** The stage declines outright whenever the caller set
+`max_tokens`, and Anthropic's API *requires* the field — so `wrap_anthropic_client` always populates
+it and the guard never fires on the adapter path. The exposure is callers using `Optimizer` directly
+against a Claude model without a ceiling, which is a documented and supported way to use this package
+(the bench providers do exactly that) but is not the common one. Recording the narrow reach rather
+than implying a live incident: overstating how reachable a defect is is the same error as
+overstating a saving, and this project treats both as serious.
+
+No OpenAI model appears in the cap table, so the guard does nothing for `gpt-4o` and friends even
+though they have output caps of their own. Those have not been measured here, and an unmeasured
+limit is left absent rather than transcribed.
+
 **3. Seven windows are known only as a lower bound, and that cost $7.60 to learn.** The first version
 of the probe assumed a long-enough prompt guaranteed rejection, and sent `max_tokens=16` alongside
 it. For models whose window exceeds the probe the request is simply *accepted* — 217,554 input tokens
