@@ -17,6 +17,26 @@ that passes by skipping is not a matrix.
 come from OTel spans the framework emits during a real run. Recognition and
 attachment are what these tests cover, and they need no API key, no network,
 and no spend.
+
+**Running the full matrix locally.** ``crewai`` declares
+``requires_python = <3.14,>=3.10``, so it cannot be installed into the 3.14 dev
+environment at all -- pip resolves back to 0.11.2, a 2024 release, and then
+fails to build an old ``numpy``. The compiler error that produces is a red
+herring: the binding constraint is the interpreter version, and no toolchain
+fixes it.
+
+The matrix therefore needs an interpreter of its own::
+
+    py -3.13 -m venv .venv-frameworks
+    .venv-frameworks\\Scripts\\python -m pip install -e ".[optimize]" \\
+        crewai langgraph claude-agent-sdk openai-agents pytest pytest-timeout
+    $env:OPTIO_REQUIRE_FRAMEWORKS = "1"
+    .venv-frameworks\\Scripts\\python -m pytest tests/frameworks
+
+All four adapters pass there with the gate on, which is the first time
+``crewai`` has been verified anywhere but CI. The same venv is also the only
+check this repo has that ``requires-python = ">=3.10"`` is true below 3.14: the
+full suite passes on 3.13.
 """
 
 from __future__ import annotations

@@ -23,6 +23,14 @@ The guard is deliberately narrow. It clamps only a ceiling **this package
 chose**, only downward, and only to a hard provider limit -- so it is not the
 "substitute our guess for the caller's instruction" the stage rightly refuses
 when ``max_tokens`` was set by the caller.
+
+**How reachable this is, stated so nobody reads more into it.** The stage
+declines whenever the caller set ``max_tokens``, and Anthropic's API *requires*
+that field -- so ``wrap_anthropic_client`` always populates it and this guard
+never fires on the adapter path. The exposure is callers using ``Optimizer``
+directly against a Claude model with no ceiling, which is supported and is what
+the bench providers do, but is not the common path. Overstating how reachable a
+defect is would be the same error as overstating a saving.
 """
 
 from __future__ import annotations
@@ -181,6 +189,25 @@ class TestTheGuardDoesNotOverreach:
 
         assert result.request.max_tokens is None
         assert result.saved_output_tokens == 0
+
+    def test_the_anthropic_adapter_path_always_sets_max_tokens(self) -> None:
+        """Pins the reachability claim in this module's docstring.
+
+        If a future change let the adapter leave ``max_tokens`` unset, the guard
+        would silently become load-bearing on the common path and this test
+        would be the place that said so.
+        """
+        from optio_optimize.adapters.anthropic import _request_from_kwargs
+
+        request = _request_from_kwargs(
+            {
+                "model": "claude-opus-4-1",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "hi"}],
+            }
+        )
+
+        assert request.max_tokens == 1024
 
     def test_the_saving_is_never_negative_after_clamping(self) -> None:
         """``baseline = actual + saved`` breaks if a stage reports a negative here.

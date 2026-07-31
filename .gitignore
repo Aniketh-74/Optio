@@ -9,6 +9,10 @@ dist/
 # Environments
 .venv/
 venv/
+# Python 3.13 venv for the real-framework matrix. crewai declares
+# `requires_python = <3.14,>=3.10`, so it cannot be installed alongside the
+# 3.14 dev environment and needs an interpreter of its own.
+.venv-frameworks/
 .env
 
 # Tooling caches

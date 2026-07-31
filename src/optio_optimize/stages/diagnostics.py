@@ -241,6 +241,41 @@ class UnstablePrefixStage(Stage):
 PRESSURE_RATIO = 0.9
 
 
+#: Characters attributed to one image when deciding whether a real count is
+#: worth doing. Images cost roughly 1,600 tokens at Anthropic's cap (ADR-022)
+#: and carry almost no characters, so counting them as characters would let an
+#: image-heavy request slip past the guard. One token is at least one
+#: character, so charging an image *more* characters than it can cost tokens
+#: keeps the value an upper bound -- the direction that cannot hide a finding.
+IMAGE_CHARS = 2_000
+
+
+def _cheap_upper_bound(request: LLMRequest) -> int:
+    """An upper bound on the request's tokens, computed without a tokenizer.
+
+    Every token consumes at least one character, so a character count bounds a
+    token count from above -- but only if it covers everything the real counter
+    covers. This covers message text, tool schemas and images; ``count_request``
+    counts all three.
+    """
+    from optio_optimize.wire import RAW_CONTENT_KEY, is_text_block
+
+    total = sum(len(m.content) for m in request.messages)
+    total += sum(len(json.dumps(tool, separators=(",", ":"))) for tool in request.tools)
+    for message in request.messages:
+        # Read through the same key and the same text/non-text test that
+        # `message_image_tokens` uses. A second, private notion of "an image
+        # block" here would drift from the real counter's, which is the defect
+        # class this bound exists to avoid rather than to repeat.
+        raw = message.extra.get(RAW_CONTENT_KEY)
+        if not isinstance(raw, dict):
+            continue
+        blocks = raw.get("content")
+        if isinstance(blocks, list):
+            total += IMAGE_CHARS * sum(1 for block in blocks if not is_text_block(block))
+    return total
+
+
 class WindowPressureStage(Stage):
     """Report prompts approaching the limit that will reject them.
 
@@ -323,11 +358,21 @@ class WindowPressureStage(Stage):
         # tokenizer needs to run. Exact, not heuristic: this skips work, it
         # never skips a finding.
         #
-        # Worth the two lines because the alternative is not cheap. Counting an
+        # Worth the lines because the alternative is not cheap. Counting an
         # 81-turn, 2.7 MB conversation costs 152 ms, and this stage saves
         # nothing -- so on ordinary traffic it must cost nothing too. The
         # character sum is 0.01 ms on that same request.
-        if sum(len(m.content) for m in request.messages) < limit * PRESSURE_RATIO:
+        #
+        # The bound has to cover everything `count_request` counts, and the
+        # first version covered only messages. Tool schemas live in
+        # `request.tools` and contribute nothing to any message's content, and
+        # an image contributes ~1,600 tokens while `Message.content` holds only
+        # extracted text (ADR-022) -- so both could carry a request over the
+        # window while the guard, reading messages alone, waved it through.
+        # That is the same flattering assumption that made the ADR-037 probe
+        # bill $7.60, and it is a false negative in the one direction a
+        # diagnostic must not have.
+        if _cheap_upper_bound(request) < limit * PRESSURE_RATIO:
             return []
 
         tokens = count_request(request, ctx.counter)
