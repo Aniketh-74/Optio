@@ -1007,6 +1007,67 @@ direction cost 10.7 percentage points of overstatement — the third time this
 document has had to record that pattern, after the 53.7%→50.1% correction above
 and the ADR-021 write-rate omission.
 
+## Cascade, live for the first time — and it lost money (ADR-023, ADR-034)
+
+ADR-023's technique had never touched a real provider. Eight requests,
+`claude-haiku-4-5` → `claude-sonnet-4-5`, deliberately mixed so both branches run:
+
+```
+attempted 8   accepted cheap 4   escalated 4   skipped 0
+
+cheap spend        $0.002378
+escalation spend   $0.006483
+total spend        $0.008861
+all-expensive      $0.007074
+net saving        -$0.001787      -25.3%
+
+escalation by count   50.0%
+escalation by cost    91.6%
+break-even            66.7%
+verdict               COSTING MORE
+```
+
+**The escalation path works** — cheap attempt, verifier rejection, re-send to the expensive model,
+all observed against the real API. What does not work is reading `escalation_rate` as the number that
+says whether it paid. At 50% against a 66.7% break-even the run looked comfortably profitable and
+lost 25.3%, because the four requests that escalated were **92% of the baseline spend**.
+
+That correlation is structural, not a quirk of this mix: a request is likelier to fail a verifier
+when it is long, carries tools, or demands a schema, and each of those also makes it expensive. So
+the count-weighted rate flatters cascade on any realistic workload. Both figures are now reported,
+and `break_even_escalation_rate` computes `1 − C/E` from the rate card.
+
+Eight half-adversarial requests is not a verdict on cascade — it is a verdict on the instrument, and
+the instrument was wrong in the flattering direction. **What this does establish: cascade pays only
+when the cheap model handles the *expensive* requests well.** If the hard requests are also the big
+ones, which is the usual case, the margin is far thinner than the count suggests.
+
+The same run found ADR-033: its `max_tokens=16` request, present as the *guaranteed* escalation, was
+silently accepted because `default_verifier` compared `finish_reason` against OpenAI's `"length"`
+while Anthropic reports `"max_tokens"`. That check had never fired against Anthropic, and neither had
+the identical one guarding `ExactCacheStage` against serving a truncated entry.
+
+## Streaming reaches the cache — ADR-019's gate, passed at last
+
+The script written to prove it had **never once passed.** Its system prompt measured 3,614 tokens
+against Haiku 4.5's 4,096-token floor, so `prefix_cache` correctly declined to mark it, there was no
+breakpoint to measure, and every run reported `reads 0 writes 0`. The comment above the prompt
+asserted "above 4,096"; nobody had measured it — in the file whose own docstring warns this failure
+"has already been shipped once in this repo".
+
+With an eligible prompt:
+
+| call | input | cache reads | cache writes |
+|---|---|---|---|
+| 1 | 6,332 | 0 | **6,317** |
+| 2 | 6,330 | **6,317** | 0 |
+
+`what this package noticed through the stream: 6,317 cached, 6,317 written`
+
+All three halves of the claim: the breakpoint reaches the wire on a streamed call, Anthropic honours
+it, and `StreamProxy` threads the usage through so the report can see it. The script now refuses to
+run on an ineligible prefix rather than reporting an ambiguous zero.
+
 ## The suite after ADR-030 and ADR-031 (2026-07-31, second pass)
 
 Re-run because three changes invalidated the table below it: the unstable-prefix guard, tool tokens
