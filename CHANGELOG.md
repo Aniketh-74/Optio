@@ -23,6 +23,25 @@ be promoted to the top level deliberately.
 
 ### Changed
 
+- **The benchmark no longer reports a cost delta it did not cause
+  ([ADR-028](docs/design/adr/adr-028-a-cost-delta-is-only-a-measurement-when-the-arms-differ.md)).**
+  Five of the twelve live workloads send **byte-identical requests in both arms and make the same
+  number of provider calls** — verified by capturing every request each arm hands the provider —
+  and the report printed a cost percentage for each of them anyway.
+
+  Those percentages were the provider's own output nondeterminism, and they failed in both
+  directions at once. `timestamped_agent` (−1.6%) and `sampled_creative` (−4.7%) read as ADR-013
+  rule 1 violations — a cost increase caused by the optimizer, the one outcome this package treats
+  as unacceptable — and the previous measurement iteration opened by planning a live isolation run
+  to find the stage responsible. No stage was responsible. In the other direction, `unique_questions`
+  claimed a **2.8% saving** on the workload whose stated purpose is "Included so the suite reports
+  its own limits."
+
+  Each arm now folds a digest of everything it sent, and `cost_is_attributable` is False when the
+  digests and call counts both match. The report keeps both dollar figures — money really was spent
+  — and replaces the percentage with `NOT ATTRIBUTABLE`. `--control` already measured this
+  nondeterminism for the *quality* line; nothing had carried the reasoning across to cost.
+
 - **The cacheable prefix floor is per-model, and the benchmark now prices its own cache writes
   ([ADR-027](docs/design/adr/adr-027-the-cacheable-prefix-floor-is-per-model.md)).** Anthropic's
   minimum cacheable prefix spans a factor of eight — 512 on Opus 5 up to **4,096 on Haiku 4.5** —
