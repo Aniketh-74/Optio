@@ -23,6 +23,38 @@ be promoted to the top level deliberately.
 
 ### Fixed
 
+- **Truncation is detected on Anthropic
+  ([ADR-033](docs/design/adr/adr-033-truncation-is-a-question-not-a-string-comparison.md)).**
+  Anthropic reports `stop_reason: "max_tokens"`; OpenAI reports `finish_reason: "length"`. Every
+  truncation check in this package compared against `"length"` only, so **all of them were dead code
+  against Anthropic.** Found by the first live cascade run, whose deliberately-truncated request
+  (`max_tokens=16`) was supposed to be the guaranteed escalation and was instead accepted and
+  returned as final.
+
+  Two guards were affected and the second is the serious one. `default_verifier`'s first and most
+  basic check never fired, so a cheap model's cut-off answer was accepted. And **`ExactCacheStage`
+  would serve a truncated entry** — `request_key` deliberately omits `max_tokens` *because* that
+  guard compensates, so one `max_tokens=16` call could poison the cache entry for every later caller
+  who allowed more, in a stage that is `Fidelity.IDENTICAL` and on by default.
+
+  `LLMResponse.was_truncated` now asks the question instead of comparing a string, over a
+  `TRUNCATION_REASONS` set covering all three vendors' spellings. The raw `finish_reason` is
+  preserved rather than normalised away.
+
+### Added
+
+- **Cascade reports whether it is actually paying
+  ([ADR-034](docs/design/adr/adr-034-cascade-pays-by-cost-weighted-escalation-not-by-count.md)).**
+  The first live cascade run reported a **50% escalation rate against a 66.7% break-even** — and lost
+  **25.3%**. `escalation_rate` counts requests; the bill weights them, and the four requests that
+  escalated were 92% of the baseline spend.
+
+  That correlation is structural, not an artefact: a request is likelier to fail a verifier when it
+  is long, carries tools, or demands a schema, and each of those also makes it expensive — so a
+  count-weighted rate flatters cascade on any realistic workload. `CascadeCost` now reports
+  `cost_weighted_escalation_rate`, and `break_even_escalation_rate(expensive, cheap)` computes
+  `1 − C/E` from the rate card (66.7% for Haiku 4.5 → Sonnet 4.5, 80% for Haiku 4.5 → Opus 5).
+
 - **`cap_tool_results` now sees the shape Anthropic callers actually send
   ([ADR-032](docs/design/adr/adr-032-cap-tool-results-is-blind-to-the-shape-anthropic-callers-send.md)).**
   The stage saved **7,831 tokens on `mcp_agent`** in the live suite — the second-largest saving

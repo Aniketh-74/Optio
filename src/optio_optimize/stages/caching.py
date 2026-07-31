@@ -184,7 +184,11 @@ class ExactCacheStage(Stage):
         # who allowed more output would silently cap them at whatever ceiling
         # happened to apply the first time -- and max_tokens is excluded from
         # the key precisely so those calls share an entry.
-        if hit.finish_reason == "length":
+        # Asked as a question, not compared to a literal: Anthropic reports
+        # `max_tokens` where OpenAI reports `length`, so the string comparison
+        # this used to be never fired against Anthropic and a `max_tokens=16`
+        # call could poison the entry for every later caller (ADR-033).
+        if hit.was_truncated:
             return self.declines(request)
 
         # Prefer what the original call was actually billed over our own
