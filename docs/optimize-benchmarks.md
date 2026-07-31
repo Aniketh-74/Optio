@@ -1007,6 +1007,32 @@ direction cost 10.7 percentage points of overstatement — the third time this
 document has had to record that pattern, after the 53.7%→50.1% correction above
 and the ADR-021 write-rate omission.
 
+## `minify_tools` was under-claiming by 71%, and the check was free (ADR-036)
+
+`ANNOTATION_STRIP_CALIBRATION = 0.37` scales the raw JSON delta into a claimed saving. It was fitted
+against `gpt-4o-mini` and applied to every vendor. Anthropic's `messages.count_tokens` is exact and
+**free**, so the same question can be asked precisely:
+
+| tools | billed before | billed after | real | raw JSON | claimed | real / raw |
+|---|---|---|---|---|---|---|
+| 1 | 694 | 605 | 89 | 69 | 25 | **1.29** |
+| 5 | 1,430 | 985 | 445 | 345 | 127 | **1.29** |
+| 20 | 4,190 | 2,410 | 1,780 | 1,380 | 510 | **1.29** |
+
+1.29 to three decimals at every size, and identical on Haiku 4.5, Sonnet 4.5 and Opus 4.5 — a
+property of the API's tool rendering, not of a model. Against 0.37 the stage **understated its own
+saving by 71.4%**: 993 claimed against 3,471 the provider actually stopped billing.
+
+**The vendors differ in direction, not just magnitude.** OpenAI bills *less* than the raw JSON
+tokenizes to; Anthropic bills *more*, because it re-renders the schema into its own representation.
+No single constant can be right for both, and the one in place was one vendor's answer applied to
+all. After the fix: **claimed 3,471 against real 3,471 — 0.0% error.**
+
+Understating is the safe direction and breaks no guarantee, which is why this sat unnoticed. What it
+cost was the product's own claim, on exactly the traffic it targets.
+
+`scripts/measure_minify_tools.py` runs this check at zero cost against any vendor.
+
 ## Cascade, live for the first time — and it lost money (ADR-023, ADR-034)
 
 ADR-023's technique had never touched a real provider. Eight requests,

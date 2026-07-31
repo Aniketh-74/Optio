@@ -23,6 +23,21 @@ be promoted to the top level deliberately.
 
 ### Fixed
 
+- **`minify_tools` was under-claiming its saving by 71% on Anthropic
+  ([ADR-036](docs/design/adr/adr-036-tool-schema-calibration-is-per-vendor.md)).**
+  `ANNOTATION_STRIP_CALIBRATION = 0.37` was fitted against `gpt-4o-mini` and applied to every
+  vendor. Measured against Anthropic's exact, free `count_tokens` across five tool counts and three
+  models, the real ratio is **1.29 — to three decimal places, every time.** The stage claimed 993
+  tokens where the provider stopped billing 3,471.
+
+  The vendors differ in **direction**, not just magnitude: OpenAI bills *less* than the raw JSON
+  tokenizes to, Anthropic bills *more*, because it re-renders the schema. The calibration is now a
+  per-vendor lookup; an unrecognised vendor keeps the *lowest* measured ratio so it is under-claimed
+  rather than over-claimed. After the fix, claimed matches real to **0.0%**.
+
+  No cost changes — the same tokens were always being removed. What changes is what the report says
+  about it. `scripts/measure_minify_tools.py` re-runs the check against any vendor at zero cost.
+
 - **Benchmark providers serve the request they are given
   ([ADR-035](docs/design/adr/adr-035-a-provider-serves-the-request-it-is-given.md)).** Both providers
   sent `model=self.model` and never read `request.model`. Invisible on an ordinary run — every
