@@ -21,7 +21,29 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
-### Fixed
+### Added
+
+- **The full published Anthropic price list, both tables
+  ([ADR-031](docs/design/adr/adr-031-a-published-price-change-is-data-not-a-prediction.md)).**
+  ADR-029 left seven currently-served models deliberately unpriced because nobody here had read
+  their rates off the vendor's page. The page has now been supplied and all sixteen rows are
+  transcribed, so **every model Anthropic serves reports dollar figures instead of `None`** —
+  including Opus 5, Sonnet 5 and Fable 5.
+
+  Three things fell out of the source. The cache multipliers are **universal** — 5-minute write
+  1.25×, 1-hour write 2.00×, cache hit 0.10× — holding on all sixteen rows, which confirms a
+  derivation `optio_optimize` had been making as an assumption. The four rows ADR-029 added all
+  match exactly, so the 3× Opus overstatement it removed is confirmed as a real error rather than a
+  suspected one. And the rates are written out per row rather than computed: a multiplier that holds
+  across every model today is a fact about today's price list, not a law.
+
+- **Scheduled price changes.** The page lists Sonnet 5 twice — `2 / 10` "through Aug 31, 2026" and
+  `3 / 15` "from Sep 1, 2026" — which a `dict[str, ModelPrice]` cannot hold. Whichever single number
+  were written would be wrong on one side of the boundary **and wrong by 50%**, larger than most
+  savings this library reports. A dated map now resolves it against today's date at lookup time, so
+  a process running across the boundary does not keep serving the stale rate and nobody has to
+  remember to edit a file that morning. Recording a published, dated commitment is not the
+  prediction this project has a rule against.
 
 - **`prefix_cache` no longer pays for a breakpoint nobody reads
   ([ADR-030](docs/design/adr/adr-030-a-breakpoint-nobody-reads-is-pure-cost.md)).** The full live

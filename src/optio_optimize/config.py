@@ -17,7 +17,9 @@ work" long after the typo.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, fields
+from datetime import date
 from typing import Any
 
 from optio_optimize.errors import OptimizeConfigError
@@ -445,9 +447,24 @@ PRICING: dict[str, ModelPricing] = {
     # page, overridable. Seven models Anthropic currently serves are
     # deliberately absent, because nobody here has read their rates off that
     # page: opus-5, sonnet-5, fable-5, opus-4-6/4-7/4-8, sonnet-4-6.
+    # Every band written out rather than computed from the base rate, even
+    # though all sixteen published rows follow 1.25x / 2.00x / 0.10x exactly. A
+    # multiplier holding across every model today is a fact about today's price
+    # list, not a law: the first model to break the pattern would be silently
+    # mispriced by a formula and visibly wrong in a table (ADR-031).
+    "claude-fable-5": ModelPricing(10.00, 50.00, 1.00, 12.50, 20.00),
+    "claude-mythos-5": ModelPricing(10.00, 50.00, 1.00, 12.50, 20.00),
+    "claude-opus-5": ModelPricing(5.00, 25.00, 0.50, 6.25, 10.00),
+    "claude-opus-4-8": ModelPricing(5.00, 25.00, 0.50, 6.25, 10.00),
+    "claude-opus-4-7": ModelPricing(5.00, 25.00, 0.50, 6.25, 10.00),
+    "claude-opus-4-6": ModelPricing(5.00, 25.00, 0.50, 6.25, 10.00),
     "claude-opus-4-5": ModelPricing(5.00, 25.00, 0.50, 6.25, 10.00),
     "claude-opus-4-1": ModelPricing(15.00, 75.00, 1.50, 18.75, 30.00),
+    # The rate in force *before* the first entry in `_SCHEDULED_PRICING`.
+    "claude-sonnet-5": ModelPricing(2.00, 10.00, 0.20, 2.50, 4.00),
+    "claude-sonnet-4-6": ModelPricing(3.00, 15.00, 0.30, 3.75, 6.00),
     "claude-sonnet-4-5": ModelPricing(3.00, 15.00, 0.30, 3.75, 6.00),
+    "claude-haiku-3-5": ModelPricing(0.80, 4.00, 0.08, 1.00, 1.60),
     # Haiku 4.5, added 2026-07-30 for the Anthropic prefix-cache measurement.
     # The measurement that motivated the entry is a *token* count
     # (`cache_read_input_tokens`); the dollar figure derived from it is only as
@@ -469,8 +486,24 @@ PRICING: dict[str, ModelPricing] = {
 #: keep it that way, so five lines of regex is the cheaper of the two prices.
 _SAME_MODEL_SUFFIX = re.compile(r"^-(?:\d{4,}|v\d+(?::\d+)?)(?:-|$)")
 
+#: Published price changes with a known effective date, newest last.
+#:
+#: The vendor's page lists Sonnet 5 twice -- ``2 / 10`` "through Aug 31, 2026"
+#: and ``3 / 15`` "from Sep 1, 2026". Whichever single number were written here
+#: would be wrong on one side of the boundary and wrong by 50%, which is larger
+#: than most savings this package reports. Recording a dated commitment from the
+#: vendor's own page is not the prediction this project has a rule against; it is
+#: the same auditable data as the row above it (ADR-031).
+#:
+#: Duplicated from ``optio.lanes.cost.pricing`` rather than imported, for the
+#: same reason ``_SAME_MODEL_SUFFIX`` is: ADR-013 keeps this package free of any
+#: dependency on ``optio``.
+_SCHEDULED_PRICING: dict[str, tuple[tuple[date, ModelPricing], ...]] = {
+    "claude-sonnet-5": ((date(2026, 9, 1), ModelPricing(3.00, 15.00, 0.30, 3.75, 6.00)),),
+}
 
-def pricing_for(model: str) -> ModelPricing | None:
+
+def pricing_for(model: str, *, today: Callable[[], date] | None = None) -> ModelPricing | None:
     """Look up a model's rates, or ``None`` rather than something close.
 
     Exact match first, then a prefix match restricted to suffixes that denote
@@ -479,6 +512,9 @@ def pricing_for(model: str) -> ModelPricing | None:
 
     Args:
         model: Model id, as a caller wrote it or as the API reported it back.
+        today: Source of the current date, for resolving a scheduled price
+            change. Injectable so tests can stand on both sides of an effective
+            date without waiting for the calendar.
 
     Returns:
         The rates, or ``None`` for a model this table does not carry. Never a
@@ -488,12 +524,27 @@ def pricing_for(model: str) -> ModelPricing | None:
     """
     if not model:
         return None
+    matched = _row_for(model)
+    if matched is None:
+        return None
+    name, pricing = matched
+    # Resolved per call rather than at import, so a process running across an
+    # effective date does not keep serving the stale rate (ADR-031).
+    now = today() if today is not None else date.today()
+    for effective, scheduled in _SCHEDULED_PRICING.get(name, ()):
+        if now >= effective:
+            pricing = scheduled
+    return pricing
+
+
+def _row_for(model: str) -> tuple[str, ModelPricing] | None:
+    """The table row for ``model``, with the key that matched it."""
     exact = PRICING.get(model)
     if exact is not None:
-        return exact
+        return model, exact
     for name in sorted(PRICING, key=len, reverse=True):
         if model.startswith(name) and _SAME_MODEL_SUFFIX.match(model[len(name) :]):
-            return PRICING[name]
+            return name, PRICING[name]
     return None
 
 
@@ -507,6 +558,17 @@ CHEAP_COUNTERPART: dict[str, str] = {
     # this table configured would have failed on its first downgraded call
     # (ADR-029). Benchmark-only: production routing reads `config.cheap_model`,
     # which the caller sets.
+    #
+    # Every pair is now checkable against real rates rather than asserted: the
+    # target must be strictly cheaper on both input and output (ADR-031).
+    "claude-fable-5": "claude-haiku-4-5",
+    "claude-mythos-5": "claude-haiku-4-5",
+    "claude-opus-5": "claude-haiku-4-5",
+    "claude-opus-4-8": "claude-haiku-4-5",
+    "claude-opus-4-7": "claude-haiku-4-5",
+    "claude-opus-4-6": "claude-haiku-4-5",
+    "claude-sonnet-5": "claude-haiku-4-5",
+    "claude-sonnet-4-6": "claude-haiku-4-5",
     "claude-opus-4-5": "claude-haiku-4-5",
     "claude-opus-4-1": "claude-haiku-4-5",
     "claude-sonnet-4-5": "claude-haiku-4-5",
