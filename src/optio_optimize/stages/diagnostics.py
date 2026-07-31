@@ -234,10 +234,154 @@ class UnstablePrefixStage(Stage):
         return found
 
 
+#: Fraction of the context window at which a prompt is reported as under
+#: pressure. High on purpose: a warning that fires on ordinary traffic is one
+#: people filter out, and the failure it predicts is still several turns away
+#: at 90%.
+PRESSURE_RATIO = 0.9
+
+
+class WindowPressureStage(Stage):
+    """Report prompts approaching the limit that will reject them.
+
+    A model's context window binds the **prompt**, and exceeding it is a hard
+    400 before any generation::
+
+        prompt is too long: 217570 tokens > 200000 maximum
+
+    Two findings:
+
+    ``prompt_exceeds_context_window``
+        The prompt is already over. This request will be rejected and nothing in
+        this package can rescue it -- trimming enough history to fit would be an
+        ``ALTERED`` change to the caller's conversation that ADR-015 has no
+        evidence for. Reporting it is the honest action.
+
+    ``prompt_near_context_window``
+        Within :data:`PRESSURE_RATIO` of the limit. Predicts the failure above
+        while the caller can still act on it.
+
+    **Says nothing about ``max_tokens``, and that is a measured decision.** The
+    obvious design guards ``prompt + max_tokens`` against the window; the
+    provider accepts that request. 158,965 prompt tokens plus a 21,000 ceiling
+    against a 200,000 window generated normally, so a guard there would trade a
+    real truncation for an error that does not occur (ADR-037).
+
+    The limit comes from ``config.context_limit`` when the caller set it, then
+    from :data:`~optio_optimize.config.CONTEXT_WINDOW`. When neither answers the
+    stage is silent -- seven Anthropic models sit in exactly that position, with
+    a window known only to exceed 217,554, and a guessed window would make this
+    stage wrong on the largest models in the table.
+
+    **Runs last**, unlike :class:`UnstablePrefixStage`, because it reports on
+    the request that is actually about to be sent rather than on the one the
+    caller assembled. Placed first it also cost 152 ms on a 2.7 MB conversation
+    and starved the trim that would have fixed that request -- see
+    :func:`~optio_optimize.stages.build_stages` and ADR-037.
+
+    Like :class:`UnstablePrefixStage`, it changes nothing and claims nothing.
+    **No prompt content is retained or reported** (§10): the findings carry
+    token counts and a limit, never text.
+    """
+
+    fidelity = Fidelity.IDENTICAL
+
+    def __init__(self) -> None:
+        """Build the stage with nothing reported yet."""
+        self._reported: set[str] = set()
+        self.findings: list[PrefixFinding] = []
+
+    @property
+    def name(self) -> str:
+        """Stable identifier."""
+        return "window_pressure"
+
+    def before(self, request: LLMRequest, ctx: StageContext) -> StageResult:
+        """Measure the prompt against the window. Always returns it unchanged."""
+        for finding in self._diagnose(request, ctx):
+            if finding.kind in self._reported:
+                continue
+            self._reported.add(finding.kind)
+            self.findings.append(finding)
+            _log.warning("optio_optimize: %s", finding.detail)
+        # No note, for the reason UnstablePrefixStage gives: a note marks a
+        # stage as having done something, and this one never does.
+        return self.declines(request)
+
+    def _diagnose(self, request: LLMRequest, ctx: StageContext) -> list[PrefixFinding]:
+        """Findings this request supports, which is at most one."""
+        from optio_optimize.config import context_window_for
+        from optio_optimize.tokens import count_request, fits_in_window
+
+        limit = ctx.config.context_limit or context_window_for(request.model)
+        if limit is None:
+            return []
+
+        # A character count is a strict upper bound on a token count -- every
+        # token consumes at least one character -- so a prompt with fewer
+        # characters than the threshold cannot possibly reach it, and no
+        # tokenizer needs to run. Exact, not heuristic: this skips work, it
+        # never skips a finding.
+        #
+        # Worth the two lines because the alternative is not cheap. Counting an
+        # 81-turn, 2.7 MB conversation costs 152 ms, and this stage saves
+        # nothing -- so on ordinary traffic it must cost nothing too. The
+        # character sum is 0.01 ms on that same request.
+        if sum(len(m.content) for m in request.messages) < limit * PRESSURE_RATIO:
+            return []
+
+        tokens = count_request(request, ctx.counter)
+        if not fits_in_window(tokens, limit, ctx.counter):
+            # `fits_in_window` inflates an inexact count rather than trusting
+            # it, and this stage inherits that asymmetry rather than
+            # re-deciding it: warning once unnecessarily costs a log line,
+            # while missing a real overflow costs the caller a crash.
+            return [
+                PrefixFinding(
+                    kind="prompt_exceeds_context_window",
+                    detail=(
+                        f"the prompt measures {tokens:,} tokens against a context window of "
+                        f"{limit:,}, so the provider will reject this request outright. No "
+                        "stage here can shorten it without changing what you asked -- the fix "
+                        "is in how the conversation is assembled."
+                    ),
+                    observations=1,
+                )
+            ]
+
+        # Asked as "does it fit in 90% of the window?" rather than by comparing
+        # against `limit * PRESSURE_RATIO` directly, so the estimator margin is
+        # applied to both thresholds by the one function that owns it.
+        #
+        # Comparing raw tokens here made this finding **unreachable**: the
+        # margin is 1.15 and 1/1.15 = 0.87, which is below PRESSURE_RATIO, so
+        # every prompt large enough to be "near" had already been inflated past
+        # the hard limit and reported as exceeding. A test caught it, which is
+        # the second time in this module a threshold written one way could not
+        # detect the thing it was written for (see the tool-ordering comment
+        # above).
+        if not fits_in_window(tokens, int(limit * PRESSURE_RATIO), ctx.counter):
+            return [
+                PrefixFinding(
+                    kind="prompt_near_context_window",
+                    detail=(
+                        f"the prompt measures {tokens:,} tokens against a context window of "
+                        f"{limit:,} -- {tokens / limit:.0%} of it. A few more turns will be "
+                        "rejected outright rather than truncated."
+                    ),
+                    observations=1,
+                )
+            ]
+
+        return []
+
+
 __all__ = [
     "MIN_OBSERVATIONS",
+    "PRESSURE_RATIO",
     "UNSTABLE_PREFIX_RATIO",
     "WINDOW",
     "PrefixFinding",
     "UnstablePrefixStage",
+    "WindowPressureStage",
 ]

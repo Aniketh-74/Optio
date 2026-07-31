@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 
     from optio_optimize.config import OptimizeConfig
     from optio_optimize.stages.base import Stage
+    from optio_optimize.tokens import TokenCounter
     from optio_optimize.types import LLMRequest, LLMResponse
 
 _log = logging.getLogger("optio_optimize")
@@ -110,6 +111,7 @@ class Pipeline:
         stages: list[Stage],
         *,
         tracer_provider: TracerProvider | None = None,
+        counter: TokenCounter | None = None,
     ) -> None:
         """Build a pipeline.
 
@@ -119,12 +121,17 @@ class Pipeline:
             tracer_provider: Provider for `emit_spans`' tracer (ADR-014).
                 Defaults to OTel's global provider; overridable for tests and
                 multi-provider setups, matching ``optio.api.meter``.
+            counter: Token counter to use. Defaults to the best available one.
+                Injectable so the warm-up below can be tested against a counter
+                with a *known* startup cost rather than against whatever
+                ``tiktoken`` happens to do on the machine running the suite.
         """
         self.config = config
         self.stages = [s for s in stages if s.name not in config.disabled_stages]
-        self._counter = default_counter()
+        self._counter = counter if counter is not None else default_counter()
         self._tracer_provider = tracer_provider
         self.report = SavingsReport(exact=self._counter.is_exact)
+        self._warm_counter()
 
         lossy = [s.name for s in self.stages if s.lossy]
         if lossy:
@@ -266,6 +273,28 @@ class Pipeline:
             )
         self._run_after(prepared.request, response, prepared.ctx)
         return self._finish_and_emit(prepared, response, run_id, short_circuited=False)
+
+    def _warm_counter(self) -> None:
+        """Pay the token counter's one-time startup here, not on request one.
+
+        ``tiktoken`` loads its BPE vocabulary lazily, on first use: 395 ms
+        against a 100 ms ``latency_budget_ms``. Whichever stage counted first
+        paid it out of the deadline below, and everything after that stage was
+        skipped -- five of nine on a default config, including ``prefix_cache``,
+        the largest lossless saving here. The second request through the same
+        process ran all nine, which is why no benchmark ever caught it (ADR-038).
+
+        The cost is not avoided, only moved to where it is attributable: a
+        one-time cost of *having* an optimizer rather than of using one.
+
+        Failures are swallowed. This changes when a cost is paid and must never
+        become a new way to fail (ADR-013 rule 1).
+        """
+        try:
+            self._counter.count_text("warm", "")
+        except Exception as exc:  # noqa: BLE001 - never a new failure mode
+            # Type only, never the message (§10).
+            _log.debug("optio_optimize: counter warm-up failed (%s)", type(exc).__name__)
 
     def _run_stages(self, request: LLMRequest, run_id: str | None) -> PreparedRequest:
         """Run every stage's ``before`` hook, stopping at a short-circuit or the deadline.

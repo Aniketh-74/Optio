@@ -98,6 +98,12 @@ class OptimizeConfig:
         detect_unstable_prefix: Watch for prompts whose cacheable head changes
             between calls, and report why. Observes only -- it never modifies a
             request, and it is the one setting here that cannot cost anything.
+        detect_window_pressure: Watch for prompts approaching the model's
+            context window and report before the provider rejects them. Observes
+            only, like ``detect_unstable_prefix``. Silent on any model whose
+            window is neither in
+            :data:`~optio_optimize.config.CONTEXT_WINDOW` nor given as
+            ``context_limit`` (ADR-037).
         minify_tools: Strip annotation-only keys from tool schemas. Removes
             nothing the model reads.
         cap_tool_results: Bound how many tokens one tool result may add. An
@@ -175,17 +181,20 @@ class OptimizeConfig:
         max_tool_result_tokens: Ceiling applied by ``cap_tool_results``.
         semantic_threshold: Similarity required for a semantic cache hit.
         latency_budget_ms: Whole-pipeline ceiling.
-        context_limit: Model context window, when the caller knows it.
-            **Accepted and validated, and read by no stage today.** Setting it
-            changes nothing. Recorded here rather than quietly left looking
-            functional, because a configuration field is a claim and this one
-            currently promises a behaviour the package does not have. The
-            natural consumer would be a window-pressure diagnostic in the shape
-            of ``detect_unstable_prefix`` -- observe and report, never enforce
-            (ADR-001) -- which would also give
-            :func:`~optio_optimize.tokens.fits_in_window` its first production
-            caller. That is a feature decision, not a defect fix, so it waits
-            for one rather than being invented here.
+        context_limit: Model context window, when the caller knows it. Read by
+            ``detect_window_pressure``, which reports a prompt approaching the
+            limit that will reject it, and overrides
+            :data:`~optio_optimize.config.CONTEXT_WINDOW` for the model in the
+            request. Worth setting for any model this package has not measured
+            -- without it the diagnostic stays silent rather than guessing.
+
+            It binds the **prompt only**. ``prompt + max_tokens`` over the
+            window is not an error: 158,965 prompt tokens plus a 21,000 ceiling
+            against a 200,000 window generated normally, so nothing here lowers
+            a reply ceiling on account of window pressure (ADR-037). The limit
+            that binds the reply is a different one, and it is not configurable
+            because the provider states it exactly -- see
+            :data:`~optio_optimize.config.MAX_OUTPUT_TOKENS`.
         cheap_model: Model the routing stage may downgrade to.
         disabled_stages: Stage names to skip regardless of other settings. The
             escape hatch for "this one misbehaves on my workload".
@@ -219,6 +228,11 @@ class OptimizeConfig:
 
     # Diagnostic -- transforms nothing, so there is no risk tier to place it in.
     detect_unstable_prefix: bool = True
+    # On by default for the same reason as the line above: it observes, changes
+    # nothing, and cannot cost anything. Unlike that one it is also silent
+    # unless it has a measured window to compare against, so on an unmeasured
+    # model it is not merely harmless but inert (ADR-037).
+    detect_window_pressure: bool = True
 
     # Bounded-risk -- on by default, they drop context rather than invent it.
     trim_history: bool = True
@@ -556,6 +570,101 @@ def _row_for(model: str) -> tuple[str, ModelPricing] | None:
         if model.startswith(name) and _SAME_MODEL_SUFFIX.match(model[len(name) :]):
             return name, PRICING[name]
     return None
+
+
+#: Context window per model, in tokens: the limit that binds the **prompt**.
+#:
+#: Exceeding it is a hard 400 before any generation --
+#: ``prompt is too long: 217570 tokens > 200000 maximum`` -- and no stage in
+#: this package can rescue such a request.
+#:
+#: Every value here was read out of that error message rather than off a
+#: documentation page, which is what makes it the provider's own arithmetic
+#: (the reasoning ADR-036 used for ``count_tokens``).
+#:
+#: **Seven models this package prices are deliberately absent.** Opus 5, Fable 5,
+#: Opus 4-6/4-7/4-8, Sonnet 5 and Sonnet 4-6 *accepted* a 217,554-token probe
+#: instead of rejecting it, which establishes ``window > 217,554`` and nothing
+#: further. Recording 1,000,000 for them would be an inference across a
+#: generation boundary -- the error ADR-029 exists because of -- and a
+#: diagnostic that guesses a window is worse than one that stays quiet.
+CONTEXT_WINDOW: dict[str, int] = {
+    "claude-opus-4-5": 200_000,
+    "claude-opus-4-1": 200_000,
+    "claude-sonnet-4-5": 200_000,
+    "claude-haiku-4-5": 200_000,
+}
+
+#: Maximum completion tokens per model: the limit that binds the **reply**.
+#:
+#: A different limit from :data:`CONTEXT_WINDOW`, not derivable from it, and one
+#: this package had no concept of before ADR-037. Three models share a 200,000
+#: window with caps of 32,000 and 64,000, and the 128,000-cap models have a
+#: window larger than either and still unmeasured.
+#:
+#: Exceeding it is a hard 400 naming the cap: ``max_tokens: 1000000 > 64000,
+#: which is the maximum allowed number of output tokens``. That matters here
+#: because ``AdaptiveMaxTokensStage`` *sets* ``max_tokens`` on requests that
+#: carried none, and its ceiling can land above a cap this low.
+MAX_OUTPUT_TOKENS: dict[str, int] = {
+    "claude-fable-5": 128_000,
+    "claude-opus-5": 128_000,
+    "claude-opus-4-8": 128_000,
+    "claude-opus-4-7": 128_000,
+    "claude-opus-4-6": 128_000,
+    "claude-opus-4-5": 64_000,
+    "claude-opus-4-1": 32_000,
+    "claude-sonnet-5": 128_000,
+    "claude-sonnet-4-6": 128_000,
+    "claude-sonnet-4-5": 64_000,
+    "claude-haiku-4-5": 64_000,
+}
+
+
+def _limit_for(table: dict[str, int], model: str) -> int | None:
+    """Look up a per-model limit, resolving a dated id to its alias.
+
+    Returns ``None`` for a model the table does not carry -- never a
+    neighbouring generation's figure. ``claude-opus-4-1`` caps output at 32,000
+    and ``claude-opus-4-5`` at 64,000, so inheriting across that boundary would
+    hand back double the real limit and produce the 400 the lookup exists to
+    avoid.
+    """
+    if not model:
+        return None
+    exact = table.get(model)
+    if exact is not None:
+        return exact
+    for name in sorted(table, key=len, reverse=True):
+        if model.startswith(name) and _SAME_MODEL_SUFFIX.match(model[len(name) :]):
+            return table[name]
+    return None
+
+
+def context_window_for(model: str) -> int | None:
+    """The model's prompt limit in tokens, or ``None`` if unmeasured.
+
+    Args:
+        model: Model id, as a caller wrote it or as the API reported it back.
+
+    Returns:
+        The window, or ``None``. Absence means "not measured", never
+        "unlimited" and never a guess -- see :data:`CONTEXT_WINDOW` for the
+        seven models that sit in exactly that position.
+    """
+    return _limit_for(CONTEXT_WINDOW, model)
+
+
+def max_output_tokens_for(model: str) -> int | None:
+    """The model's reply limit in tokens, or ``None`` if unmeasured.
+
+    Args:
+        model: Model id, as a caller wrote it or as the API reported it back.
+
+    Returns:
+        The cap, or ``None`` for a model this table does not carry.
+    """
+    return _limit_for(MAX_OUTPUT_TOKENS, model)
 
 
 #: Cheap counterpart per model family, used when routing is on and no explicit

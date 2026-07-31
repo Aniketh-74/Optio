@@ -24,6 +24,27 @@ Summaries live in [IMPLEMENTATION.md §15](../../../IMPLEMENTATION.md); full rec
 | [015](adr-015-evidence-bar-for-promoting-an-altered-tier-stage.md) | Evidence bar for promoting an `ALTERED`-tier stage out of "experimental" | Accepted — evidence gathering in progress |
 | [016](adr-016-the-in-scope-test-for-a-cost-technique.md) | The in-scope test for a cost technique | Accepted |
 | [017](adr-017-batch-dispatch-is-a-second-surface.md) | Batch dispatch is a second surface, not a stage | Accepted — implemented |
+| [018](adr-018-reasoning-budget-is-a-cost-lever-and-an-altered-one.md) | Reasoning budget is a cost lever, and an `ALTERED` one | Accepted — amended after the live run |
+| [019](adr-019-a-streamed-call-gets-the-request-side-pipeline.md) | A streamed call gets the request-side pipeline, and a replayed cache hit | Accepted — gate passed live |
+| [020](adr-020-fan-out-warm-up-is-an-async-dispatch-order.md) | Fan-out warm-up is an async dispatch order, not a stage | Accepted |
+| [021](adr-021-cache-ttl-selection-needs-its-accounting-first.md) | Cache TTL selection, and why its accounting has to land first | Accepted — accounting shipped, lever not |
+| [022](adr-022-an-image-is-content-and-the-cache-key-was-the-urgent-half.md) | An image is content, and the cache key was the urgent half | Accepted — downscaling lever deferred |
+| [023](adr-023-cascade-routing-calls-cheap-verifies-and-escalates.md) | Cascade routing calls cheap, verifies, and escalates | Accepted — off by default |
+| [024](adr-024-a-stage-may-not-book-a-saving-it-cannot-attribute.md) | A stage may not book a saving it cannot attribute | Accepted |
+| [025](adr-025-the-neutral-tool-shape-needs-an-anthropic-translation.md) | The neutral tool shape needs an Anthropic translation | Accepted |
+| [026](adr-026-trimming-must-price-the-output-it-buys.md) | Trimming must price the output it buys | Accepted |
+| [027](adr-027-the-cacheable-prefix-floor-is-per-model.md) | The cacheable prefix floor is per-model | Accepted |
+| [028](adr-028-a-cost-delta-is-only-a-measurement-when-the-arms-differ.md) | A cost delta is only a measurement when the arms differ | Accepted |
+| [029](adr-029-a-price-may-not-be-inferred-across-model-generations.md) | A price may not be inferred across model generations | Accepted |
+| [030](adr-030-a-breakpoint-nobody-reads-is-pure-cost.md) | A breakpoint nobody reads is pure cost | Accepted — amended |
+| [031](adr-031-a-published-price-change-is-data-not-a-prediction.md) | A published price change is data, not a prediction | Accepted |
+| [032](adr-032-cap-tool-results-is-blind-to-the-shape-anthropic-callers-send.md) | `cap_tool_results` is blind to the shape Anthropic callers send | Accepted |
+| [033](adr-033-truncation-is-a-question-not-a-string-comparison.md) | Truncation is a question, not a string comparison | Accepted |
+| [034](adr-034-cascade-pays-by-cost-weighted-escalation-not-by-count.md) | Cascade pays by cost-weighted escalation, not by count | Accepted |
+| [035](adr-035-a-provider-serves-the-request-it-is-given.md) | A provider serves the request it is given | Accepted |
+| [036](adr-036-tool-schema-calibration-is-per-vendor.md) | Tool-schema calibration is per-vendor, and ours was OpenAI's | Accepted |
+| [037](adr-037-the-window-binds-the-prompt-and-the-cap-binds-the-reply.md) | The window binds the prompt, and a separate cap binds the reply | Accepted |
+| [038](adr-038-the-first-request-paid-the-tokenizers-startup-out-of-its-latency-budget.md) | The first request paid the tokenizer's startup out of its latency budget | Accepted |
 
 ADRs 000, 001, and 004 were expanded first because M0 code already depended on them: they
 determine what the library is allowed to do, and what it must never do.

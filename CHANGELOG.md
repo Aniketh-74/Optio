@@ -21,7 +21,53 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Added
+
+- **`detect_window_pressure`, and `context_limit` finally does something
+  ([ADR-037](docs/design/adr/adr-037-the-window-binds-the-prompt-and-the-cap-binds-the-reply.md)).**
+  `OptimizeConfig.context_limit` had been accepted, validated and read by nothing since the first
+  release; so had `tokens.fits_in_window`. A new diagnostic stage reports a prompt approaching the
+  limit that will reject it — `prompt_near_context_window` before the failure, and
+  `prompt_exceeds_context_window` once it is certain — and is the first production caller of both.
+  It observes only: it never modifies a request and reports no saving, like `detect_unstable_prefix`.
+
+  It is **silent on any model whose window this package has not measured**, which today means seven
+  Anthropic models. That is deliberate — see below.
+
+- **`CONTEXT_WINDOW` and `MAX_OUTPUT_TOKENS`, read from the provider rather than a doc page.**
+  Two per-model tables, both populated from Anthropic's own 400s. They record only what the API
+  stated: a model whose window is known merely to *exceed* the probe is absent rather than guessed.
+
 ### Fixed
+
+- **The first request through any optimizer lost most of the pipeline
+  ([ADR-038](docs/design/adr/adr-038-the-first-request-paid-the-tokenizers-startup-out-of-its-latency-budget.md)).**
+  `tiktoken` loads its BPE vocabulary lazily, on first use — **395 ms** against a 100 ms
+  `latency_budget_ms`. Whichever stage counted first paid that out of the per-request deadline, and
+  every stage after it was skipped: measured on a default config, **five of nine never ran**,
+  including `prefix_cache`, the largest lossless saving here and Anthropic's only cache mechanism.
+
+  Invisible to every benchmark, because the second request through the same process runs all nine
+  and the aggregate looks healthy. Worst in exactly the deployments that make one call per process —
+  a serverless handler, a CLI invocation, a scheduled job.
+
+  The counter is now warmed when the pipeline is built. The cost is not avoided, only moved to where
+  it is attributable: a one-time cost of *having* an optimizer rather than of using one.
+  **`Optimizer()` construction now takes roughly 400 ms the first time in a process** — hoist it out
+  of a request handler. Warm-up failures are swallowed; this changes when a cost is paid and must
+  never become a new way to fail.
+
+- **`adaptive_max_tokens` could set a ceiling the provider rejects
+  ([ADR-037](docs/design/adr/adr-037-the-window-binds-the-prompt-and-the-cap-binds-the-reply.md)).**
+  Every model caps completion tokens — a limit distinct from the context window, ranging **32,000 to
+  128,000** across the models this package prices — and exceeding it is a hard 400 before any
+  generation. The stage sets `max_tokens` on requests that carried none, and its ceiling is
+  `max(FLOOR_TOKENS, p95 × 2)`, raised further by a reasoning budget. On `claude-opus-4-1` an
+  observed p95 of 16,001 yields 32,002 against a 32,000 cap: rejected, and fail-open then re-sends
+  the request unoptimized at full price. The ceiling is now clamped to the model's cap.
+
+  It still never touches a `max_tokens` the caller set, and it declines outright when a reasoning
+  budget leaves no legal ceiling at all.
 
 - **`minify_tools` was under-claiming its saving by 71% on Anthropic
   ([ADR-036](docs/design/adr/adr-036-tool-schema-calibration-is-per-vendor.md)).**
