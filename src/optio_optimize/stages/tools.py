@@ -106,7 +106,55 @@ MIN_KEPT_TOOLS = 3
 #: ``mcp_agent`` result to within 1%: 3,240 raw x 0.37 = 1,199 against 1,210
 #: the provider actually stopped billing. Before this existed the stage claimed
 #: the raw 3,240 -- a 2.7x overstatement of its own value.
+#: **Now the unknown-vendor fallback only** (ADR-036). It is the *lowest*
+#: measured ratio, deliberately: an unrecognized vendor is under-claimed rather
+#: than over-claimed, the same call ADR-027 makes about prefix floors.
 ANNOTATION_STRIP_CALIBRATION = 0.37
+
+#: The same ratio per vendor, because it is not the same per vendor.
+#:
+#: The constant above was fitted against ``gpt-4o-mini`` and applied to
+#: everyone. Anthropic's ``messages.count_tokens`` is exact and free, so the
+#: question could be asked precisely -- five tool counts, three models:
+#:
+#: ======  ======  ==========  =========  ==========
+#: tools   real    raw JSON    claimed    real/raw
+#: ======  ======  ==========  =========  ==========
+#: 1       89      69          25         **1.290**
+#: 5       445     345         127        **1.290**
+#: 20      1,780   1,380       510        **1.290**
+#: ======  ======  ==========  =========  ==========
+#:
+#: Identical on Haiku 4.5, Sonnet 4.5 and Opus 4.5, so it is a property of the
+#: API's tool rendering rather than of a model -- which is why this is keyed on
+#: the vendor family and not per-model.
+#:
+#: The two vendors differ in **direction**, not only magnitude: OpenAI bills
+#: *less* than the raw JSON tokenizes to, Anthropic bills *more*, because it
+#: re-renders the schema into its own representation. Against 0.37,
+#: ``minify_tools`` understated its own saving by 71.4% on Anthropic -- 993
+#: claimed against 3,471 the provider actually stopped billing.
+#:
+#: Re-checkable at any time and at no cost: ``scripts/measure_minify_tools.py``.
+ANNOTATION_STRIP_CALIBRATION_BY_MODEL: dict[str, float] = {
+    "gpt-": 0.37,
+    "claude": 1.29,
+}
+
+
+def annotation_strip_calibration_for(model: str) -> float:
+    """Fraction of the raw JSON delta a vendor really stops billing.
+
+    Longest-prefix match against
+    :data:`ANNOTATION_STRIP_CALIBRATION_BY_MODEL`, falling back to
+    :data:`ANNOTATION_STRIP_CALIBRATION` -- the lowest measured ratio -- so an
+    unrecognized vendor is under-claimed rather than over-claimed (ADR-036).
+    """
+    best = ""
+    for name in ANNOTATION_STRIP_CALIBRATION_BY_MODEL:
+        if model.startswith(name) and len(name) > len(best):
+            best = name
+    return ANNOTATION_STRIP_CALIBRATION_BY_MODEL[best] if best else ANNOTATION_STRIP_CALIBRATION
 
 
 def _tool_tokens(tools: tuple[dict[str, Any], ...], ctx: StageContext, model: str) -> int:
@@ -186,10 +234,17 @@ class MinifyToolsStage(Stage):
         # Scored on the *raw* JSON difference and then calibrated, rather than
         # differencing two already-calibrated totals: the keys this stage
         # removes shrink the provider's bill by a different fraction than the
-        # schema as a whole does. See ANNOTATION_STRIP_CALIBRATION.
+        # schema as a whole does. See ANNOTATION_STRIP_CALIBRATION_BY_MODEL.
+        #
+        # Calibrated per vendor, because the fraction is not the same per
+        # vendor -- and not even in the same direction. OpenAI bills less than
+        # the raw JSON tokenizes to, Anthropic bills more. One constant, fitted
+        # against gpt-4o-mini, had this understating its own saving by 71.4% on
+        # Anthropic (ADR-036).
         raw_before = _raw_tool_tokens(request.tools, ctx, request.model)
         raw_after = _raw_tool_tokens(stripped, ctx, request.model)
-        saved = int(max(0, raw_before - raw_after) * ANNOTATION_STRIP_CALIBRATION)
+        calibration = annotation_strip_calibration_for(request.model)
+        saved = int(max(0, raw_before - raw_after) * calibration)
         if saved == 0:
             # The keys were present but cost nothing measurable. Rewriting the
             # caller's schemas for no gain is pure risk.
