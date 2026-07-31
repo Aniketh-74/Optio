@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, cast
 
+from optio_optimize import wire
 from optio_optimize.similarity import overlap_ratio, words
 from optio_optimize.stages.base import Fidelity, Stage, StageResult
 from optio_optimize.tokens import count_tools
@@ -254,20 +255,45 @@ class CapToolResultsStage(Stage):
         return "cap_tool_results"
 
     def before(self, request: LLMRequest, ctx: StageContext) -> StageResult:
-        """Truncate any tool result exceeding the ceiling."""
+        """Truncate any tool result exceeding the ceiling, in either shape.
+
+        Two shapes carry a tool result and both have to be handled. A neutral
+        ``role="tool"`` message keeps its payload in ``content``. A request
+        arriving through ``wrap_anthropic_client`` keeps it in a ``tool_result``
+        block inside a ``role="user"`` turn, where this stage used to find
+        nothing at all -- an 8,001-token payload measured as 0 tokens and
+        reached the wire uncapped, on the integration this package leads with
+        (ADR-032).
+        """
         capped: list[Message] = []
         saved = 0
         for message in request.messages:
-            if message.role != "tool":
+            if message.role == "tool":
+                tokens = ctx.counter.count_text(message.content, request.model)
+                if tokens <= self.max_tokens:
+                    capped.append(message)
+                    continue
+                trimmed = self._truncate(message.content, tokens)
+                saved += tokens - ctx.counter.count_text(trimmed, request.model)
+                capped.append(message.with_content(trimmed))
+                continue
+
+            payloads = wire.tool_result_payloads(message)
+            if not payloads:
                 capped.append(message)
                 continue
-            tokens = ctx.counter.count_text(message.content, request.model)
-            if tokens <= self.max_tokens:
+            before_tokens = sum(ctx.counter.count_text(p, request.model) for p in payloads)
+            rebuilt = wire.with_capped_tool_results(
+                message, lambda text: self._cap(text, ctx, request.model)
+            )
+            if rebuilt is message:
                 capped.append(message)
                 continue
-            trimmed = self._truncate(message.content, tokens)
-            saved += tokens - ctx.counter.count_text(trimmed, request.model)
-            capped.append(message.with_content(trimmed))
+            after_tokens = sum(
+                ctx.counter.count_text(p, request.model) for p in wire.tool_result_payloads(rebuilt)
+            )
+            saved += before_tokens - after_tokens
+            capped.append(rebuilt)
 
         if saved <= 0:
             return self.declines(request)
@@ -276,6 +302,16 @@ class CapToolResultsStage(Stage):
             saved_input_tokens=saved,
             note=f"capped oversized tool result(s), {saved} tokens",
         )
+
+    def _cap(self, text: str, ctx: StageContext, model: str) -> str:
+        """Truncate one payload to the ceiling, or return it unchanged.
+
+        The policy half of the split with :func:`wire.with_capped_tool_results`:
+        the ceiling and the notice belong to this stage, the shape of the thing
+        being truncated belongs to ``wire``.
+        """
+        tokens = ctx.counter.count_text(text, model)
+        return text if tokens <= self.max_tokens else self._truncate(text, tokens)
 
     def _truncate(self, content: str, tokens: int) -> str:
         """Cut ``content`` to roughly the ceiling and append the notice.

@@ -1007,6 +1007,42 @@ direction cost 10.7 percentage points of overstatement — the third time this
 document has had to record that pattern, after the 53.7%→50.1% correction above
 and the ADR-021 write-rate omission.
 
+## The suite after ADR-030 and ADR-031 (2026-07-31, second pass)
+
+Re-run because three changes invalidated the table below it: the unstable-prefix guard, tool tokens
+counting toward the cacheable prefix, and the corrected price list. Thirteen workloads, both arms
+live, **$1.92 for 364 calls**.
+
+| workload | cost | quality | provider cache (reads / writes) |
+|---|---|---|---|
+| `retry_storm` | **97.8%** | 6.7% identical | 1,505 / 0 |
+| `tool_loop` | **93.7%** | 10.0% identical | 6,020 / 0 |
+| `multi_turn_chat_long` | **86.2%** | 44.0% identical | 80,635 / 3,531 |
+| `mcp_agent` | **84.0%** | **100% identical** | 28,393 / 8,185 |
+| `fan_out` | **83.7%** | 66.7% identical | 4,515 / 4,515 |
+| `multi_turn_chat` | **82.2%** | **100% identical** | 19,805 / 367 |
+| `tool_calling_chat` | **81.3%** | **100% identical** | 38,812 / 986 |
+| **`large_system_agent`** | **81.0%** | 80.0% identical | **66,523 / 7,570** |
+| `rag_queries` | **76.2%** | 90.0% identical | 15,050 / 0 |
+| `rag_queries_noisy` | **76.0%** | 70.0% identical | 15,050 / 0 |
+| `unique_questions` | *not attributable* | 50.0% identical | 0 / 0 |
+| `sampled_creative` | *not attributable* | not interpretable | 0 / 0 |
+| `timestamped_agent` | **−5.4%** | 100% identical | 0 / 4,637 |
+
+**Eleven of thirteen between 76% and 98%.** The two exclusions are the adversarial pair, correctly
+reporting that nothing attributable happened rather than inventing a percentage.
+
+`large_system_agent` is new and this is its first live run — the workload built because the suite's
+largest *stable* prefix was ~1,400 tokens, leaving it unable to demonstrate `prefix_cache` on
+Haiku-class models at all. **66,523 cache reads at 81.0%**, and it only clears its floor because
+ADR-030 made tool schemas count toward the prefix: measured over messages alone it reads 1,715
+tokens against a real 5,186.
+
+`timestamped_agent` improved from **−23.5% to −5.4%** and its writes fell from 20,333 to 4,637 —
+three writes, the bound ADR-030's amendment sets, after which the stage stops paying. The residual is
+a fixed startup cost on a twelve-request workload, not a rate; see that ADR for the amortization
+curve and why it is not driven to zero.
+
 ## The full suite on Sonnet 4.5, once every number was attributable
 
 2026-07-31, all twelve workloads, both arms live, `$1.61` for 344 calls. The first run where
