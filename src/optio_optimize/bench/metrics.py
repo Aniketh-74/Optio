@@ -22,7 +22,50 @@ and a judgement about what counts as equivalent.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from optio_optimize.types import LLMRequest
+
+
+def sent_fingerprint(request: LLMRequest) -> str:
+    """Identify one request by everything that can change what it costs.
+
+    Built on :func:`~optio_optimize.cache.request_key` rather than beside it, so
+    a field added to the cache key is covered here automatically. Two fields
+    that key deliberately excludes are added back, because the two functions
+    answer different questions -- one asks "may a stored reply be reused", this
+    one asks "did we send something different":
+
+    * ``max_tokens``, which ``request_key`` omits so a cached completion can be
+      reused across differing limits by checking ``finish_reason``.
+      ``adaptive_max_tokens`` is on by default and changes that field and no
+      other, so borrowing the key unmodified would file a run where only that
+      stage fired as a no-op and discard a real saving as noise (ADR-028).
+    * ``Message.cacheable``, which ``request_key`` omits as "a marker this
+      library placed, not caller input". True, and irrelevant here: the marker
+      moves prompt tokens onto the write and read rates, which is the largest
+      lossless saving this package has.
+
+    Returns:
+        A hex digest. Never the prompt: §10's content rule binds the benchmark
+        as it binds everything else.
+    """
+    from optio_optimize.cache import request_key
+
+    payload = json.dumps(
+        {
+            "key": request_key(request),
+            "max_tokens": request.max_tokens,
+            "cacheable": [m.cacheable for m in request.messages],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8", "replace")
+    return hashlib.blake2b(payload, digest_size=16).hexdigest()
 
 
 @dataclass(slots=True)
@@ -51,6 +94,10 @@ class ArmResult:
         responses: Response texts, kept for quality comparison.
         errors: Failures encountered.
         live: Whether a real provider served this arm.
+        sent_digest: A running digest of every request this arm handed the
+            provider. Compared against the other arm's, it answers the question
+            a cost delta is meaningless without: did the optimizer change
+            anything at all? See :attr:`ABResult.cost_is_attributable`.
     """
 
     name: str
@@ -66,6 +113,7 @@ class ArmResult:
     responses: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     live: bool = False
+    sent_digest: str = ""
 
     @property
     def total_tokens(self) -> int:
@@ -223,6 +271,30 @@ class ABResult:
             arm.output_tokens,
             arm.cached_input_tokens,
             arm.cache_write_tokens,
+        )
+
+    @property
+    def cost_is_attributable(self) -> bool:
+        """Whether this run's cost delta measures the library or the provider.
+
+        False when both arms sent identical requests **and** made the same
+        number of provider calls -- there is then nothing the optimizer did that
+        could have moved spend, so whatever :attr:`cost_reduction` reports is the
+        provider's own output nondeterminism.
+
+        That is not a hypothetical. Five of twelve workloads were no-ops on the
+        live run of 2026-07-31, and three of them printed a number large enough
+        to read as a finding: ``timestamped_agent`` -1.6% and
+        ``sampled_creative`` -4.7% look like ADR-013 rule 1 violations, and
+        ``unique_questions`` +2.8% claimed a saving on the workload that exists
+        to report this suite's limits.
+
+        A cache hit changes the call count; every other stage changes the
+        digest. Nothing else this package does can alter spend.
+        """
+        return not (
+            self.baseline.sent_digest == self.optimized.sent_digest
+            and self.baseline.provider_calls == self.optimized.provider_calls
         )
 
     @property

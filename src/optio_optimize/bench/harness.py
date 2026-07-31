@@ -20,12 +20,13 @@ settled this question already (§11) and the reasoning transfers.
 
 from __future__ import annotations
 
+import hashlib
 import time
 import tracemalloc
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from optio_optimize.bench.metrics import ABResult, ArmResult, QualityResult
+from optio_optimize.bench.metrics import ABResult, ArmResult, QualityResult, sent_fingerprint
 from optio_optimize.config import OptimizeConfig
 from optio_optimize.optimizer import Optimizer
 
@@ -72,9 +73,15 @@ def run_arm(
 
     provider_seconds = 0.0
     calls = 0
+    # Folded over what actually reached the provider, not over what the workload
+    # built: the difference between those two is the entire subject of the
+    # measurement, and comparing the arms' digests is the only way to know
+    # whether a reported cost delta is this library's doing (ADR-028).
+    sent = hashlib.blake2b(digest_size=16)
 
     def timed(request: LLMRequest) -> LLMResponse:
         nonlocal provider_seconds, calls
+        sent.update(sent_fingerprint(request).encode("ascii"))
         started = time.perf_counter()
         response = provider(request)
         provider_seconds += time.perf_counter() - started
@@ -105,6 +112,7 @@ def run_arm(
     result.provider_seconds = provider_seconds
     result.provider_calls = calls
     result.requests = len(requests)
+    result.sent_digest = sent.hexdigest()
     return result, optimizer
 
 
@@ -244,10 +252,17 @@ def format_result(result: ABResult) -> list[str]:
     base_cost = result.cost_usd(result.baseline)
     opt_cost = result.cost_usd(result.optimized)
     if base_cost is not None and opt_cost is not None:
-        lines.append(
-            f"    cost                ${base_cost:.5f} -> ${opt_cost:.5f}   "
-            f"{_pct(result.cost_reduction)}"
+        # Both dollar figures always: money really was spent and both are true
+        # observations of the run. The percentage only when the arms differed --
+        # on a no-op run it is the provider's nondeterminism wearing this
+        # library's name, and it reads as a finding in whichever direction it
+        # happens to land (ADR-028).
+        verdict = (
+            _pct(result.cost_reduction)
+            if result.cost_is_attributable
+            else "NOT ATTRIBUTABLE (identical requests, same call count)"
         )
+        lines.append(f"    cost                ${base_cost:.5f} -> ${opt_cost:.5f}   {verdict}")
 
     lines.extend(
         [
