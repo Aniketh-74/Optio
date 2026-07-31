@@ -91,6 +91,49 @@ markers being placed below the floor, and this stops them being withheld above i
 ADR-027 made "no cache reads" diagnosable. Both changes here alter the number in that message, so the
 message keeps reporting the figure actually compared against the floor — now including tools.
 
+## Amendment, 2026-07-31 (same day): ask the provider, not the digests
+
+Decision 1 shipped and the live re-run was still negative:
+
+| `timestamped_agent` | before | digest guard | + this amendment |
+|---|---|---|---|
+| cost reduction | **−23.5%** | −17.1% | **−6.0%** |
+| cache writes | 20,333 | 14,795 | **4,637** |
+
+Correct behaviour arriving too late. `unstable_prefix` requires `MIN_OBSERVATIONS = 10` before it
+will say anything, and that threshold is right for *reporting a finding to a person* — "three
+requests with three distinct system prompts is equally consistent with a bug and with an agent that
+has only just started". On a twelve-request workload it means ten requests pay the premium first.
+
+**The stronger signal was there all along and is not a proxy: the provider reports what it actually
+served.** `cache_read_input_tokens` comes back on every response, so a marked request that produced
+a write and no read is the outcome itself. It converges in three requests rather than ten, and it
+covers a case the digests cannot see — a byte-stable prefix that always expires before reuse writes
+at 1.25× forever while every digest looks perfect.
+
+**`MAX_UNREWARDED_WRITES = 3`, from the economics.** A wasted write costs 0.25× base per prefix token
+(1.25× paid where 1.0× would do); a *missed* cache costs 0.9× (1.0× paid where 0.1× would do).
+Declining wrongly is ~3.6× worse per request than writing wrongly, so the stage waits for repeated
+unambiguous evidence and any single read resets the run. Three also survives the parallel case:
+concurrent requests can each write before any sees another's entry, which is `fan_out`'s shape
+exactly, and a threshold of two would risk disabling the stage there.
+
+**What remains is a bounded startup cost, not a rate.** The residual is three writes — $0.00348 of
+premium at Sonnet 4.5 rates on this prefix — and it does not grow:
+
+```
+  12 requests   overhead 5.35%      100 requests   overhead 0.64%
+  25 requests   overhead 2.57%      200 requests   overhead 0.32%
+  50 requests   overhead 1.28%      500 requests   overhead 0.13%
+```
+
+The 12-request workload is close to the worst case a benchmark can construct. Driving it to zero
+would require predicting instability before observing it, which ADR-021 already rejected for the TTL
+question and rejects here for the same reason: guessing wrong raises the bill.
+
+`multi_turn_chat` re-measured at **74.5%** on the same run, unchanged, confirming the guard costs
+nothing where caching works.
+
 ## Consequences
 
 - **`timestamped_agent` stops costing 23.5% extra.** It cannot be made to *save* anything: its prefix

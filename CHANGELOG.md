@@ -23,6 +23,36 @@ be promoted to the top level deliberately.
 
 ### Fixed
 
+- **`prefix_cache` no longer pays for a breakpoint nobody reads
+  ([ADR-030](docs/design/adr/adr-030-a-breakpoint-nobody-reads-is-pure-cost.md)).** The full live
+  Sonnet 4.5 suite returned ten workloads between 75% and 97% cost reduction, and one at **−23.5%**:
+  `timestamped_agent` wrote **20,333 prompt tokens at the 1.25× premium and read back zero of them**.
+  A prompt whose head changes every turn cannot hit a prefix cache, so every write was a pure loss —
+  an ADR-013 rule 1 violation, on a workload that replicates the most common prompt-caching mistake
+  in production. `detect_unstable_prefix` had already printed the cause at the top of the same run;
+  the writer never asked.
+
+  Two signals now stop it. `unstable_prefix` publishes its verdict for `prefix_cache` to read, and —
+  the stronger one — the stage watches what the provider actually served: three consecutive marked
+  requests that write and read nothing, and it stops marking. Measured live: **−23.5% → −17.1% →
+  −6.0%**, with the residual a bounded three writes that amortize to 0.3% over 200 requests.
+  `multi_turn_chat` re-measured unchanged at 74.5%, so the guard costs nothing where caching works.
+
+- **`prefix_cache` counts tool schemas toward the prefix.** It measured `request.messages` alone and
+  ignored `request.tools`, which Anthropic caches *ahead of* the system prompt — so it declined
+  breakpoints that would have paid, hardest on tool-carrying agents. The new `large_system_agent`
+  workload reported "~1715 tokens" for a 5,186-token prefix; the live `mcp_agent` run read ~2,839
+  tokens per request against a stable *message* prefix of ~1,387, which is the provider confirming
+  what it counts.
+
+### Added
+
+- **`large_system_agent` workload** — a realistic operating manual plus 38 MCP tool schemas, 5,186
+  tokens of stable prefix, 1.27× the highest published cacheable floor. The suite's largest stable
+  prefix was ~1,400 tokens, leaving it structurally unable to demonstrate `prefix_cache` on Haiku
+  4.5, Opus 4.6 or Opus 4.5 at all. Added beside the existing workloads rather than by growing them,
+  so every published number stays comparable.
+
 - **`--model` now reaches the stages, not just the provider.** `Workload.requests()` called
   `build()` with no arguments, so every workload built its requests as `gpt-4o` whatever `--model`
   said. Every stage that branches on the model read `gpt-4o` on every live Anthropic run:

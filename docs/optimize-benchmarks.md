@@ -1007,6 +1007,46 @@ direction cost 10.7 percentage points of overstatement — the third time this
 document has had to record that pattern, after the 53.7%→50.1% correction above
 and the ADR-021 write-rate omission.
 
+## The full suite on Sonnet 4.5, once every number was attributable
+
+2026-07-31, all twelve workloads, both arms live, `$1.61` for 344 calls. The first run where
+`--model` reached the stages, cache writes were billed, and unattributable deltas were labelled
+rather than printed as percentages.
+
+| workload | calls | cost | quality | what did it |
+|---|---|---|---|---|
+| `retry_storm` | 15 → 1 | **97.0%** | 6.7% identical | `exact_cache` |
+| `tool_loop` | 20 → 4 | **93.0%** | 35.0% identical | `exact_cache` |
+| `multi_turn_chat_long` | 50 → 50 | **86.2%** | 38.0% identical | `trim_history` + prefix cache |
+| `fan_out` | 12 → 4 | **84.0%** | 66.7% identical | `exact_cache` |
+| `mcp_agent` | 10 → 10 | **84.0%** | **100% identical** | trim + cap + minify + prefix |
+| `multi_turn_chat` | 12 → 12 | **82.2%** | **100% identical** | prefix cache alone |
+| `tool_calling_chat` | 20 → 20 | **81.6%** | **100% identical** | prefix cache alone |
+| `rag_queries` | 10 → 10 | **76.4%** | 90.0% identical | `deduplicate` + prefix cache |
+| `rag_queries_noisy` | 10 → 10 | **75.9%** | 80.0% identical | `prune_retrieval` + prefix cache |
+| `unique_questions` | 12 → 12 | *not attributable* | 75.0% identical | nothing, by design |
+| `sampled_creative` | 8 → 8 | *not attributable* | not interpretable | nothing, by design |
+| `timestamped_agent` | 12 → 12 | **−23.5%** | 100% identical | **a defect — see below** |
+
+Three things worth reading off this table.
+
+**Prefix caching carries workloads that reduce no tokens at all.** `multi_turn_chat`,
+`tool_calling_chat` and `timestamped_agent` all show `input tokens 0.0%`. Two of them still save
+above 80%, because the rate changed and not the volume. A benchmark reporting only token reduction
+would score all three at zero.
+
+**The two adversarial workloads now say "not attributable" instead of inventing a percentage.**
+Before ADR-028 they reported +2.8% and −4.7% from pure output nondeterminism.
+
+**And one workload cost 23.5% more than doing nothing.** `reads 0 writes 20,333`: a breakpoint
+placed on every turn of a prompt whose head changes every turn, paying the 1.25× write premium
+twelve times and collecting the 0.1× discount zero times. It is an ADR-013 rule 1 violation, on a
+workload that replicates the most common prompt-caching mistake in production — and
+`detect_unstable_prefix` had already printed the cause at the top of the same run. ADR-030 is the
+fix; the measured sequence is −23.5% → −17.1% (digest guard) → **−6.0%** (provider-outcome guard),
+with the residual being a bounded three wasted writes that amortize to 0.3% over 200 requests. See
+that ADR for why it is not driven to zero.
+
 ## Batch dispatch: a weaker class of evidence, stated as such (ADR-017)
 
 Every number above this line is an A/B run: the same workload twice, once with a

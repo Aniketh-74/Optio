@@ -121,6 +121,26 @@ MAX_TRACKED_PREFIXES = 1024
 #: The value sent when observation says the entry will have expired.
 ONE_HOUR_TTL = "1h"
 
+#: Scratch key recording that ``PrefixCacheStage.before`` actually marked this
+#: request, so ``after`` knows the provider's cache numbers are about a
+#: breakpoint we placed.
+_MARKED = "prefix_cache_marked"
+
+#: Consecutive marked requests that write and read nothing before the stage
+#: stops marking.
+#:
+#: Three, from the economics rather than from taste. A wasted write costs 0.25x
+#: base per prefix token -- 1.25x paid where 1.0x would have done -- while a
+#: *missed* cache costs 0.9x, since 1.0x is paid where 0.1x would have done.
+#: Declining wrongly is therefore about 3.6x worse per request than writing
+#: wrongly, so this waits for repeated unambiguous evidence rather than reacting
+#: to a single miss, and any read at all resets it.
+#:
+#: The first write is always unrewarded -- nothing can be read from a cache that
+#: was never written -- so the floor cannot be lower than two without disabling
+#: the stage on the opening turn of every conversation.
+MAX_UNREWARDED_WRITES = 3
+
 
 class ExactCacheStage(Stage):
     """Serve byte-identical deterministic requests from memory.
@@ -288,6 +308,9 @@ class PrefixCacheStage(Stage):
         # stays true: reverting on the next quick call would re-write the prefix
         # at 1.25x while a live one-hour entry sat there unread.
         self._expires: set[str] = set()
+        # Consecutive marked requests where the provider wrote and never read.
+        # Reset by any read (ADR-030 amendment).
+        self._unrewarded_writes = 0
 
     @property
     def name(self) -> str:
@@ -308,6 +331,23 @@ class PrefixCacheStage(Stage):
         # Order matters: counting tools below can lift a prefix back over the
         # floor, and doing that first would reinstate the very write nobody
         # reads.
+        # The provider's own verdict, and the stronger of the two signals: it
+        # measures the outcome instead of inferring it from prompt digests, and
+        # it converges in about three requests where `unstable_prefix` needs
+        # ten. The digest guard alone still left `timestamped_agent` at -17.1%
+        # live, because ten of its twelve requests had already paid the premium
+        # by the time the window filled.
+        #
+        # It also covers a case the digests cannot see: a byte-stable prefix
+        # that always expires before reuse writes at 1.25x forever and reads
+        # nothing, and the digests look perfect throughout.
+        if self._unrewarded_writes >= MAX_UNREWARDED_WRITES:
+            self.last_decline_reason = (
+                f"the provider wrote this prefix {self._unrewarded_writes} times in a row "
+                "and read it back none of them, so the write premium is buying nothing"
+            )
+            return self.declines(request)
+
         if ctx.scratch.get(PREFIX_IS_UNSTABLE):
             self.last_decline_reason = (
                 "prefix is unstable -- it differed on nearly every recent request, so a "
@@ -345,6 +385,10 @@ class PrefixCacheStage(Stage):
             return self.declines(request)
 
         ttl = self._ttl_for(request, boundary, enabled=ctx.config.cache_ttl_selection)
+        # Only a request we actually marked can tell `after` anything about
+        # marking. Below-floor requests report reads 0 / writes 0 forever, and
+        # counting those would disable the stage on workloads it never tried.
+        ctx.scratch[_MARKED] = True
 
         marked = list(request.messages)
         marked[boundary - 1] = _with_cacheable(marked[boundary - 1], ttl)
@@ -352,6 +396,33 @@ class PrefixCacheStage(Stage):
         if ttl is not None:
             note += f", ttl {ttl}"
         return StageResult(request=request.with_messages(tuple(marked)), note=note)
+
+    def after(self, request: LLMRequest, response: LLMResponse, ctx: StageContext) -> None:
+        """Learn from what the provider actually served (ADR-030 amendment).
+
+        A marked request that produced a cache write and no read did not pay
+        for itself: 1.25x base was billed where 1.0x would have done. Repeated,
+        that is a standing loss, and this is the outcome rather than a proxy for
+        it -- which is why it needs three observations where the digest-based
+        detector needs ten.
+
+        A read resets the run outright. It is direct proof the prefix is
+        cacheable, and the counter is consecutive rather than lifetime so an
+        agent that goes quiet past the TTL and resumes cannot accumulate its way
+        to a permanent decline.
+        """
+        del request
+        if not ctx.scratch.get(_MARKED):
+            return
+        if response.cached_input_tokens > 0:
+            self._unrewarded_writes = 0
+            return
+        # A response carrying no write count is not evidence either way.
+        # OpenAI populates its cache automatically and reports no write, and
+        # reading that silence as a wasted premium would switch the marker off
+        # for a provider where it was never the mechanism.
+        if response.cache_write_tokens > 0:
+            self._unrewarded_writes += 1
 
     def _ttl_for(self, request: LLMRequest, boundary: int, *, enabled: bool) -> str | None:
         """Pick a cache lifetime, and record this sighting either way.
