@@ -106,6 +106,33 @@ class AdaptiveMaxTokensStage(Stage):
             # difference between a tighter ceiling and a failed call that
             # fail-open re-sends unoptimized at full price (ADR-018).
             ceiling = max(ceiling, request.thinking_budget + ANSWER_HEADROOM_TOKENS)
+
+        # Both lines above can raise the ceiling past what the provider will
+        # accept, and exceeding a model's output cap is a hard 400 before any
+        # generation (ADR-037). The caps this package prices differ fourfold --
+        # 32,000 on `claude-opus-4-1` against 128,000 on `claude-opus-5` -- so a
+        # p95 of 16,001 doubles to 32,002 and fails on the first while being
+        # unremarkable on the second.
+        #
+        # Clamping here is not the override this stage refuses above: that rule
+        # protects a ceiling the *caller* set, and this one only ever lowers a
+        # ceiling this package chose, to a limit the provider enforces.
+        # Imported here rather than at module scope: `config` reaches the stage
+        # registry, so a top-level import closes a cycle. Same reason the
+        # `replace` import below sits inside the function.
+        from optio_optimize.config import max_output_tokens_for
+
+        cap = max_output_tokens_for(request.model)
+        if cap is not None:
+            if request.thinking_budget is not None and request.thinking_budget >= cap:
+                # No legal ceiling exists: every value at or under the cap is
+                # also at or under the budget, which is the other 400. The
+                # request is already unsatisfiable as written, and declining
+                # leaves the caller's own request for them to see fail rather
+                # than substituting one that fails differently.
+                return self.declines(request)
+            ceiling = min(ceiling, cap)
+
         typical = int(_percentile(self._lengths, 0.5))
         # The saving is the tail we expect not to generate, not the difference
         # from an imaginary unbounded reply. Reporting `ceiling` as saved would

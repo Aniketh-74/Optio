@@ -303,16 +303,22 @@ class Optimizer:
         distinguish a broken prefix from a young process -- and empty forever
         if nothing is wrong, which is the ordinary case.
 
+        Carries ``detect_window_pressure``'s findings too (ADR-037). Both
+        diagnostics answer the same question a caller asks here -- *why is this
+        costing what it costs, and what is about to break* -- and splitting them
+        across two properties would mean a smoke test that asserts on one
+        silently misses the other.
+
         Exposed as data rather than left in the log because the caller who
         needs this is often not the one reading logs: a hit rate that should be
         70% and is 0% is a production cost problem, and asserting on this tuple
         in a smoke test catches it before the invoice does.
         """
-        from optio_optimize.stages.diagnostics import UnstablePrefixStage
+        from optio_optimize.stages.diagnostics import UnstablePrefixStage, WindowPressureStage
 
         return tuple(
             finding
             for stage in self._pipeline.stages
-            if isinstance(stage, UnstablePrefixStage)
+            if isinstance(stage, UnstablePrefixStage | WindowPressureStage)
             for finding in stage.findings
         )

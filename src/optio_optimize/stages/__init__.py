@@ -60,7 +60,11 @@ from typing import TYPE_CHECKING
 from optio_optimize.stages.base import Stage, StageContext, StageResult
 from optio_optimize.stages.caching import ExactCacheStage, PrefixCacheStage
 from optio_optimize.stages.compress import CompressPromptStage
-from optio_optimize.stages.diagnostics import PrefixFinding, UnstablePrefixStage
+from optio_optimize.stages.diagnostics import (
+    PrefixFinding,
+    UnstablePrefixStage,
+    WindowPressureStage,
+)
 from optio_optimize.stages.history import TrimHistoryStage
 from optio_optimize.stages.output import (
     AdaptiveMaxTokensStage,
@@ -112,6 +116,7 @@ __all__ = [
     "SummarizeHistoryStage",
     "TrimHistoryStage",
     "UnstablePrefixStage",
+    "WindowPressureStage",
     "build_stages",
 ]
 
@@ -209,5 +214,24 @@ def build_stages(
     # 5. Prefix marking. Must be last so it sees the final message list.
     if config.prefix_cache:
         stages.append(PrefixCacheStage())
+
+    # 6. Window diagnosis, and it must be *after* the shrinking stages -- the
+    #    opposite of rule 6, deliberately.
+    #
+    #    detect_unstable_prefix goes first because it diagnoses how the caller
+    #    assembles their prompt, which only the untouched request shows. This
+    #    one answers a different question: *will the provider reject what we are
+    #    about to send*. That is a fact about the final request, so warning
+    #    about a prompt trim_history has already cut back would be warning about
+    #    a rejection that is not going to happen.
+    #
+    #    It also has to be cheap, and here it is. Measured first-in-the-pipeline
+    #    on an 81-turn, 2.7 MB conversation, counting the untrimmed request cost
+    #    **152 ms against a 100 ms budget** -- so the diagnostic consumed the
+    #    whole allowance, eight stages were skipped, and the trim that would
+    #    have fixed the very request it was complaining about never ran. A stage
+    #    that saves nothing must not be able to do that (ADR-037).
+    if config.detect_window_pressure:
+        stages.append(WindowPressureStage())
 
     return stages
