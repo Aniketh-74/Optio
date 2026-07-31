@@ -23,6 +23,26 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **Live measurements are kept now, not just quoted
+  ([ADR-039](docs/design/adr/adr-039-a-measurement-that-costs-money-to-recheck-gets-checked-once.md)).**
+  Every figure this project has paid for was printed to a terminal, copied into an ADR by hand, and
+  the response discarded — forty ADRs and not one recorded exchange anywhere in the tree. The
+  numbers were not therefore wrong. The problem is narrower and worse: **re-checking one costs
+  money**, so it is checked once and trusted thereafter. That is exactly how `prefix_cache` reported
+  a saving for months against a prompt below the provider's cacheable minimum, hitting nothing —
+  noticing would have required a paid call.
+
+  `--record PATH` on a live bench run keeps every exchange; `--replay PATH` re-runs it with no key,
+  no network and no spend. What a replay proves is narrow and says so: **the library still builds
+  the request the provider was measured on.** Not that the provider still answers that way — only a
+  fresh call does that, which is why the recording carries its date and prints it in every report.
+
+  A miss raises rather than answering. A replay that fabricated a response would credit this library
+  with a saving no provider ever measured — the failure this package is organised against, wearing
+  evidence as a disguise. The key covers the `cacheable` markers for the same reason: a key blind to
+  them would replay the old cache numbers after `prefix_cache` stopped emitting them, and report the
+  saving intact.
+
 - **`detect_window_pressure`, and `context_limit` finally does something
   ([ADR-037](docs/design/adr/adr-037-the-window-binds-the-prompt-and-the-cap-binds-the-reply.md)).**
   `OptimizeConfig.context_limit` had been accepted, validated and read by nothing since the first
