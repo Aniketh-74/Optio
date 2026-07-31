@@ -47,8 +47,15 @@ MODEL = "claude-haiku-4-5"
 #: Below the floor Anthropic silently ignores the breakpoint, and the result reads
 #: as "streaming caching does not work" when the truth is "it was never given a
 #: chance". That failure has already been shipped once in this repo.
+#:
+#: **And then it shipped again, here.** The comment above said "above 4,096" and
+#: the prompt measured 3,614, so every run of this script reported
+#: ``reads 0 writes 0`` -- ADR-019's gate never once passed, because
+#: ``prefix_cache`` correctly declined to mark a prefix below the floor and there
+#: was never a breakpoint to measure. An intent in a comment is not a
+#: measurement; :func:`_require_eligible_prefix` now checks it before spending.
 SYSTEM_PROMPT = "You are a meticulous claims adjuster. Follow these rules exactly. " + (
-    "Consider precedent, documentation, and the policy schedule before answering. " * 300
+    "Consider precedent, documentation, and the policy schedule before answering. " * 450
 )
 
 TURNS = [
@@ -79,6 +86,41 @@ from anthropic import Anthropic  # noqa: E402
 
 from optio_optimize import Optimizer  # noqa: E402
 from optio_optimize.adapters.anthropic import wrap_anthropic_client  # noqa: E402
+
+
+def _require_eligible_prefix() -> int:
+    """Refuse to spend money on a prompt that cannot answer the question.
+
+    ``reads 0 / writes 0`` has two causes and this script exists to tell them
+    apart: the marker failed to reach the wire (a bug in this package), or the
+    prefix was below the model's floor so ``prefix_cache`` correctly declined
+    and there was never a breakpoint at all (a bad fixture). Only the first is a
+    finding, and a run that cannot distinguish them costs money to learn
+    nothing.
+
+    Checked here rather than asserted in a comment, because the comment above
+    said "above 4,096" while the prompt measured 3,614 and every run of this
+    script silently measured nothing.
+
+    Returns:
+        The stable prefix size in tokens.
+
+    Raises:
+        SystemExit: If the prefix is below this model's floor.
+    """
+    from optio_optimize.stages.caching import min_prefix_tokens_for
+    from optio_optimize.tokens import default_counter
+
+    floor = min_prefix_tokens_for(MODEL)
+    tokens = default_counter().count_text(SYSTEM_PROMPT, MODEL)
+    if tokens < floor:
+        raise SystemExit(
+            f"refusing to run: the system prompt is ~{tokens:,} tokens, below {MODEL}'s "
+            f"{floor:,}-token cacheable minimum. prefix_cache would correctly decline to "
+            f"mark it, so the run would report 'reads 0 writes 0' and prove nothing. "
+            f"Lengthen SYSTEM_PROMPT."
+        )
+    return tokens
 
 
 def run() -> tuple[list[tuple[int, int, int]], int, int]:
@@ -129,6 +171,9 @@ def run() -> tuple[list[tuple[int, int, int]], int, int]:
 if __name__ == "__main__":
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise SystemExit("ANTHROPIC_API_KEY is not set")
+
+    prefix_tokens = _require_eligible_prefix()
+    print(f"stable prefix: ~{prefix_tokens:,} tokens ({MODEL}'s floor cleared)")
 
     per_call, report_cached, report_written = run()
 

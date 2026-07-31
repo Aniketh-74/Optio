@@ -21,6 +21,35 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Verified
+
+- **Streaming reaches the provider's cache — ADR-019's gate, passed for the first time.** The script
+  written to prove it had **never once passed**: its system prompt measured 3,614 tokens against
+  Haiku 4.5's 4,096-token floor, so `prefix_cache` correctly declined to mark it and every run
+  reported `reads 0 writes 0`. The comment above the prompt claimed "above 4,096"; nobody measured
+  it. With an eligible prompt: **6,317 tokens written on call 1 and all 6,317 read back on call 2**,
+  and the package saw both *through the stream accumulator*, which is the streaming-specific half of
+  the claim. The script now refuses to spend money on an ineligible prefix rather than reporting an
+  ambiguous zero.
+
+- **Fault injection against real failures.** The existing suite covers `optio`'s lanes with
+  synthetic `RuntimeError`s; `optio_optimize` sits *on* the call path and was untested there. Now
+  covered: real `anthropic` exception objects (`RateLimitError`, `InternalServerError`,
+  `APIStatusError`, `APIConnectionError`) reach the caller as the *same object*, not merely the same
+  type; a failed call writes nothing to the cache; one failure does not poison the optimizer; and a
+  live check confirms `NotFoundError` (404) and `BadRequestError` (400) propagate through
+  `wrap_anthropic_client` with status intact.
+
+  And the claim `anthropic_streaming` makes most strongly — *"only the terminal event completes a
+  request; not exhaustion, not `close()`"* — is now pinned across all five ways a stream dies:
+  transport error, caller `break`, early `close()`, early `with`-block exit, and plain exhaustion.
+  **None of them caches a partial answer.** That is the streaming half of the hazard ADR-033 found
+  live on the unary path. Six mutations, all caught.
+
+- **Framework compatibility** — `langgraph` and `claude-agent-sdk` matrices now run locally
+  (skips 9 → 4). `crewai` remains CI-only: it pins a numpy with no cp314 wheel and the source build
+  needs `GCC >= 8.4`.
+
 ### Fixed
 
 - **Truncation is detected on Anthropic
