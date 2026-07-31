@@ -957,6 +957,56 @@ Two consequences worth carrying:
   The suite currently cannot demonstrate `prefix_cache` on its own default model —
   recorded as the next open item rather than papered over.
 
+## `prefix_cache` end to end, and the three bugs between us and seeing it
+
+**That open item is closed.** `multi_turn_chat` on `claude-sonnet-4-5` (floor
+1,024, prompts 1,406–1,769 tokens), 2026-07-31, both arms live:
+
+| | baseline | optimized | |
+|---|---|---|---|
+| input tokens | 20,610 | 20,610 | **0.0%** |
+| cost | $0.06548 | $0.01672 | **74.5%** |
+| provider cache | reads 0, writes 0 | **reads 18,300, writes 1,872** | |
+| latency (end-to-end) | — | — | **−26.4%** |
+| overhead | — | — | +0.97 ms / request |
+| output quality | — | — | 91.7% identical |
+
+**The input token count does not move, and that is the point.** Prefix caching
+changes the *rate* those tokens are billed at, not the *volume*. A suite
+reporting only token reduction scores this workload at 0.0% — which is why
+`cost_reduction` exists as a separate figure and why the provider-cache line is
+now printed.
+
+Getting here took three defects off the path, each hiding the next, and all
+three ran in the direction that flatters the library.
+
+**`--model` never reached the stages.** `Workload.requests()` called `build()`
+with no arguments, so every workload built its requests as `gpt-4o` whatever
+`--model` said — the flag reached the provider and the pricing row and never
+`LLMRequest.model`. So `min_prefix_tokens_for` read `gpt-4o` on every live
+Anthropic run and returned the 1,024 fallback, leaving ADR-027's per-model floor
+**inert inside the benchmark written to validate it**. A live Haiku run duly
+placed the breakpoint and came back `reads 0 writes 0`: the exact failure ADR-027
+exists to prevent, on the exact model it describes it for. It hid because
+gpt-4o's fallback equals Sonnet 4.5's real floor — the one model that conceals
+the bug is the one on which the stage appeared to work.
+
+**The provider never read `cache_creation_input_tokens`.** The first Sonnet run
+reported `reads 18,300 writes 0`, which cannot happen: nothing is read from a
+cache that was never written. Written tokens were dropped from `input_tokens`
+outright, so the cache-write premium added to `ABResult.cost_usd` was inert —
+nothing populated the field it prices.
+`wire.response_from_anthropic_message` has been correct since ADR-021 and its
+docstring records this same defect being fixed *there*; the streaming adapter
+uses it; the benchmark had kept a private copy.
+
+**So the first number was 85.2%, with a 9.1% input-token reduction beside it.**
+Both were artefacts: the 9.1% was precisely the 1,872 written tokens missing
+from the total. The true figure is 74.5%. Two accounting bugs in the same
+direction cost 10.7 percentage points of overstatement — the third time this
+document has had to record that pattern, after the 53.7%→50.1% correction above
+and the ADR-021 write-rate omission.
+
 ## Batch dispatch: a weaker class of evidence, stated as such (ADR-017)
 
 Every number above this line is an A/B run: the same workload twice, once with a
