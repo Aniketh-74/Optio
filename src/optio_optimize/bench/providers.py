@@ -370,7 +370,13 @@ class OpenAIProvider:
 
     def __call__(self, request: LLMRequest) -> LLMResponse:
         """Send the request and normalize the reply."""
-        estimated = _estimate_cost(request, self.model)
+        # The request's model, not the provider's. A stage may have retargeted
+        # it -- `route_models` rewrites it and `cascade_routing` sends the cheap
+        # model first -- and a provider that ignored it would send both calls to
+        # the same place, making the measured saving arithmetic over two
+        # identical calls (ADR-035). `self.model` remains the fallback and the
+        # model workloads are built for.
+        estimated = _estimate_cost(request, request.model or self.model)
         self.guard.check(estimated)
 
         # Built as explicit keyword arguments rather than an unpacked dict. The
@@ -391,7 +397,7 @@ class OpenAIProvider:
         # itself -- see below on why it is not an unpacked dict.
         messages = wire.openai_messages(request)
         completion = self._client.chat.completions.create(
-            model=self.model,
+            model=request.model or self.model,
             messages=cast("list[ChatCompletionMessageParam]", messages),
             # `None` rather than the SDK's omit sentinel: the sentinel's name
             # and type have changed across releases (NotGiven, then Omit), and
@@ -448,7 +454,11 @@ class OpenAIProvider:
             finish_reason=completion.choices[0].finish_reason,
             extra=extra,
         )
-        self.guard.record(_actual_cost(response, self.model))
+        # Priced against what the API says it served: on a routed call that
+        # differs from the provider's own model, and a guard tracking the wrong
+        # one is how a run silently overruns its cap.
+        served = response.model or request.model or self.model
+        self.guard.record(_actual_cost(response, served))
         return response
 
 
@@ -514,7 +524,13 @@ class AnthropicProvider:
 
     def __call__(self, request: LLMRequest) -> LLMResponse:
         """Send the request, translating cacheable markers to cache_control."""
-        estimated = _estimate_cost(request, self.model)
+        # The request's model, not the provider's. A stage may have retargeted
+        # it -- `route_models` rewrites it and `cascade_routing` sends the cheap
+        # model first -- and a provider that ignored it would send both calls to
+        # the same place, making the measured saving arithmetic over two
+        # identical calls (ADR-035). `self.model` remains the fallback and the
+        # model workloads are built for.
+        estimated = _estimate_cost(request, request.model or self.model)
         self.guard.check(estimated)
 
         # Our Message is provider-neutral by design (ADR-013), so it has to be
@@ -557,7 +573,7 @@ class AnthropicProvider:
             optional["stop_sequences"] = list(request.stop)
 
         reply = self._client.messages.create(
-            model=self.model,
+            model=request.model or self.model,
             max_tokens=request.max_tokens or 1024,
             messages=cast("list[MessageParam]", turns),
             temperature=request.temperature if request.temperature is not None else 1.0,
@@ -600,7 +616,11 @@ class AnthropicProvider:
 
         if extra:
             response = replace(response, extra=extra)
-        self.guard.record(_actual_cost(response, self.model))
+        # Priced against what the API says it served: on a routed call that
+        # differs from the provider's own model, and a guard tracking the wrong
+        # one is how a run silently overruns its cap.
+        served = response.model or request.model or self.model
+        self.guard.record(_actual_cost(response, served))
         return response
 
 

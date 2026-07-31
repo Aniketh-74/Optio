@@ -21,6 +21,25 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Benchmark providers serve the request they are given
+  ([ADR-035](docs/design/adr/adr-035-a-provider-serves-the-request-it-is-given.md)).** Both providers
+  sent `model=self.model` and never read `request.model`. Invisible on an ordinary run — every
+  workload is built at the provider's own model — and load-bearing the moment a stage changes it,
+  which is exactly what `route_models` and `cascade_routing` do. Routed through these providers
+  **both calls would have gone to the same model**, making any reported saving arithmetic over two
+  identical calls.
+
+  A test had pinned the old behaviour in place, and its own comment spelled out the consequence:
+  *"it means any stage that retargets `request.model` (route_models, cascade) is a **no-op** under
+  `bench --live`."* Noticed, understood, and frozen rather than fixed. It is inverted, with a note.
+
+  Per-call cost is now charged against what the API says it served rather than what the provider was
+  configured with, and the pre-call estimate uses the requested model — a spend guard tracking the
+  wrong one is how a routed run silently overruns its cap. **No existing number moves**, and that is
+  asserted rather than assumed.
+
 ### Verified
 
 - **Streaming reaches the provider's cache — ADR-019's gate, passed for the first time.** The script
