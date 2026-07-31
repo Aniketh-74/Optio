@@ -22,6 +22,20 @@ Verified offline, per workload, by capturing every request each arm hands the pr
 them field by field: `19,200 → 19,200` tokens on `timestamped_agent`, `32,390 → 32,390` on
 `tool_calling_chat`, every stage booking exactly zero.
 
+> **Correction, 2026-07-31, same day.** The first live run after this ADR landed flagged only two of
+> the five — `unique_questions` and `sampled_creative` — and the disagreement was the harness, not the
+> flag. The offline probe above built each workload with `build(model=...)` explicitly; the harness's
+> `Workload.requests()` did not, so it built every request as `gpt-4o` regardless of `--model`. Under
+> gpt-4o's fallback prefix floor of 1,024, `prefix_cache` marked prompts on the other three and the
+> Haiku provider discarded the markers — a change to what was sent, hence correctly *attributable*,
+> and buying nothing. The probe was measuring a harness that did not exist yet. With
+> `requests(model)` fixed the two now agree, and the count of five stands.
+>
+> The flag earned its keep in the same run: `multi_turn_chat` and `timestamped_agent` were **not**
+> flagged, because `adaptive_max_tokens` genuinely changes `max_tokens` and nothing else. Had the
+> fingerprint been borrowed from `request_key`, which drops that field, both would have been dismissed
+> as noise. Decision 2 below is not hypothetical.
+
 Those five percentages are the provider's own output nondeterminism. They are not measurements of
 this library, and three of them are large enough to read as findings:
 

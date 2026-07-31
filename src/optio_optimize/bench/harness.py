@@ -150,7 +150,11 @@ def compare(
     Returns:
         The full comparison.
     """
-    requests = workload.requests()
+    # Built *for* the model being priced, not merely priced against it. These
+    # two used to be able to drift: the stages received requests naming
+    # `gpt-4o` while the result was priced -- and the API called -- as something
+    # else entirely.
+    requests = workload.requests(model)
     active = config if config is not None else OptimizeConfig()
 
     # Baseline first: it produces the reference responses, and running it

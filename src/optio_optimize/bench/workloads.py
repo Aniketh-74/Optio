@@ -84,13 +84,34 @@ class Workload:
 
     name: str
     description: str
-    build: Callable[[], list[LLMRequest]]
+    build: Callable[..., list[LLMRequest]]
     expectation: str
     tags: tuple[str, ...] = field(default_factory=tuple)
 
-    def requests(self) -> list[LLMRequest]:
-        """Return this workload's requests."""
-        return self.build()
+    def requests(self, model: str = "gpt-4o") -> list[LLMRequest]:
+        """Return this workload's requests, built for ``model``.
+
+        The model has to reach ``LLMRequest.model``, not merely the provider.
+        Until 2026-07-31 this called ``self.build()`` with no arguments, so
+        every builder fell back to its ``gpt-4o`` default and ``--model`` changed
+        only which API was called and which row priced the result.
+
+        Every stage that branches on the model therefore read ``gpt-4o`` on
+        every live Anthropic run. ``min_prefix_tokens_for`` returned the
+        unknown-model fallback of 1,024, which made ADR-027's per-model
+        cacheable floor -- whose whole point is that Haiku 4.5 needs 4,096 --
+        inert inside the benchmark built to validate it. It went unnoticed
+        because gpt-4o's fallback happens to equal Sonnet 4.5's real floor, so
+        the one model that hides the bug is the one on which ``prefix_cache``
+        appeared to work.
+
+        Args:
+            model: Model id the run will actually call.
+
+        Returns:
+            The request sequence.
+        """
+        return self.build(model=model)
 
 
 def _msg(role: str, content: str) -> Message:
