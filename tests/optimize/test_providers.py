@@ -415,7 +415,7 @@ class _FakeAnthropicBackend:
                 "id": "msg_test",
                 "type": "message",
                 "role": "assistant",
-                "model": body.get("model", "claude-haiku-4"),
+                "model": body.get("model", "claude-haiku-4-5"),
                 "content": content,
                 "stop_reason": stop_reason,
                 "stop_sequence": None,
@@ -450,17 +450,32 @@ class TestAnthropicProviderMockedSDK:
         backend = _FakeAnthropicBackend()
         provider = _anthropic_provider(monkeypatch, backend)
 
-        # The request names one model and the provider serves its own. That is
-        # deliberate for a benchmark -- the provider is constructed with the
-        # model under test -- and worth pinning, because it means any stage that
-        # retargets `request.model` (route_models, cascade) is a **no-op** under
-        # `bench --live`. The dedicated routing audit builds its own per-model
-        # requests for exactly this reason.
+        # **Inverted 2026-07-31.** This used to assert that the provider served
+        # its own model and ignored the request's, and its own comment spelled
+        # out the consequence: "it means any stage that retargets
+        # `request.model` (route_models, cascade) is a **no-op** under
+        # `bench --live`". The behaviour was noticed, its cost understood, and a
+        # test written to hold it in place rather than fix it -- the same
+        # frozen-defect shape as the `structured_output` guard.
+        #
+        # A provider serves the request it is given (ADR-035). `self.model` is
+        # the default and the model workloads are built for, not an override.
         response = provider(_chat_request(model="claude-sonnet-4-5"))
 
         assert response.content == "the answer"
         assert response.output_tokens == 8
         assert response.finish_reason == "end_turn"
+        assert response.model == "claude-sonnet-4-5"
+
+    def test_the_providers_own_model_is_the_default_not_an_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A request naming the provider's model is served by it, unchanged."""
+        backend = _FakeAnthropicBackend()
+        provider = _anthropic_provider(monkeypatch, backend)
+
+        response = provider(_chat_request(model=AnthropicProvider.DEFAULT_MODEL))
+
         assert response.model == AnthropicProvider.DEFAULT_MODEL
 
     def test_a_tool_use_block_is_normalised_into_the_tool_calls_convention(
@@ -474,7 +489,7 @@ class TestAnthropicProviderMockedSDK:
         )
         provider = _anthropic_provider(monkeypatch, backend)
 
-        response = provider(_chat_request(model="claude-haiku-4"))
+        response = provider(_chat_request(model="claude-haiku-4-5"))
 
         assert response.extra["tool_calls"] == [
             {
@@ -494,7 +509,7 @@ class TestAnthropicProviderMockedSDK:
         backend = _FakeAnthropicBackend(cache_read_input_tokens=15)
         provider = _anthropic_provider(monkeypatch, backend)
 
-        response = provider(_chat_request(model="claude-haiku-4"))
+        response = provider(_chat_request(model="claude-haiku-4-5"))
 
         assert response.cached_input_tokens == 15
         assert response.input_tokens == 40 + 15
@@ -508,7 +523,7 @@ class TestAnthropicProviderMockedSDK:
         system = Message(role="system", content="be terse", cacheable=True)
         user = Message(role="user", content="hi")
 
-        provider(_chat_request(model="claude-haiku-4", messages=(system, user)))
+        provider(_chat_request(model="claude-haiku-4-5", messages=(system, user)))
 
         sent_system = backend.requests[0]["system"]
         assert sent_system[0]["cache_control"] == {"type": "ephemeral"}
@@ -521,7 +536,7 @@ class TestAnthropicProviderMockedSDK:
         system = Message(role="system", content="be terse", cacheable=False)
         user = Message(role="user", content="hi")
 
-        provider(_chat_request(model="claude-haiku-4", messages=(system, user)))
+        provider(_chat_request(model="claude-haiku-4-5", messages=(system, user)))
 
         sent_system = backend.requests[0]["system"]
         assert "cache_control" not in sent_system[0]
@@ -537,7 +552,7 @@ class TestAnthropicProviderMockedSDK:
             Message(role="assistant", content="hello"),
         )
 
-        provider(_chat_request(model="claude-haiku-4", messages=messages))
+        provider(_chat_request(model="claude-haiku-4-5", messages=messages))
 
         sent = backend.requests[0]
         assert [m["role"] for m in sent["messages"]] == ["user", "assistant"]
@@ -550,7 +565,7 @@ class TestAnthropicProviderMockedSDK:
         backend = _FakeAnthropicBackend()
         provider = _anthropic_provider(monkeypatch, backend)
 
-        provider(_chat_request(model="claude-haiku-4", temperature=None))
+        provider(_chat_request(model="claude-haiku-4-5", temperature=None))
 
         assert backend.requests[0]["temperature"] == 1.0
 
@@ -558,7 +573,7 @@ class TestAnthropicProviderMockedSDK:
         backend = _FakeAnthropicBackend()
         provider = _anthropic_provider(monkeypatch, backend)
 
-        provider(_chat_request(model="claude-haiku-4", max_tokens=None))
+        provider(_chat_request(model="claude-haiku-4-5", max_tokens=None))
 
         assert backend.requests[0]["max_tokens"] == 1024
 
@@ -569,7 +584,7 @@ class TestAnthropicProviderMockedSDK:
         guard = SpendGuard(cap_usd=1.0)
         provider = _anthropic_provider(monkeypatch, backend, guard=guard)
 
-        provider(_chat_request(model="claude-haiku-4"))
+        provider(_chat_request(model="claude-haiku-4-5"))
 
         assert guard.calls == 1
         assert guard.spent_usd > 0
@@ -586,11 +601,11 @@ class TestAnthropicProviderMockedSDK:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-        provider = AnthropicProvider(model="claude-haiku-4")
+        provider = AnthropicProvider(model="claude-haiku-4-5")
 
         assert provider.is_live is True
         assert provider.models_latency is True
-        assert provider.label == "anthropic(claude-haiku-4)"
+        assert provider.label == "anthropic(claude-haiku-4-5)"
         provider.reset()  # No-op; must not raise.
 
 
