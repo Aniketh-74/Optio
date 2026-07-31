@@ -167,9 +167,9 @@ class TrimHistoryStage(Stage):
         """Input tokens a trim must save to be worth the output it risks."""
         # Imported here, not at module scope: config imports stages.tools for
         # DEFAULT_MAX_TOOL_RESULT_TOKENS, so stages -> config is a cycle.
-        from optio_optimize.config import PRICING
+        from optio_optimize.config import pricing_for
 
-        pricing = PRICING.get(model)
+        pricing = pricing_for(model)
         multiple = (
             pricing.output_usd_per_m / pricing.input_usd_per_m
             if pricing is not None and pricing.input_usd_per_m

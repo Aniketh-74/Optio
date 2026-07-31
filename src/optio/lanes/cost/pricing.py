@@ -26,6 +26,7 @@ not added -- supply their own :class:`PricingProvider` instead of waiting on us.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Final, Protocol, runtime_checkable
 
@@ -33,7 +34,7 @@ _log: Final = logging.getLogger("optio")
 
 #: Bumped whenever ``_PRICES`` changes. Emitted nowhere yet; it exists so a
 #: support conversation can establish which table a given run was priced with.
-PRICING_TABLE_VERSION: Final = "2026-07-27"
+PRICING_TABLE_VERSION: Final = "2026-07-31"
 
 #: Divisor converting published per-million-token prices to per-token.
 _PER_MILLION: Final = 1_000_000.0
@@ -73,6 +74,12 @@ class ModelPrice:
 #: ``gpt-4o`` entry without needing its own row. Prefix matching is deliberately
 #: last-resort and longest-first: ``gpt-4o-mini`` must never be priced as
 #: ``gpt-4o``, which costs substantially more.
+#:
+#: A prefix match requires the *remainder* to name the same model -- a date or a
+#: revision tag, never a version bump. ``claude-opus-4-5`` does not resolve to
+#: ``claude-opus-4``; it has its own row or it has no price. See
+#: :func:`_is_same_model`, and ADR-029 for the 3x overstatement that established
+#: the rule.
 _PRICES: Final[dict[str, ModelPrice]] = {
     # OpenAI
     "gpt-4o": ModelPrice(2.50, 10.00),
@@ -86,6 +93,17 @@ _PRICES: Final[dict[str, ModelPrice]] = {
     # Anthropic
     "claude-opus-4": ModelPrice(15.00, 75.00),
     "claude-sonnet-4": ModelPrice(3.00, 15.00),
+    # Each of the four below used to be answered by one of the two rows above,
+    # via a match that could not tell a later generation from a dated snapshot
+    # of the same one. Anthropic cut Opus list pricing at 4.5, so
+    # `claude-opus-4-5` was reported at $15/$75 against a $10 bill on a
+    # million-token call -- 3x over, silently (ADR-029). The numbers here are
+    # asserted rather than inferred; the two that did not change value changed
+    # from a guess that happened to be right into a row.
+    "claude-opus-4-5": ModelPrice(5.00, 25.00),
+    "claude-opus-4-1": ModelPrice(15.00, 75.00),
+    "claude-sonnet-4-5": ModelPrice(3.00, 15.00),
+    "claude-haiku-4-5": ModelPrice(1.00, 5.00),
     "claude-3-5-sonnet": ModelPrice(3.00, 15.00),
     "claude-3-5-haiku": ModelPrice(0.80, 4.00),
     "claude-3-opus": ModelPrice(15.00, 75.00),
@@ -96,6 +114,39 @@ _PRICES: Final[dict[str, ModelPrice]] = {
     "gemini-1.5-pro": ModelPrice(1.25, 5.00),
     "gemini-1.5-flash": ModelPrice(0.075, 0.30),
 }
+
+
+#: Vendor namespaces that may precede a model id, as `openai/gpt-4o` or
+#: `anthropic.claude-3-haiku-v1`. Matched as `[a-z_]+` rather than by a vendor
+#: list so a new one needs no code change -- and requiring letters is what keeps
+#: `gemini-1.5-pro` intact, whose first dot follows a digit.
+_VENDOR = re.compile(r"^[a-z_]+[./]")
+
+#: A suffix denoting the same model rather than a newer one. Either a release
+#: date (`-2024-11-20`, `-20251101`) or a Bedrock revision tag (`-v1`, `-v1:0`).
+#: Four digits is the discriminator that matters: `-20251101` is a snapshot of
+#: one model and `-5` is the next one, and reading the second as the first is
+#: what priced five Opus generations from a single row.
+_SAME_MODEL_SUFFIX = re.compile(r"^-(?:\d{4,}|v\d+(?::\d+)?)(?:-|$)")
+
+
+def _without_vendor(model: str) -> str:
+    """Strip a leading vendor namespace, if there is one."""
+    return _VENDOR.sub("", model, count=1)
+
+
+def _is_same_model(model: str, key: str) -> bool:
+    """Whether ``model`` is ``key``, or a dated snapshot or revision of it.
+
+    Not "whether ``key`` appears in ``model``", which is what this used to ask.
+    A version bump (`-5`, `-4-1`) and a descriptive suffix (`-mini`,
+    `-distilled`) both name a *different* model, and neither may borrow a
+    price.
+    """
+    if not model.startswith(key):
+        return False
+    remainder = model[len(key) :]
+    return remainder == "" or bool(_SAME_MODEL_SUFFIX.match(remainder))
 
 
 @runtime_checkable
@@ -137,6 +188,7 @@ class StaticPricingProvider:
         self._prices = {name.lower(): price for name, price in source.items()}
         # Longest first so `gpt-4o-mini` wins over `gpt-4o` for a prefix match.
         self._by_length = sorted(self._prices, key=len, reverse=True)
+        self._warned: set[str] = set()
         self.version = PRICING_TABLE_VERSION
 
     def price_for(self, model: str) -> ModelPrice | None:
@@ -152,17 +204,57 @@ class StaticPricingProvider:
             return None
 
         normalised = model.strip().lower()
+        price = self._lookup(normalised)
+        if price is None:
+            self._warn_unknown(normalised)
+        return price
+
+    def _lookup(self, normalised: str) -> ModelPrice | None:
+        """Resolve an id to a row, or ``None`` rather than to something close.
+
+        Exact first, then the same id with a vendor prefix removed, then a
+        prefix match restricted to suffixes that denote *the same model*.
+
+        Until 2026-07-31 the last step was ``if name in normalised`` --
+        containment, over a table whose Anthropic rows were the three family
+        keys ``claude-opus-4``, ``claude-sonnet-4`` and ``claude-haiku-4``, none
+        of which is an id the API will serve. Five Opus generations resolved to
+        one row, and ``not-really-gpt-4o-at-all-v2`` priced as ``gpt-4o``. The
+        module docstring above has always said "not the price of a
+        similar-looking model"; this is the code catching up to it (ADR-029).
+        """
         exact = self._prices.get(normalised)
         if exact is not None:
             return exact
 
-        # Vendor-prefixed ids ("openai/gpt-4o", "anthropic.claude-3-haiku-v1")
-        # and dated snapshots ("gpt-4o-2024-11-20") resolve to their base model.
+        bare = _without_vendor(normalised)
+        if bare != normalised:
+            exact = self._prices.get(bare)
+            if exact is not None:
+                return exact
+
         for name in self._by_length:
-            if name in normalised:
+            if _is_same_model(bare, name):
                 return self._prices[name]
 
         return None
+
+    def _warn_unknown(self, model: str) -> None:
+        """Say once that a model is unpriced, and how to price it.
+
+        Silence reads as a broken cost lane rather than a missing table row,
+        and seven models Anthropic currently serves are deliberately unpriced
+        (ADR-029 decision 3). Once per model: ADR-004's fail-open discipline
+        means a pricing gap may never turn into a log flood on the hot path.
+        """
+        if model in self._warned:
+            return
+        self._warned.add(model)
+        _log.warning(
+            "optio: no price for model %r, so no cost signal will be emitted for it. "
+            "Supply a PricingProvider to price models this table does not carry.",
+            model,
+        )
 
     def __repr__(self) -> str:
         """Return a debug representation with the model count."""

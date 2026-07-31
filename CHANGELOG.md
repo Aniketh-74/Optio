@@ -21,6 +21,33 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A price is no longer inferred across model generations
+  ([ADR-029](docs/design/adr/adr-029-a-price-may-not-be-inferred-across-model-generations.md)).**
+  `optio`'s pricing lookup documented itself as matching "exactly first and then by longest prefix"
+  and was implemented as `if name in normalised` — substring containment — over a table whose
+  Anthropic rows were `claude-opus-4`, `claude-sonnet-4` and `claude-haiku-4`, **none of which is a
+  model id the API will serve**.
+
+  Five distinct Opus generations therefore collapsed onto one row. Anthropic cut Opus list pricing
+  at 4.5, so a million input and two hundred thousand output tokens on `claude-opus-4-5` reported
+  **$30.00 against a $10.00 bill — 3× over, silently.** Containment also priced anything merely
+  containing a known name: `not-really-gpt-4o-at-all-v2` came back at gpt-4o's rate. The module
+  docstring has always said "not the price of a similar-looking model"; the code now agrees.
+
+  A prefix match requires the remainder to name the *same* model — a release date (`-20251101`) or a
+  Bedrock revision tag (`-v1`) — never a version bump. Four rows are added (`claude-opus-4-5`,
+  `claude-opus-4-1`, `claude-sonnet-4-5`, `claude-haiku-4-5`); **seven currently served models are
+  deliberately left unpriced** because nobody here has read their rates off the vendor's page, and
+  the lane now says so once per model rather than returning a silent `None`.
+
+- **The optimizer prices the ids the API reports back.** `optio_optimize.PRICING` was reached by
+  exact `.get()` only, so of the eleven ids `models.list` returned, **ten were unpriced** and
+  produced no cost figures at all — including dated forms of models the table carried. `pricing_for`
+  applies the same rule as core's, duplicated rather than imported to keep ADR-013's boundary.
+  `CHEAP_COUNTERPART` also stopped pointing every Anthropic route at `claude-haiku-4`, which 404s.
+
 ### Changed
 
 - **The benchmark no longer reports a cost delta it did not cause

@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from optio_optimize import wire
-from optio_optimize.config import PRICING
+from optio_optimize.config import pricing_for
 from optio_optimize.tokens import TokenCounter, count_request, default_counter
 from optio_optimize.types import LLMResponse
 
@@ -613,7 +613,7 @@ def _estimate_cost(request: LLMRequest, model: str) -> float:
     guard should stop early rather than let the last call be the one that
     breaks the cap.
     """
-    pricing = PRICING.get(model)
+    pricing = pricing_for(model)
     if pricing is None:
         return 0.0
     input_tokens = count_request(request, default_counter())
@@ -627,7 +627,7 @@ def _actual_cost(response: LLMResponse, model: str) -> float:
     """Real cost of a completed call."""
     from optio_optimize.savings import _cost
 
-    pricing = PRICING.get(model)
+    pricing = pricing_for(model)
     if pricing is None:
         return 0.0
     return _cost(
