@@ -221,7 +221,10 @@ def request_key(request: LLMRequest) -> str:
     * ``max_tokens`` — it truncates a reply rather than changing it, and
       including it would miss cache hits between otherwise identical calls.
       The stage compensates by never serving an entry whose stored response was
-      truncated (``finish_reason == "length"``).
+      truncated (:attr:`~optio_optimize.types.LLMResponse.was_truncated`, which
+      knows each vendor's spelling -- Anthropic says ``max_tokens``, and a
+      comparison against ``"length"`` alone left this compensation inert for
+      every Anthropic caller until ADR-033).
     * ``Message.cacheable`` — a marker this library placed, not caller input.
     * ``LLMRequest.extra`` — request-level provider transport details, not
       semantics. **Note the level.** ``Message.extra`` is a different matter:

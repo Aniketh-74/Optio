@@ -64,6 +64,46 @@ _log = logging.getLogger("optio_optimize")
 Verifier = Callable[["LLMRequest", "LLMResponse"], bool]
 
 
+def break_even_escalation_rate(expensive_model: str, cheap_model: str) -> float | None:
+    """The escalation rate above which cascade costs more than doing nothing.
+
+    Straight off the rate card. An accepted-cheap request pays ``C`` instead of
+    ``E`` and saves ``E - C``; an escalated one pays ``C + E`` instead of ``E``
+    and loses ``C``. Setting those equal gives ``r = 1 - C/E``: **66.7%** for
+    Haiku 4.5 -> Sonnet 4.5, 80% for Haiku 4.5 -> Opus 5, 60% for Sonnet 5 ->
+    Opus 5. The wider the price gap, the more escalation the technique tolerates.
+
+    Computed rather than documented because a threshold a user has to derive by
+    hand is one they will not derive -- and cascade's first live run reported a
+    50% escalation rate while losing 25%, so the comparison needs to be easy to
+    make (ADR-034).
+
+    Uses the input rate. Output bills several times higher and at a ratio that
+    differs per model, but the ratio ``C/E`` is what matters here and it is
+    close enough between the bands to make a second figure noise rather than
+    precision -- and this is a threshold to read a measured rate against, not
+    itself a measurement.
+
+    Args:
+        expensive_model: The model the request originally targeted.
+        cheap_model: The model cascade attempts first.
+
+    Returns:
+        The break-even rate as a fraction, or ``None`` when either model is
+        unpriced or the "cheap" model is not actually cheaper -- the latter
+        being a configuration error rather than a rate.
+    """
+    from optio_optimize.config import pricing_for
+
+    exp = pricing_for(expensive_model)
+    cheap = pricing_for(cheap_model)
+    if exp is None or cheap is None or exp.input_usd_per_m <= 0:
+        return None
+    if cheap.input_usd_per_m >= exp.input_usd_per_m:
+        return None
+    return 1.0 - cheap.input_usd_per_m / exp.input_usd_per_m
+
+
 def _demands_json(response_format: dict[str, Any] | None) -> bool:
     """Whether a ``response_format`` asks for JSON this verifier can check."""
     return isinstance(response_format, dict) and response_format.get("type") in (
@@ -132,8 +172,10 @@ def default_verifier(request: LLMRequest, response: LLMResponse) -> bool:
     Deliberately conservative and deterministic. It escalates on the failures a
     cheap deterministic check can be *sure* of and accepts everything else:
 
-    * a truncated answer (``finish_reason == "length"`` means the model ran out
-      of room and the answer is cut off);
+    * a truncated answer (:attr:`~optio_optimize.types.LLMResponse.was_truncated`
+      -- the model ran out of room and the answer is cut off. Asked as a
+      question because the vendors spell it differently, and comparing against
+      ``"length"`` alone made this check dead code on Anthropic, ADR-033);
     * for a **tool** request that proposed a call, one that names a tool not in
       the request, whose ``arguments`` are not valid JSON, or that omits a
       parameter the tool's schema marks ``required`` (ADR-023 steps 3 and #4) --
@@ -160,7 +202,11 @@ def default_verifier(request: LLMRequest, response: LLMResponse) -> bool:
     Returns:
         ``True`` to accept the cheap answer, ``False`` to escalate.
     """
-    if response.finish_reason == "length":
+    # `was_truncated` rather than a comparison against "length": Anthropic
+    # reports `max_tokens`, so this check -- the verifier's first and most basic
+    # -- was dead code against Anthropic and a truncated cheap answer was
+    # accepted as final (ADR-033).
+    if response.was_truncated:
         return False
 
     # A tool request that proposed a call: vet the proposal, not the text --
@@ -295,6 +341,29 @@ class CascadeCost:
         escalation_waste_usd: Cost of the rejected cheap attempts. Measured, and
             the number that was previously invisible (ADR-023 improvement #1).
     """
+
+    @property
+    def cost_weighted_escalation_rate(self) -> float | None:
+        """Escalated spend over the all-expensive baseline.
+
+        **The rate to read against**
+        :func:`break_even_escalation_rate`, and not the same as
+        :attr:`CascadeStats.escalation_rate`, which counts requests.
+
+        The first live run escalated 4 of 8 -- 50%, comfortably under a 66.7%
+        break-even -- and lost 25.3%, because those four requests were 92% of
+        the baseline spend. The correlation is structural rather than an
+        artefact of that mix: a request is likelier to fail a verifier when it
+        is long, carries tools, or demands a schema, and each of those also
+        makes it expensive. So a count-weighted rate flatters cascade on any
+        realistic workload (ADR-034).
+
+        ``None`` when nothing has been attempted -- a ratio over no baseline is
+        a division, not a measurement.
+        """
+        if self.all_expensive_baseline_usd <= 0:
+            return None
+        return self.escalation_spend_usd / self.all_expensive_baseline_usd
 
     cheap_spend_usd: float
     escalation_spend_usd: float

@@ -20,7 +20,7 @@ from __future__ import annotations
 import threading
 
 import pytest
-from hypothesis import HealthCheck, assume, given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import (
     RuleBasedStateMachine,
@@ -354,7 +354,7 @@ TestLedgerStateMachine = LedgerStateMachine.TestCase
 class TestConcurrency:
     """Steps run on thread pools in most frameworks (M2-2: 'concurrent runs')."""
 
-    @settings(deadline=None, suppress_health_check=[HealthCheck.too_slow], max_examples=20)
+    @settings(max_examples=20)  # deadline and too_slow come from the property profile
     @given(
         threads=st.integers(min_value=2, max_value=8),
         per_thread=st.integers(min_value=1, max_value=25),
@@ -384,7 +384,7 @@ class TestConcurrency:
         assert snapshot.actual == pytest.approx(threads * per_thread * 0.5)
         assert snapshot.reserved == 0.0
 
-    @settings(deadline=None, suppress_health_check=[HealthCheck.too_slow], max_examples=20)
+    @settings(max_examples=20)  # deadline and too_slow come from the property profile
     @given(threads=st.integers(min_value=2, max_value=8))
     def test_concurrent_runs_stay_isolated(self, threads: int) -> None:
         ledger = CostLedger()

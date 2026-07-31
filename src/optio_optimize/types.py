@@ -142,6 +142,19 @@ class LLMRequest:
         return self.temperature == 0.0
 
 
+#: Every spelling a provider uses for "the model ran out of room".
+#:
+#: OpenAI says ``length``; **Anthropic says ``max_tokens``**; Gemini says
+#: ``max_output_tokens``. This package compared against ``"length"`` alone until
+#: 2026-07-31, which made its truncation guards dead code on Anthropic -- see
+#: :attr:`LLMResponse.was_truncated` and ADR-033 for what that cost.
+#:
+#: A third vendor is one entry here, in the one place that holds this knowledge,
+#: and adding it fixes every caller at once. Carrying an unused member costs
+#: nothing; omitting one cost a correctness bug in a lossless default-on stage.
+TRUNCATION_REASONS = frozenset({"length", "max_tokens", "max_output_tokens"})
+
+
 @dataclass(frozen=True, slots=True)
 class LLMResponse:
     """A model reply, normalized.
@@ -187,6 +200,31 @@ class LLMResponse:
     finish_reason: str | None = None
     served_from: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def was_truncated(self) -> bool:
+        """Whether the model ran out of room before finishing.
+
+        Asks the question rather than comparing a string, because the vendors
+        spell the answer differently and comparing to one spelling is how this
+        check came to be dead code on Anthropic for every caller.
+
+        The live cascade run that found it carried ``max_tokens=16`` as the
+        *guaranteed* escalation -- ``default_verifier`` rejects a truncated
+        answer -- and the chopped-off answer was accepted and returned as final,
+        because Anthropic reports ``max_tokens`` where OpenAI reports
+        ``length``. The same literal guarded ``ExactCacheStage``, which refuses
+        to serve a truncated entry precisely because ``request_key`` omits
+        ``max_tokens`` so calls with different ceilings share one. Inert, that
+        let a ``max_tokens=16`` call poison the entry for every later caller --
+        in a stage that is ``Fidelity.IDENTICAL`` and on by default (ADR-033).
+
+        An unrecognised reason reads as *not* truncated. That fails the safe
+        way: the alternative would make the exact cache refuse to serve anything
+        from a provider whose vocabulary is not listed here, turning a missing
+        entry into a silently disabled cache.
+        """
+        return self.finish_reason in TRUNCATION_REASONS
 
     @property
     def billable_input_tokens(self) -> int:
