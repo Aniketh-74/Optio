@@ -79,6 +79,21 @@ class Fidelity(Enum):
         return self is Fidelity.IDENTICAL
 
 
+#: Published observation: the request's cacheable head has been seen changing
+#: on effectively every recent request, so no provider prefix cache can hit.
+#:
+#: Written by ``UnstablePrefixStage`` once its window has enough observations
+#: to say so, and read by ``PrefixCacheStage``, which must not pay a cache-write
+#: premium it can never recover. **Absent means "not established"**, never
+#: "stable": the detector may be disabled, or may not have seen enough
+#: requests yet, and in both cases the correct behaviour is to cache as usual.
+#:
+#: ADR-030 records what this costs when the two stages do not talk: a live
+#: Sonnet 4.5 run wrote 20,333 prompt tokens at the 1.25x premium, read back
+#: zero of them, and came in 23.5% more expensive than doing nothing.
+PREFIX_IS_UNSTABLE = "prefix.is_unstable"
+
+
 @dataclass(slots=True)
 class StageContext:
     """What a stage is allowed to see.
@@ -93,9 +108,21 @@ class StageContext:
     Attributes:
         config: Active configuration.
         counter: Token counter for measurement decisions.
-        scratch: Per-request storage. A stage may leave a note for its own
-            ``after`` hook here -- the cache stages use it to carry the key
-            computed during ``before`` -- but must not read another stage's.
+        scratch: Per-request storage, holding two different kinds of thing.
+
+            **Private notes.** A stage leaves something for its own ``after``
+            hook -- the cache stages carry the key computed during ``before``
+            this way. A stage must not read another stage's private note; that
+            is how a list of forty transformations acquires ordering
+            dependencies nobody can see.
+
+            **Published observations**, named by a module-level constant in
+            this module and documented as public. A stage may read these. The
+            distinction is that a published key is a declared interface with
+            one writer and a stated meaning, so the coupling is visible in the
+            constant's docstring rather than implied by a string literal in two
+            files. There is exactly one today -- see :data:`PREFIX_IS_UNSTABLE`,
+            and ADR-030 for the 23.5% cost increase that earned it.
         run_id: The optio run this request belongs to, when known. Lets savings
             be attributed to the same run the cost lane is metering.
     """

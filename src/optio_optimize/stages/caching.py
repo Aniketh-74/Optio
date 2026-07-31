@@ -24,8 +24,8 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from optio_optimize.cache import MemoryCache, request_key
-from optio_optimize.stages.base import Fidelity, Stage, StageResult
-from optio_optimize.tokens import count_request
+from optio_optimize.stages.base import PREFIX_IS_UNSTABLE, Fidelity, Stage, StageResult
+from optio_optimize.tokens import count_request, count_tools
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -296,13 +296,40 @@ class PrefixCacheStage(Stage):
 
     def before(self, request: LLMRequest, ctx: StageContext) -> StageResult:
         """Mark the cacheable prefix boundary, if one is worth marking."""
+        # Before size, and deliberately so. A cache write is an investment
+        # against a future read; where the prefix has been observed changing on
+        # effectively every request, there will be no read and the write is a
+        # pure loss at 1.25x base rate. A live Sonnet 4.5 run on
+        # `timestamped_agent` wrote 20,333 tokens, read back none of them, and
+        # came in 23.5% more expensive than doing nothing -- an ADR-013 rule 1
+        # violation this stage caused while `unstable_prefix` was reporting the
+        # exact cause on the same run (ADR-030).
+        #
+        # Order matters: counting tools below can lift a prefix back over the
+        # floor, and doing that first would reinstate the very write nobody
+        # reads.
+        if ctx.scratch.get(PREFIX_IS_UNSTABLE):
+            self.last_decline_reason = (
+                "prefix is unstable -- it differed on nearly every recent request, so a "
+                "cache write here can never be read back. Move the varying part below the "
+                "stable instructions to restore the discount."
+            )
+            return self.declines(request)
+
         boundary = self._stable_prefix_length(request)
         if boundary == 0:
             return self.declines(request)
 
+        # Tools count. Anthropic caches tools -> system -> messages, so a
+        # breakpoint in the system block caches every schema ahead of it, and
+        # measuring the messages alone understates every tool-carrying request.
+        # `large_system_agent` reported "~1715 tokens" for a 5,186-token prefix
+        # and was declined on the 4,096 tier; the live `mcp_agent` run read
+        # ~2,839 tokens per request against a stable *message* prefix of ~1,387,
+        # which is the provider confirming what it counts (ADR-030).
         prefix_tokens = sum(
             ctx.counter.count_text(m.content, request.model) for m in request.messages[:boundary]
-        )
+        ) + count_tools(request.tools, ctx.counter, request.model)
         floor = min_prefix_tokens_for(request.model)
         if prefix_tokens < floor:
             # Below the provider's floor the marker is ignored. Placing it

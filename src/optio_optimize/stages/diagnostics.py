@@ -29,7 +29,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from optio_optimize.stages.base import Fidelity, Stage, StageResult
+from optio_optimize.stages.base import PREFIX_IS_UNSTABLE, Fidelity, Stage, StageResult
 
 if TYPE_CHECKING:
     from optio_optimize.stages.base import StageContext
@@ -142,8 +142,13 @@ class UnstablePrefixStage(Stage):
 
     def before(self, request: LLMRequest, ctx: StageContext) -> StageResult:
         """Observe the request's prefix. Always returns it unchanged."""
-        del ctx
         self._observe(request)
+        # Published for PrefixCacheStage, which otherwise pays a cache-write
+        # premium on a prefix this stage has already established can never be
+        # read back. Set only once the window supports the claim -- absence
+        # means "not established", never "stable" (ADR-030).
+        if self._system_is_unstable():
+            ctx.scratch[PREFIX_IS_UNSTABLE] = True
         for finding in self._diagnose():
             if finding.kind in self._reported:
                 continue
@@ -163,12 +168,24 @@ class UnstablePrefixStage(Stage):
             self._tools_ordered.record(_digest("".join(rendered)))
             self._tools_sorted.record(_digest("".join(sorted(rendered))))
 
+    def _system_is_unstable(self) -> bool:
+        """Whether the system prompt has been seen changing on nearly every call.
+
+        The same test the ``unstable_system_prompt`` finding uses, named
+        separately because it now has a second consumer that acts on it rather
+        than reporting it.
+        """
+        return (
+            len(self._system.seen) >= MIN_OBSERVATIONS
+            and self._system.distinct_ratio > UNSTABLE_PREFIX_RATIO
+        )
+
     def _diagnose(self) -> list[PrefixFinding]:
         """Findings supported by the observations so far."""
         found: list[PrefixFinding] = []
 
         count = len(self._system.seen)
-        if count >= MIN_OBSERVATIONS and self._system.distinct_ratio > UNSTABLE_PREFIX_RATIO:
+        if self._system_is_unstable():
             found.append(
                 PrefixFinding(
                     kind="unstable_system_prompt",
