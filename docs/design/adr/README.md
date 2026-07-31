@@ -45,6 +45,7 @@ Summaries live in [IMPLEMENTATION.md §15](../../../IMPLEMENTATION.md); full rec
 | [036](adr-036-tool-schema-calibration-is-per-vendor.md) | Tool-schema calibration is per-vendor, and ours was OpenAI's | Accepted |
 | [037](adr-037-the-window-binds-the-prompt-and-the-cap-binds-the-reply.md) | The window binds the prompt, and a separate cap binds the reply | Accepted |
 | [038](adr-038-the-first-request-paid-the-tokenizers-startup-out-of-its-latency-budget.md) | The first request paid the tokenizer's startup out of its latency budget | Accepted |
+| [039](adr-039-a-measurement-that-costs-money-to-recheck-gets-checked-once.md) | A measurement that costs money to re-check gets checked once | Accepted |
 
 ADRs 000, 001, and 004 were expanded first because M0 code already depended on them: they
 determine what the library is allowed to do, and what it must never do.

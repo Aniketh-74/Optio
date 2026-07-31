@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from optio_optimize.bench.adversarial import format_audit_report, run_semantic_cache_audit
@@ -20,6 +21,7 @@ from optio_optimize.bench.providers import (
     available_live_provider,
 )
 from optio_optimize.bench.recall import format_recall_report, run_recall_audit
+from optio_optimize.bench.recording import RecordingProvider, ReplayProvider
 from optio_optimize.bench.routing import format_routing_report, run_routing_audit
 from optio_optimize.bench.workloads import WORKLOADS
 from optio_optimize.config import CHEAP_COUNTERPART, DEFAULT_SEMANTIC_THRESHOLD, OptimizeConfig
@@ -208,18 +210,50 @@ def main(argv: list[str] | None = None) -> int:
             "number rather than an assumption. OptimizeConfig rejects anything below 0.9."
         ),
     )
+    parser.add_argument(
+        "--record",
+        metavar="PATH",
+        help=(
+            "with --live, keep every exchange in PATH so this run can be replayed for "
+            "nothing. Live figures here have always been printed once and copied into an "
+            "ADR by hand, which makes re-checking one cost money -- so nobody does, and a "
+            "prefix_cache saving went months on a prompt that hit no cache."
+        ),
+    )
+    parser.add_argument(
+        "--replay",
+        metavar="PATH",
+        help=(
+            "re-run a recording made by --record. No key, no network, no spend. Proves the "
+            "library still builds the requests the provider was measured on; it cannot "
+            "prove the provider still answers that way, so the recording carries its date."
+        ),
+    )
     args = parser.parse_args(argv)
 
+    if args.replay and args.live:
+        print("--replay serves a past run; --live starts a new one. Pick one.", file=sys.stderr)
+        return 2
+    if args.record and not args.live:
+        print("--record has nothing to keep without --live.", file=sys.stderr)
+        return 2
+
     guard = SpendGuard(args.cap) if args.live else None
-    if args.live:
-        provider = available_live_provider(guard)
-        if provider is None:
+    provider: BenchProvider
+    if args.replay:
+        provider = ReplayProvider(Path(args.replay))
+        print(f"REPLAY of {provider.label}. No spend.")
+        print("Token, cost and cache figures are the live ones. Latency is not.\n")
+    elif args.live:
+        live = available_live_provider(guard)
+        if live is None:
             print(
                 "No live provider available. Set ANTHROPIC_API_KEY or OPENAI_API_KEY "
                 "and install the matching SDK, or drop --live to use the simulator.",
                 file=sys.stderr,
             )
             return 2
+        provider = live
         if args.model:
             at_model = _same_provider_at(provider, args.model, guard)
             if at_model is None:
@@ -229,6 +263,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 2
             provider = at_model
+        if args.record:
+            # Wrapped last, so it records the provider actually used -- including
+            # any --model retarget above.
+            provider = RecordingProvider(provider, Path(args.record))
         print(f"LIVE run against {provider.label}, spend cap ${args.cap:.2f}")
         if not args.semantic_cache_audit:
             print("Both arms call the real API, so this bills roughly twice one pass.\n")
