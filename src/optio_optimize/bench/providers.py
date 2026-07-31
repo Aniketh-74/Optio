@@ -20,7 +20,7 @@ import hashlib
 import json
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from optio_optimize import wire
@@ -527,7 +527,7 @@ class AnthropicProvider:
         # stage -- lives in optio_optimize.wire, shared with batch submission.
         system_blocks, turns = wire.anthropic_system_and_turns(request)
 
-        from anthropic.types import MessageParam, TextBlock
+        from anthropic.types import MessageParam
 
         # `tools` and `stop_sequences` are **omitted when empty, never passed as
         # None**, and the difference is not cosmetic: Anthropic rejects a null
@@ -563,14 +563,19 @@ class AnthropicProvider:
             temperature=request.temperature if request.temperature is not None else 1.0,
             **optional,
         )
-        usage = reply.usage
-        cached = getattr(usage, "cache_read_input_tokens", 0) or 0
-        # isinstance rather than the prior `getattr(b, "type", "") == "text"`:
-        # both are correct at runtime, but only isinstance lets mypy narrow
-        # the block union so `.text` is actually known to exist -- the string
-        # check alone type-checked only because anthropic was previously
-        # exempted from mypy via ignore_missing_imports, which hid this.
-        text = "".join(b.text for b in reply.content if isinstance(b, TextBlock))
+        # Usage comes from the shared extractor, not from a private reading of
+        # `reply.usage`. This used to take `cache_read_input_tokens` and stop,
+        # so `cache_creation_input_tokens` was never read: written tokens were
+        # dropped from `input_tokens` outright, and the cache-write premium in
+        # `ABResult.cost_usd` was inert because nothing populated the field it
+        # prices. A live Sonnet 4.5 run reported `reads 18,300 writes 0`, which
+        # cannot happen -- nothing is read from a cache that was never written.
+        #
+        # `wire.response_from_anthropic_message` has been correct since ADR-021
+        # and its docstring records this exact defect being fixed there; the
+        # streaming adapter uses it. The benchmark, whose entire output is
+        # savings figures, had kept its own copy.
+        response = wire.response_from_anthropic_message(reply)
         # Normalise Anthropic's tool_use blocks to the same ``tool_calls``
         # convention OpenAI uses, so cascade's verifier reads one shape (ADR-023
         # step 3). Anthropic's ``input`` is a dict, not a JSON string, so it is
@@ -593,15 +598,8 @@ class AnthropicProvider:
                 for b in tool_uses
             ]
 
-        response = LLMResponse(
-            content=text,
-            input_tokens=usage.input_tokens + cached,
-            output_tokens=usage.output_tokens,
-            cached_input_tokens=cached,
-            model=reply.model,
-            finish_reason=reply.stop_reason,
-            extra=extra,
-        )
+        if extra:
+            response = replace(response, extra=extra)
         self.guard.record(_actual_cost(response, self.model))
         return response
 

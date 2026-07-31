@@ -88,6 +88,22 @@ correctly claims no saving of its own — ADR-020's rule, because the effect is 
 estimated — so the stage line reads `0 tokens` and the number that would show whether it worked was
 invisible. A lever this package calls its largest lossless win has to be legible in its own benchmark.
 
+> **Follow-up, 2026-07-31.** This decision was **inert inside the benchmark** for its first day.
+> `Workload.requests()` called `build()` with no arguments, so every workload built its requests as
+> `gpt-4o` no matter what `--model` said — `--model` reached the provider and the pricing row, never
+> `LLMRequest.model`. `min_prefix_tokens_for` therefore returned the unknown-model fallback of 1,024
+> on every live Anthropic run, and the very failure this ADR describes went on happening on the very
+> model it describes it for: a live Haiku run placed the breakpoint and came back `reads 0 writes 0`.
+> It hid because gpt-4o's fallback equals Sonnet 4.5's real floor, so the one model where the bug is
+> invisible is the one on which `prefix_cache` appeared to work. Fixed by `requests(model)`.
+>
+> **The open item below is now closed.** With the model plumbed through, `multi_turn_chat` on
+> `claude-sonnet-4-5` (floor 1,024, prompts 1,406–1,769 tokens) is the suite's first end-to-end
+> demonstration of `prefix_cache`: **18,300 provider cache reads, 1,872 writes, cost $0.06548 →
+> $0.01672 — 74.5% — at 91.7% identical output and +0.97 ms per request.** Input *token count* is
+> unchanged at 20,610, which is the point: prefix caching changes the rate, not the volume, and a
+> suite reporting only token reduction would score this at 0.0%.
+
 ## Consequences
 
 - **Opus 5 gains caching it was being denied**, on prompts between 512 and 1,024 tokens. That is the

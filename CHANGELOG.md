@@ -23,6 +23,23 @@ be promoted to the top level deliberately.
 
 ### Fixed
 
+- **`--model` now reaches the stages, not just the provider.** `Workload.requests()` called
+  `build()` with no arguments, so every workload built its requests as `gpt-4o` whatever `--model`
+  said. Every stage that branches on the model read `gpt-4o` on every live Anthropic run:
+  `min_prefix_tokens_for` returned the unknown-model fallback of 1,024, which left
+  [ADR-027](docs/design/adr/adr-027-the-cacheable-prefix-floor-is-per-model.md)'s per-model cacheable
+  floor **inert inside the benchmark built to validate it** — a live Haiku run placed the breakpoint
+  and came back `reads 0 writes 0`, the exact failure ADR-027 exists to prevent, on the exact model
+  it describes. It hid because gpt-4o's fallback equals Sonnet 4.5's real floor, so the one model
+  that conceals the bug is the one on which `prefix_cache` appeared to work.
+
+- **The benchmark's Anthropic provider reads the cache-write field it bills from.** It took
+  `cache_read_input_tokens` and never `cache_creation_input_tokens`, so written tokens were dropped
+  from `input_tokens` outright and the cache-write premium added to `ABResult.cost_usd` was inert.
+  A live Sonnet 4.5 run reported `reads 18,300 writes 0`, which cannot happen. It now shares
+  `wire.response_from_anthropic_message` with the streaming adapter, which has been correct since
+  ADR-021. The corrected figure for that run is **74.5%, not the 85.2% the bug reported.**
+
 - **A price is no longer inferred across model generations
   ([ADR-029](docs/design/adr/adr-029-a-price-may-not-be-inferred-across-model-generations.md)).**
   `optio`'s pricing lookup documented itself as matching "exactly first and then by longest prefix"
