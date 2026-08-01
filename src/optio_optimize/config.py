@@ -20,6 +20,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, fields
 from datetime import date
+from enum import Enum
 from typing import Any
 
 from optio_optimize.errors import OptimizeConfigError
@@ -499,6 +500,17 @@ PRICING: dict[str, ModelPricing] = {
     # write tokens at 1.00 instead of 1.25 and reported a 53.7% saving where the
     # true figure is 50.1%. An error in the direction that flatters the library.
     "claude-haiku-4-5": ModelPricing(1.00, 5.00, 0.10, 1.25, 2.00),
+    # **Google lists this model as "Shut down"**, under "Previous models" on
+    # https://ai.google.dev/gemini-api/docs/models -- read 2026-08-02 while
+    # looking up its token limits for the table below, which is why it carries
+    # none. The row is left in place rather than deleted: removing a price
+    # silently changes what every historical report meant, and this package has
+    # exactly one Google model, so dropping it would also drop the only evidence
+    # that a third vendor was ever priced here.
+    #
+    # It should not be used for new work, and no live provider here serves it.
+    # This is the ADR-029 shape -- a table naming a model the API will not
+    # serve -- caught by reading the vendor's page rather than by a 404.
     "gemini-2.0-flash": ModelPricing(0.10, 0.40, 0.025),
 }
 
@@ -572,6 +584,69 @@ def _row_for(model: str) -> tuple[str, ModelPricing] | None:
     return None
 
 
+class Evidence(Enum):
+    """How a model limit in this module came to be known.
+
+    Two ways, and they are not equally strong. Keeping them apart is what lets
+    this package carry a vendor it has never billed without pretending to have
+    measured it.
+
+    Attributes:
+        MEASURED: This project sent a request and read the provider's answer --
+            usually its own 400, which is the provider's arithmetic rather than
+            a page about it (the reasoning ADR-036 used for ``count_tokens``).
+            Costs a key and some money. Cannot go stale silently, because the
+            probe is re-runnable.
+        PUBLISHED: The vendor documents it and this project has not observed it.
+            Costs nothing and covers every vendor with a documentation page. It
+            is **not a guess** -- it is a citable claim, which is why a
+            published entry must carry a URL. It can go stale without anything
+            here noticing, which is why it must also carry a date.
+    """
+
+    MEASURED = "measured"
+    PUBLISHED = "published"
+
+
+@dataclass(frozen=True, slots=True)
+class Limit:
+    """A model limit together with why anyone should believe it.
+
+    The type exists to make the citation structural. These tables previously
+    held bare ``int``s, and an ``int`` cannot say where it came from -- so the
+    only entries anyone could justify adding were ones this project had paid to
+    measure, and **coverage became a function of whose API key was to hand.**
+    That is the wrong thing for a multi-vendor library's coverage to depend on.
+
+    Attributes:
+        tokens: The limit itself.
+        evidence: Which of the two ways this is known. See :class:`Evidence`.
+        source: For a measured limit, the probe that produced it. For a
+            published one, a URL a reader can open -- the only thing separating
+            "the vendor states this" from "somebody typed a number".
+        checked: ISO date the source last said so. A published figure with no
+            date cannot be told from a current one, which is the same reason a
+            recording carries the date it was made (ADR-039).
+    """
+
+    tokens: int
+    evidence: Evidence
+    source: str
+    checked: str
+
+
+#: The probe behind every measured entry below. Named once so the tables stay
+#: readable and so re-running it is one obvious command.
+_PROBE = "scripts/measure_window_pressure.py"
+
+#: OpenAI's model pages, which state both limits directly. Read 2026-08-02.
+#: These are the first non-Anthropic rows either table has ever carried, and
+#: they cost nothing to obtain -- which is the entire argument for
+#: :attr:`Evidence.PUBLISHED` existing.
+_OPENAI_GPT_4O = "https://developers.openai.com/api/docs/models/gpt-4o"
+_OPENAI_GPT_4O_MINI = "https://developers.openai.com/api/docs/models/gpt-4o-mini"
+
+
 #: Context window per model, in tokens: the limit that binds the **prompt**.
 #:
 #: Exceeding it is a hard 400 before any generation --
@@ -588,11 +663,15 @@ def _row_for(model: str) -> tuple[str, ModelPricing] | None:
 #: further. Recording 1,000,000 for them would be an inference across a
 #: generation boundary -- the error ADR-029 exists because of -- and a
 #: diagnostic that guesses a window is worse than one that stays quiet.
-CONTEXT_WINDOW: dict[str, int] = {
-    "claude-opus-4-5": 200_000,
-    "claude-opus-4-1": 200_000,
-    "claude-sonnet-4-5": 200_000,
-    "claude-haiku-4-5": 200_000,
+#: Every value here was read out of that error message rather than off a
+#: documentation page, and :class:`Limit` is what lets a value say which.
+CONTEXT_WINDOW: dict[str, Limit] = {
+    "claude-opus-4-5": Limit(200_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    "claude-opus-4-1": Limit(200_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    "claude-sonnet-4-5": Limit(200_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    "claude-haiku-4-5": Limit(200_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    "gpt-4o": Limit(128_000, Evidence.PUBLISHED, _OPENAI_GPT_4O, "2026-08-02"),
+    "gpt-4o-mini": Limit(128_000, Evidence.PUBLISHED, _OPENAI_GPT_4O_MINI, "2026-08-02"),
 }
 
 #: Maximum completion tokens per model: the limit that binds the **reply**.
@@ -606,22 +685,28 @@ CONTEXT_WINDOW: dict[str, int] = {
 #: which is the maximum allowed number of output tokens``. That matters here
 #: because ``AdaptiveMaxTokensStage`` *sets* ``max_tokens`` on requests that
 #: carried none, and its ceiling can land above a cap this low.
-MAX_OUTPUT_TOKENS: dict[str, int] = {
-    "claude-fable-5": 128_000,
-    "claude-opus-5": 128_000,
-    "claude-opus-4-8": 128_000,
-    "claude-opus-4-7": 128_000,
-    "claude-opus-4-6": 128_000,
-    "claude-opus-4-5": 64_000,
-    "claude-opus-4-1": 32_000,
-    "claude-sonnet-5": 128_000,
-    "claude-sonnet-4-6": 128_000,
-    "claude-sonnet-4-5": 64_000,
-    "claude-haiku-4-5": 64_000,
+MAX_OUTPUT_TOKENS: dict[str, Limit] = {
+    "claude-fable-5": Limit(128_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    "claude-opus-5": Limit(128_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    "claude-opus-4-8": Limit(128_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    "claude-opus-4-7": Limit(128_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    "claude-opus-4-6": Limit(128_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    "claude-opus-4-5": Limit(64_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    "claude-opus-4-1": Limit(32_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    "claude-sonnet-5": Limit(128_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    "claude-sonnet-4-6": Limit(128_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    "claude-sonnet-4-5": Limit(64_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    "claude-haiku-4-5": Limit(64_000, Evidence.MEASURED, _PROBE, "2026-08-01"),
+    # 16,384 against a 128,000 window: the narrowest cap-to-window ratio in
+    # either table by a wide margin, and a reminder that the two limits are
+    # genuinely independent (ADR-037). `AdaptiveMaxTokensStage` now clamps to
+    # this on OpenAI, where before it had no cap to clamp to at all.
+    "gpt-4o": Limit(16_384, Evidence.PUBLISHED, _OPENAI_GPT_4O, "2026-08-02"),
+    "gpt-4o-mini": Limit(16_384, Evidence.PUBLISHED, _OPENAI_GPT_4O_MINI, "2026-08-02"),
 }
 
 
-def _limit_for(table: dict[str, int], model: str) -> int | None:
+def _limit_for(table: dict[str, Limit], model: str) -> Limit | None:
     """Look up a per-model limit, resolving a dated id to its alias.
 
     Returns ``None`` for a model the table does not carry -- never a
@@ -642,21 +727,41 @@ def _limit_for(table: dict[str, int], model: str) -> int | None:
 
 
 def context_window_for(model: str) -> int | None:
-    """The model's prompt limit in tokens, or ``None`` if unmeasured.
+    """The model's prompt limit in tokens, or ``None`` if this package has none.
 
     Args:
         model: Model id, as a caller wrote it or as the API reported it back.
 
     Returns:
-        The window, or ``None``. Absence means "not measured", never
+        The window, or ``None``. Absence means "no evidence either way", never
         "unlimited" and never a guess -- see :data:`CONTEXT_WINDOW` for the
-        seven models that sit in exactly that position.
+        seven models that sit in exactly that position. Use
+        :func:`context_window_provenance` to tell an observed figure from a
+        documented one.
     """
-    return _limit_for(CONTEXT_WINDOW, model)
+    limit = _limit_for(CONTEXT_WINDOW, model)
+    return limit.tokens if limit is not None else None
+
+
+def context_window_provenance(model: str) -> Evidence | None:
+    """How the window in :func:`context_window_for` is known, if it is.
+
+    Args:
+        model: Model id.
+
+    Returns:
+        :attr:`Evidence.MEASURED`, :attr:`Evidence.PUBLISHED`, or ``None`` when
+        this package carries no window for the model at all. The third case is
+        distinct from the second on purpose: "we have not looked" and "the
+        vendor says so" are different claims, and collapsing them is how the
+        table came to look Anthropic-only.
+    """
+    limit = _limit_for(CONTEXT_WINDOW, model)
+    return limit.evidence if limit is not None else None
 
 
 def max_output_tokens_for(model: str) -> int | None:
-    """The model's reply limit in tokens, or ``None`` if unmeasured.
+    """The model's reply limit in tokens, or ``None`` if this package has none.
 
     Args:
         model: Model id, as a caller wrote it or as the API reported it back.
@@ -664,7 +769,21 @@ def max_output_tokens_for(model: str) -> int | None:
     Returns:
         The cap, or ``None`` for a model this table does not carry.
     """
-    return _limit_for(MAX_OUTPUT_TOKENS, model)
+    limit = _limit_for(MAX_OUTPUT_TOKENS, model)
+    return limit.tokens if limit is not None else None
+
+
+def max_output_tokens_provenance(model: str) -> Evidence | None:
+    """How the cap in :func:`max_output_tokens_for` is known, if it is.
+
+    Args:
+        model: Model id.
+
+    Returns:
+        The evidence class, or ``None`` when no cap is carried.
+    """
+    limit = _limit_for(MAX_OUTPUT_TOKENS, model)
+    return limit.evidence if limit is not None else None
 
 
 #: Cheap counterpart per model family, used when routing is on and no explicit

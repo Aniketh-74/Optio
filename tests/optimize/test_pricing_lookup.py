@@ -72,6 +72,24 @@ class TestAVersionBumpIsADifferentModel:
         """
         assert pricing_for(model) is None
 
+    @pytest.mark.parametrize(
+        "model", ["claude-opus-4-10", "claude-sonnet-4-50", "claude-haiku-4-51"]
+    )
+    def test_a_longer_version_number_does_not_inherit_a_shorter_ones_rate(self, model: str) -> None:
+        """The shape the cases above cannot reach, and the one that actually leaks.
+
+        ``claude-opus-4-9`` shares no prefix with any priced id, so a bare
+        ``startswith`` gets it right by accident. ``claude-opus-4-10`` **does**
+        start with ``claude-opus-4-1`` -- so without the four-digit
+        discriminator in ``_SAME_MODEL_SUFFIX`` a tenth release would silently
+        bill at the first one's rate.
+
+        Found by mutation: removing the suffix check from ``_row_for`` left the
+        whole pricing suite green. The equivalent check in ``_limit_for`` was
+        pinned by four tests; this one, older and more load-bearing, by none.
+        """
+        assert pricing_for(model) is None
+
     def test_an_unknown_model_is_none_not_a_guess(self) -> None:
         assert pricing_for("some-future-model") is None
 
