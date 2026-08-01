@@ -222,12 +222,26 @@ def served_from_cache(response: LLMResponse, stage: str) -> LLMResponse:
     served -- turning a cache that saves money into one that appears to spend it
     repeatedly. ``served_from`` preserves the provenance, so the saving stays
     attributable to the right stage.
+
+    **Every** billable field, not the three this once listed. ADR-021 added the
+    1.25x and 2x cache-write bands, and because a dataclass field with a default
+    keeps every existing constructor compiling, they were copied silently
+    through every hit -- a cache that saves money reporting itself re-spending
+    at the most expensive rate in the table.
+
+    Written out rather than swept with ``fields()`` so the types are checkable,
+    and paired with a test that enumerates every ``*_tokens`` field on
+    :class:`~optio_optimize.types.LLMResponse`. The next band added fails that
+    test on the day it appears, which is better than being zeroed silently by a
+    loop nobody reads.
     """
     return replace(
         response,
         input_tokens=0,
         output_tokens=0,
         cached_input_tokens=0,
+        cache_write_tokens=0,
+        cache_write_1h_tokens=0,
         served_from=stage,
     )
 
@@ -389,6 +403,13 @@ class PrefixCacheStage(Stage):
             return self.declines(request)
 
         ttl = self._ttl_for(request, boundary, enabled=ctx.config.cache_ttl_selection)
+        # Cleared on the way past every decline branch above. The attribute is a
+        # diagnostic answering "why did this prefix not cache?" (ADR-027), and a
+        # reason left over from an earlier request answers it about the wrong
+        # one: after this stage started marking tool-heavy Anthropic prefixes it
+        # had been wrongly declining, a *successful* mark still reported the
+        # previous request's "below the cacheable minimum".
+        self.last_decline_reason = ""
         # Only a request we actually marked can tell `after` anything about
         # marking. Below-floor requests report reads 0 / writes 0 forever, and
         # counting those would disable the stage on workloads it never tried.
@@ -446,7 +467,7 @@ class PrefixCacheStage(Stage):
         bookkeeping is exercised by the default configuration rather than only by
         the opt-in path.
         """
-        digest = _prefix_digest(request, boundary)
+        digest = _prefix_digest(request, _identity_boundary(request))
         now = self._clock()
         previous = self._last_seen.get(digest)
 
@@ -495,6 +516,30 @@ class PrefixCacheStage(Stage):
 def _with_cacheable(message: Message, ttl: str | None = None) -> Message:
     """Return a copy of ``message`` flagged as a prefix-cache boundary."""
     return replace(message, cacheable=True, cache_ttl=ttl)
+
+
+def _identity_boundary(request: LLMRequest) -> int:
+    """How many leading messages identify the cache entry across turns.
+
+    The **system block only**, which is deliberately narrower than
+    :meth:`PrefixCacheStage._stable_prefix_length`. That returns
+    ``len(messages) - 2``, so in an appending conversation it grows every turn
+    -- and a digest over it changed every turn, meaning ``_last_seen`` never
+    matched, ``_expires`` was never populated, and ``cache_ttl_selection`` could
+    never emit a one-hour TTL for the agent loop it was written for.
+
+    Anthropic's caching is incremental: a longer prompt that shares this head
+    still reads the head back. So the head is the thing whose expiry can
+    actually be observed, and the growing tail is noise for that question.
+
+    Falls back to the first message when there is no system block, so a
+    system-less conversation is still identified by something stable rather than
+    by everything.
+    """
+    count = 0
+    while count < len(request.messages) and request.messages[count].role == "system":
+        count += 1
+    return count or min(1, len(request.messages))
 
 
 def _prefix_digest(request: LLMRequest, boundary: int) -> str:

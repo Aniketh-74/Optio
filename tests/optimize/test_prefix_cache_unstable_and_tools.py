@@ -160,16 +160,41 @@ class TestToolSchemasCountTowardThePrefix:
         assert any(m.cacheable for m in with_tools.request.messages)
 
     def test_the_decline_reason_counts_tools_too(self) -> None:
-        """ADR-027 made "no cache reads" diagnosable; the figure must stay true."""
+        """ADR-027 made "no cache reads" diagnosable; the figure must stay true.
+
+        Was written as 4 tools against 20. Correcting ``count_tools`` to
+        Anthropic's measured 1.29 (ADR-040) lifted 20 tools over the 4,096 floor
+        -- it is now *marked*, which is the point of that fix -- so the
+        comparison moved to two counts that both still decline. Testing that the
+        figure tracks the tool count needs two declines; testing that tools lift
+        a prefix over the floor is the test above.
+        """
         stage = PrefixCacheStage()
 
-        stage.before(_request(head="H", model="claude-haiku-4-5", tools=4), _ctx())
+        stage.before(_request(head="H", model="claude-haiku-4-5"), _ctx())
         small = stage.last_decline_reason
 
-        stage.before(_request(head="H", model="claude-haiku-4-5", tools=20), _ctx())
+        stage.before(_request(head="H", model="claude-haiku-4-5", tools=4), _ctx())
         larger = stage.last_decline_reason
 
         assert small != larger
+
+    def test_a_marked_request_does_not_report_an_earlier_decline(self) -> None:
+        """``last_decline_reason`` answers "why did this prefix not cache?".
+
+        Left uncleared it answers about whichever request last declined, so a
+        successfully marked prefix reported the previous one's "below the
+        cacheable minimum" -- and someone debugging cache misses reads a reason
+        for a request that cached fine.
+        """
+        stage = PrefixCacheStage()
+
+        stage.before(_request(head="H", model="claude-haiku-4-5", tools=4), _ctx())
+        assert stage.last_decline_reason
+
+        stage.before(_request(head="H", model="claude-haiku-4-5", tools=40), _ctx())
+
+        assert stage.last_decline_reason == ""
 
     def test_a_request_without_tools_is_unchanged(self) -> None:
         """No tools, no difference -- this must not move existing behaviour."""

@@ -42,6 +42,20 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger("optio_optimize")
 
+#: Models warmed at construction, one per distinct tokenizer vocabulary.
+#:
+#: ``tiktoken`` loads each encoding's BPE table lazily and separately, so warming
+#: one leaves the others cold. Real model names rather than encoding names,
+#: because :class:`~optio_optimize.tokens.TokenCounter` takes models -- and
+#: because naming ``cl100k_base`` here would tie this package's warm-up to
+#: tiktoken's internal vocabulary names, which a different counter would not
+#: share.
+#:
+#: ``gpt-4o`` maps to ``o200k_base`` and ``gpt-4`` to ``cl100k_base``. Anthropic
+#: models resolve through the same fallback as ``gpt-4o``, so they need no third
+#: entry; a counter that tokenized them separately would.
+WARM_MODELS = ("gpt-4o", "gpt-4")
+
 #: Callable that actually talks to the provider.
 ProviderCall = Callable[["LLMRequest"], "LLMResponse"]
 
@@ -289,12 +303,25 @@ class Pipeline:
 
         Failures are swallowed. This changes when a cost is paid and must never
         become a new way to fail (ADR-013 rule 1).
+
+        **One model name is not enough.** The first version passed ``""``, which
+        `encoding_for_model` rejects, so the fallback warmed `o200k_base` alone
+        and every `cl100k_base` model -- `gpt-4`, `gpt-3.5-turbo` -- still paid
+        the full vocabulary load out of a 100 ms deadline on request one. The
+        bug ADR-038 closed, surviving for the families it did not name. Each
+        distinct encoding is a separate lazy load, so each needs a real model
+        name that maps to it.
         """
-        try:
-            self._counter.count_text("warm", "")
-        except Exception as exc:  # noqa: BLE001 - never a new failure mode
-            # Type only, never the message (§10).
-            _log.debug("optio_optimize: counter warm-up failed (%s)", type(exc).__name__)
+        for model in WARM_MODELS:
+            try:
+                self._counter.count_text("warm", model)
+            except Exception as exc:  # noqa: BLE001 - never a new failure mode
+                # Type only, never the message (§10). Continues rather than
+                # returns: one unavailable vocabulary must not leave the others
+                # cold, which would reintroduce the bug for a different family.
+                _log.debug(
+                    "optio_optimize: counter warm-up failed for %s (%s)", model, type(exc).__name__
+                )
 
     def _run_stages(self, request: LLMRequest, run_id: str | None) -> PreparedRequest:
         """Run every stage's ``before`` hook, stopping at a short-circuit or the deadline.

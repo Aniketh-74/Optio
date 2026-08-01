@@ -548,6 +548,34 @@ def response_from_anthropic_message(message: Any) -> LLMResponse:
         for block in getattr(message, "content", [])
         if getattr(block, "type", "") == "text"
     )
+    # Tool calls, in the same `extra["tool_calls"]` convention the OpenAI
+    # adapter and the bench provider use. Without them a `tool_use` reply
+    # arrives here as *empty content and no proposal*, and `default_verifier`
+    # reaches its "empty text answer" rule -- which is guarded by "only when no
+    # tool call was proposed", and none was visible to propose. Every tool-using
+    # step escalated: cheap model and expensive model, on every call, which is
+    # strictly worse than not routing at all.
+    #
+    # Duck-typed on `.type` for the reason ADR-023 improvement #5 gives: this
+    # survives SDK versions that spell or place ToolUseBlock differently.
+    extra: dict[str, Any] = {}
+    tool_uses = [
+        block
+        for block in getattr(message, "content", [])
+        if getattr(block, "type", "") == "tool_use"
+    ]
+    if tool_uses:
+        extra["tool_calls"] = [
+            {
+                "id": getattr(block, "id", None),
+                "type": "function",
+                "function": {
+                    "name": getattr(block, "name", None),
+                    "arguments": json.dumps(getattr(block, "input", {})),
+                },
+            }
+            for block in tool_uses
+        ]
     return LLMResponse(
         content=text,
         input_tokens=(int(getattr(usage, "input_tokens", 0)) + cached + written) if usage else 0,
@@ -557,4 +585,5 @@ def response_from_anthropic_message(message: Any) -> LLMResponse:
         cache_write_1h_tokens=written_1h,
         model=str(getattr(message, "model", "")),
         finish_reason=getattr(message, "stop_reason", None),
+        extra=extra,
     )
