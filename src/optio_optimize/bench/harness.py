@@ -103,6 +103,7 @@ def run_arm(
         result.output_tokens += response.output_tokens
         result.cached_input_tokens += response.cached_input_tokens
         result.cache_write_tokens += response.cache_write_tokens
+        result.cache_write_1h_tokens += response.cache_write_1h_tokens
 
     result.wall_seconds = time.perf_counter() - wall_started
     peak = tracemalloc.get_traced_memory()[1]

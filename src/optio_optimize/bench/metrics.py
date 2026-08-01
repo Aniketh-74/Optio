@@ -84,6 +84,13 @@ class ArmResult:
             apart: reads 0 / writes 0 is a breakpoint the provider ignored,
             reads 0 / writes N is one that worked over a prefix that then
             changed.
+        cache_write_1h_tokens: The **subset** of ``cache_write_tokens`` that
+            populated a one-hour entry, billed at 2x base input against 1.25x.
+            A subset rather than a sibling, because that is how the provider
+            reports it (ADR-021). Absent entirely until ADR-040, so
+            ``cost_usd`` priced every hour-long write at the five-minute rate --
+            the same asymmetry the comment in that method describes removing
+            for the other band, left in place for this one.
         cached_input_tokens: Prompt tokens served by the provider's own prefix
             cache -- discounted, not free.
         wall_seconds: Total elapsed time, including our overhead.
@@ -107,6 +114,7 @@ class ArmResult:
     output_tokens: int = 0
     cached_input_tokens: int = 0
     cache_write_tokens: int = 0
+    cache_write_1h_tokens: int = 0
     wall_seconds: float = 0.0
     provider_seconds: float = 0.0
     peak_memory_bytes: int = 0
@@ -271,6 +279,7 @@ class ABResult:
             arm.output_tokens,
             arm.cached_input_tokens,
             arm.cache_write_tokens,
+            arm.cache_write_1h_tokens,
         )
 
     @property
