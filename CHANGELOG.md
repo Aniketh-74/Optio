@@ -21,6 +21,26 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A new tracer provider could be left with no tap at all, so nothing was metered
+  ([ADR-043](docs/design/adr/adr-043-id-is-an-address-and-addresses-are-recycled.md)).**
+  `install_tap` tracked tapped providers in a dict keyed by `id(provider)`. `id()` is a memory
+  address and CPython recycles addresses as soon as the object at one is collected -- **189 of 200**
+  short-lived `TracerProvider` instances landed on an address a previous one had used. A new provider
+  then inherited a dead one's entry, the lookup returned early, and **no span processor was ever
+  added**: nothing tapped, nothing priced, and the run span carrying no `gen_ai.run.actual_cost`.
+
+  It surfaced as a `KeyError` in a test about caching, three layers from the cause, and looked like a
+  flake because address reuse depends on allocation history -- adding a `print` to the failing test
+  made it pass. Entries now carry a weak reference to their provider and are validated on lookup.
+
+- **Run-end observers accumulated without bound.** Every install registered one and nothing ever
+  unregistered, so a process gained an observer per provider it had ever created, each firing forever
+  against its own empty ledger and reporting runs it never saw as costing nothing. Dead taps are now
+  retired on each install -- swept there rather than from a `weakref` callback, which would fire
+  while this module's lock is held and deadlock.
+
 ### Added
 
 - **`Optimizer` accepts a `counter`, so you can count with your vendor's own tokenizer
