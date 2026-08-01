@@ -117,6 +117,16 @@ class CostLane(Lane):
         # run spent nothing. Emitting nothing is the only honest answer: the
         # evidence is gone, and re-deriving signals from its absence invents
         # them.
+        # Run end is broadcast to every registered observer, so a lane belonging
+        # to a *different* tracer provider is asked about this run too. Its
+        # ledger has never heard of it, and an untouched ledger's zeros read as
+        # "nothing attempted yet" -- the one state where a full budget really is
+        # available. It would then emit `budget_remaining = <the whole limit>`
+        # for a run that has been spending money throughout, which is the exact
+        # value that guarantees `deny if budget_remaining < 0.50` never fires
+        # (ADR-044).
+        if not self.ledger.knows(run.run_id):
+            return []
         if self.ledger.is_finalised(run.run_id):
             return []
 
