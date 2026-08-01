@@ -32,3 +32,6 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Downloaded CI log archives (GitHub Actions "Download log archive")
+logs_*/

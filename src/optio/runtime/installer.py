@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import weakref
 from typing import TYPE_CHECKING, Final
 
 from opentelemetry import trace
@@ -30,15 +31,53 @@ from optio.runtime.span_tap import OptioSpanTap
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import TracerProvider
 
+    # `trace.get_tracer_provider()` returns the API base class, not the SDK
+    # subclass, so that is what a weak reference to `target` is a reference to.
+    from opentelemetry.trace import TracerProvider as AnyTracerProvider
+
     from optio.config import Config
 
 _log: Final = logging.getLogger("optio")
 
 _lock: Final = threading.Lock()
 
-#: Taps by the ``id()`` of the provider they are installed on. Keyed by identity
-#: because tracer providers are not reliably hashable across SDK versions.
-_installed: Final[dict[int, OptioSpanTap]] = {}
+#: Taps by the ``id()`` of the provider they are installed on, each stored
+#: beside a **weak reference to that provider**. Keyed by identity because
+#: tracer providers are not reliably hashable across SDK versions.
+#:
+#: The weak reference is what makes the key safe. ``id()`` is a memory address
+#: and CPython reuses addresses the moment the object at one is collected --
+#: measured at **189 of 200** short-lived ``TracerProvider`` instances landing
+#: on an address a previous one had used. Without the reference to compare
+#: against, a brand-new provider inherits a dead provider's entry, this function
+#: returns early, and **no processor is ever added to it**: nothing is tapped,
+#: nothing is priced, and the run span carries no cost (ADR-043).
+#:
+#: Weak rather than strong so the dict cannot keep providers alive; a stale
+#: entry is detected on lookup and replaced.
+_installed: Final[dict[int, tuple[weakref.ref[AnyTracerProvider], OptioSpanTap]]] = {}
+
+
+def _retire_dead_taps() -> None:
+    """Drop entries whose provider has been collected, and their observers.
+
+    Swept here rather than from a ``weakref`` callback on purpose: a callback
+    fires at whatever moment the garbage collector chooses, including while this
+    module's non-reentrant lock is already held by the same thread, which would
+    deadlock. Sweeping at install time runs the same cleanup at a point where
+    the lock is known to be safe.
+
+    Without it, ``register_run_end_observer`` grows once per provider a process
+    ever creates. Each stale observer keeps firing with its own empty ledger,
+    reporting ``reconciled_steps == 0`` -- a run that "cost nothing" rather than
+    a run nobody priced.
+
+    Caller must hold :data:`_lock`.
+    """
+    dead = [key for key, (ref, _) in _installed.items() if ref() is None]
+    for key in dead:
+        _, tap = _installed.pop(key)
+        unregister_run_end_observer(tap.on_run_end)
 
 
 def install_tap(config: Config, provider: TracerProvider | None = None) -> OptioSpanTap | None:
@@ -67,10 +106,21 @@ def install_tap(config: Config, provider: TracerProvider | None = None) -> Optio
         return None
 
     with _lock:
+        _retire_dead_taps()
         key = id(target)
         existing = _installed.get(key)
         if existing is not None:
-            return existing
+            ref, tap = existing
+            if ref() is target:
+                return tap
+            # Same address, different provider: the one this entry described has
+            # been collected and its address handed to `target`. Returning `tap`
+            # here is how a provider ends up with no processor at all -- the
+            # defect this check exists for. Retire the dead tap's run-end
+            # observer too, or it fires forever against an empty ledger and
+            # reports every later run as costing nothing.
+            unregister_run_end_observer(tap.on_run_end)
+            del _installed[key]
 
         tap = OptioSpanTap(config)
         add_processor(tap)
@@ -85,7 +135,10 @@ def install_tap(config: Config, provider: TracerProvider | None = None) -> Optio
         # judge that never runs.
         if config.quality_lane:
             selfobs.record_sampling_rate(config.quality_sample_rate)
-        _installed[key] = tap
+        # Stored with a weak reference so a later provider that lands on this
+        # same address is detected as different rather than assumed to be
+        # the same object.
+        _installed[key] = (weakref.ref(target), tap)
         return tap
 
 
@@ -99,7 +152,14 @@ def installed_tap(provider: TracerProvider | None = None) -> OptioSpanTap | None
         The active tap, or ``None`` when nothing is installed.
     """
     target = provider if provider is not None else trace.get_tracer_provider()
-    return _installed.get(id(target))
+    entry = _installed.get(id(target))
+    if entry is None:
+        return None
+    ref, tap = entry
+    # Same address check as `install_tap`: an entry under a recycled id belongs
+    # to a provider that no longer exists, and reporting its tap as this
+    # provider's would be the same mistake one level up.
+    return tap if ref() is target else None
 
 
 def reset_installations() -> None:
@@ -114,6 +174,6 @@ def reset_installations() -> None:
     discarded.
     """
     with _lock:
-        for tap in _installed.values():
+        for _ref, tap in _installed.values():
             unregister_run_end_observer(tap.on_run_end)
         _installed.clear()
