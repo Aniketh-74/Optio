@@ -48,6 +48,7 @@ Summaries live in [IMPLEMENTATION.md §15](../../../IMPLEMENTATION.md); full rec
 | [039](adr-039-a-measurement-that-costs-money-to-recheck-gets-checked-once.md) | A measurement that costs money to re-check gets checked once | Accepted |
 | [040](adr-040-a-field-with-a-default-is-a-field-every-old-call-site-keeps-compiling-around.md) | A field with a default is a field every old call site keeps compiling around | Accepted |
 | [041](adr-041-coverage-should-not-depend-on-whose-api-key-is-to-hand.md) | Coverage should not depend on whose API key is to hand | Accepted |
+| [042](adr-042-the-extension-point-existed-and-nothing-could-reach-it.md) | The extension point existed and nothing outside could reach it | Accepted |
 
 ADRs 000, 001, and 004 were expanded first because M0 code already depended on them: they
 determine what the library is allowed to do, and what it must never do.
