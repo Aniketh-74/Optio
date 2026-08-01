@@ -82,7 +82,7 @@ class TestTheWarmUpHappensAtConstruction:
         counter = _SlowFirstCounter(first_call_ms=0.0)
         config = OptimizeConfig()
 
-        Pipeline(config=config, stages=build_stages(config), counter=counter)  # type: ignore[arg-type]
+        Pipeline(config=config, stages=build_stages(config), counter=counter)
 
         assert counter.calls >= 1
 
@@ -97,7 +97,7 @@ class TestTheWarmUpHappensAtConstruction:
 
         config = OptimizeConfig()
 
-        pipeline = Pipeline(config=config, stages=build_stages(config), counter=_Exploding())  # type: ignore[arg-type]
+        pipeline = Pipeline(config=config, stages=build_stages(config), counter=_Exploding())
 
         assert pipeline is not None
 
@@ -112,7 +112,7 @@ class TestTheFirstRequestGetsTheWholePipeline:
         """
         counter = _SlowFirstCounter()
         config = OptimizeConfig()
-        pipeline = Pipeline(config=config, stages=build_stages(config), counter=counter)  # type: ignore[arg-type]
+        pipeline = Pipeline(config=config, stages=build_stages(config), counter=counter)
 
         first = pipeline.prepare(_request())
 
@@ -126,7 +126,7 @@ class TestTheFirstRequestGetsTheWholePipeline:
         """
         counter = _SlowFirstCounter()
         config = OptimizeConfig()
-        pipeline = Pipeline(config=config, stages=build_stages(config), counter=counter)  # type: ignore[arg-type]
+        pipeline = Pipeline(config=config, stages=build_stages(config), counter=counter)
 
         first = pipeline.prepare(_request())
         second = pipeline.prepare(_request())
@@ -147,7 +147,7 @@ class TestTheFirstRequestGetsTheWholePipeline:
         """
         counter = _SlowFirstCounter()
         config = OptimizeConfig()
-        pipeline = Pipeline(config=config, stages=build_stages(config), counter=counter)  # type: ignore[arg-type]
+        pipeline = Pipeline(config=config, stages=build_stages(config), counter=counter)
         request = LLMRequest(
             model="claude-haiku-4-5",
             messages=(Message(role="system", content="policy detail " * 3000), *_long_chat()),

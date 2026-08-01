@@ -95,8 +95,10 @@ class TestTheCeilingNeverExceedsTheProvidersCap:
 
         result = stage.before(_request(model), ctx)
 
+        cap = max_output_tokens_for(model)
+        assert cap is not None
         assert result.request.max_tokens == 32_000
-        assert result.request.max_tokens <= max_output_tokens_for(model)
+        assert result.request.max_tokens <= cap
 
     def test_a_reasoning_budget_cannot_push_the_ceiling_over_the_cap(self) -> None:
         """The other route in: the headroom floor raises the ceiling.
