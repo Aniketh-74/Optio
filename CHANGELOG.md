@@ -21,6 +21,53 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Seven defects a green suite was hiding
+  ([ADR-040](docs/design/adr/adr-040-a-field-with-a-default-is-a-field-every-old-call-site-keeps-compiling-around.md)).**
+  A static review reported eight findings against 2,110 passing tests and a clean `mypy --strict`.
+  Seven were real.
+
+  Four are one defect wearing four hats. ADR-021 added `cache_write_tokens` and
+  `cache_write_1h_tokens` to `LLMResponse`; every site that *reads* provider usage was updated, and
+  every site that *copies, zeroes or re-prices* a response was not. Both fields carry a `0` default,
+  so all of them kept compiling and kept type-checking:
+
+  - **a cache hit re-billed the original call's premium tokens.** `served_from_cache` zeroed three
+    fields and copied both write bands forward, so `exact_cache` and `semantic_cache` reported
+    themselves re-spending at the most expensive rate in the table on every hit.
+  - **`SpendGuard` undercounted against a live `--cap`**, pricing every Anthropic cache write at base
+    rate — the one direction a spend cap must never be wrong in.
+  - **streamed replies priced 2x tokens at 1.25x.** The accumulator never read
+    `cache_creation.ephemeral_1h_input_tokens`, which the non-streaming path has read since ADR-021.
+
+  Three stand alone:
+
+  - **`count_tools` applied OpenAI's calibration to Anthropic.** ADR-036 measured 1.29 against
+    `gpt-4o-mini`'s 0.65 — different in *direction*, since Anthropic re-renders schemas and bills
+    more than the raw JSON tokenizes to — and applied it in `minify_tools` only. The ~2x undercount
+    fed `PrefixCacheStage`'s floor, so a tool-heavy Anthropic prefix genuinely over 4,096 measured
+    about 2,000 and was declined: half of the failure ADR-036 was written to fix, still live.
+  - **the counter warm-up covered one encoding.** ADR-038 passed `""` as the model;
+    `encoding_for_model` rejects it and falls back to `o200k_base`, so `gpt-4` and `gpt-3.5-turbo`
+    still paid the 395 ms vocabulary load inside a 100 ms deadline on request one.
+  - **every Anthropic tool call escalated the cascade.** `response_from_anthropic_message` set no
+    `extra`, so a `tool_use` reply reached `default_verifier` as empty content with no proposal to
+    vet. Cheap model *and* expensive model on every tool-using step — strictly worse than not
+    routing, and the opposite of what the config docstring promised.
+
+  Two more surfaced while fixing those: `cache_ttl_selection` identified a prefix by
+  `messages[:len-2]`, which grows every turn, so **in any appending conversation the digest never
+  matched and the one-hour TTL could never be emitted** for the agent loop it exists for; and
+  `last_decline_reason` survived onto a successfully marked request, answering ADR-027's "why did
+  this not cache?" about the wrong one.
+
+  The eighth finding — that `reasoning_budget` ratchets down to its floor — is **wrong**, and is
+  rejected with tests rather than an argument. The 2.0 multiplier is a damping term: a budget falls
+  only while the model uses under half of it. Simulated over 60 turns it settles at 6,000, 32,000,
+  32,000 and 25,600 across four model behaviours, and a mutation setting the multiplier to 1.0 fails
+  those tests — because that is what would actually cause the reported failure.
+
 ### Added
 
 - **Live measurements are kept now, not just quoted

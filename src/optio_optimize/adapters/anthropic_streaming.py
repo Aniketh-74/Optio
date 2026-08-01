@@ -63,6 +63,7 @@ class _Accumulator:
     output_tokens: int = 0
     cached: int = 0
     written: int = 0
+    written_1h: int = 0
     model: str = ""
     finish_reason: str | None = None
 
@@ -89,6 +90,17 @@ class _Accumulator:
             return
         self.cached = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
         self.written = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+        # The one-hour band, read exactly as `response_from_anthropic_message`
+        # reads it. It was missing here, so every *streamed* reply reported
+        # `cache_write_1h_tokens=0` and priced 2x tokens at 1.25x -- two paths to
+        # one provider disagreeing about the same usage object, which is the
+        # failure the docstring above warns about, in the field it did not name.
+        # Clamped to `written` because the hour figure is a subset of the total
+        # (ADR-021), not a sibling.
+        creation = getattr(usage, "cache_creation", None)
+        self.written_1h = min(
+            self.written, int(getattr(creation, "ephemeral_1h_input_tokens", 0) or 0)
+        )
         self.input_tokens = int(getattr(usage, "input_tokens", 0) or 0) + self.cached + self.written
         self.output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
 
@@ -113,6 +125,7 @@ class _Accumulator:
             output_tokens=self.output_tokens,
             cached_input_tokens=self.cached,
             cache_write_tokens=self.written,
+            cache_write_1h_tokens=self.written_1h,
             model=self.model,
             finish_reason=self.finish_reason,
         )

@@ -642,14 +642,30 @@ def _estimate_cost(request: LLMRequest, model: str) -> float:
 
 
 def _actual_cost(response: LLMResponse, model: str) -> float:
-    """Real cost of a completed call."""
+    """Real cost of a completed call.
+
+    Passes both cache-write bands. They are what :class:`SpendGuard` records
+    against a live ``--cap``, and omitting them priced every Anthropic write at
+    base rate instead of 1.25x or 2x -- so the guard's running total drifted
+    *below* the real bill on exactly the workload prefix caching exists for,
+    which is the one direction a spend cap must never be wrong in.
+
+    ``ABResult.cost_usd`` learned these bands in the same branch that added
+    them; this call site did not, because both compute the same thing in two
+    places. A test now asserts the two agree on one response.
+    """
     from optio_optimize.savings import _cost
 
     pricing = pricing_for(model)
     if pricing is None:
         return 0.0
     return _cost(
-        pricing, response.input_tokens, response.output_tokens, response.cached_input_tokens
+        pricing,
+        response.input_tokens,
+        response.output_tokens,
+        response.cached_input_tokens,
+        response.cache_write_tokens,
+        response.cache_write_1h_tokens,
     )
 
 

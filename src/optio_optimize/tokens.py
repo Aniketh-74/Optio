@@ -299,6 +299,58 @@ def count_request(request: LLMRequest, counter: TokenCounter | None = None) -> i
 #: closer for it than 1.0 is, because raw JSON is verbose everywhere.
 TOOL_SCHEMA_CALIBRATION = 0.65
 
+#: The same ratio per vendor, because it is not the same per vendor -- and the
+#: two vendors differ in **direction**, not just magnitude.
+#:
+#: The constant above was fitted on ``gpt-4o-mini``: OpenAI bills *less* than the
+#: raw JSON tokenizes to. Anthropic bills *more*, because it re-renders the
+#: schema into its own representation. Measured against
+#: ``messages.count_tokens``, which is exact and free (ADR-036):
+#:
+#: ======  ======  ==========  ==========
+#: tools   real    raw JSON    real/raw
+#: ======  ======  ==========  ==========
+#: 1       89      69          **1.290**
+#: 5       445     345         **1.290**
+#: 20      1,780   1,380       **1.290**
+#: ======  ======  ==========  ==========
+#:
+#: Identical on Haiku 4.5, Sonnet 4.5 and Opus 4.5, so it is a property of the
+#: API's tool rendering rather than of a model.
+#:
+#: ADR-036 applied this in ``minify_tools`` and left ``count_tools`` on the
+#: global 0.65 -- a ~2x undercount that lands somewhere load-bearing:
+#: :class:`~optio_optimize.stages.caching.PrefixCacheStage` checks a per-model
+#: minimum (512-4,096 tokens) before marking a prefix, and this feeds it. A
+#: tool-heavy Anthropic prefix genuinely over 4,096 measured about 2,000 and was
+#: declined -- half of the failure ADR-036 was written to fix, still live.
+TOOL_SCHEMA_CALIBRATION_BY_MODEL: dict[str, float] = {
+    "gpt-": 0.65,
+    "claude": 1.29,
+}
+
+
+def tool_schema_calibration_for(model: str) -> float:
+    """The vendor's ratio of billed tool tokens to raw-JSON tokens.
+
+    Longest-prefix match against :data:`TOOL_SCHEMA_CALIBRATION_BY_MODEL`,
+    falling back to :data:`TOOL_SCHEMA_CALIBRATION` -- the lowest measured ratio
+    -- so an unrecognized vendor is under-counted rather than over-counted
+    (ADR-036). Under-counting declines a prefix that would have cached, which
+    loses a saving; over-counting inflates every figure derived from it.
+
+    Args:
+        model: Model name, as a caller wrote it.
+
+    Returns:
+        The calibration factor to apply to a raw-JSON token count.
+    """
+    best = ""
+    for name in TOOL_SCHEMA_CALIBRATION_BY_MODEL:
+        if model.startswith(name) and len(name) > len(best):
+            best = name
+    return TOOL_SCHEMA_CALIBRATION_BY_MODEL[best] if best else TOOL_SCHEMA_CALIBRATION
+
 
 def count_tools(
     tools: tuple[dict[str, Any], ...],
@@ -310,14 +362,16 @@ def count_tools(
     Args:
         tools: Schemas in the provider's own shape.
         counter: Counter to use.
-        model: Model name, for tokenizer selection.
+        model: Model name, for tokenizer selection **and** for the vendor's
+            calibration -- the two differ by a factor of two between OpenAI and
+            Anthropic, and in direction.
 
     Returns:
-        Calibrated token estimate; see :data:`TOOL_SCHEMA_CALIBRATION` for the
-        measurement behind the correction.
+        Calibrated token estimate; see
+        :data:`TOOL_SCHEMA_CALIBRATION_BY_MODEL` for the measurement.
     """
     raw = sum(counter.count_text(json.dumps(tool, separators=(",", ":")), model) for tool in tools)
-    return int(raw * TOOL_SCHEMA_CALIBRATION)
+    return int(raw * tool_schema_calibration_for(model))
 
 
 def fits_in_window(tokens: int, limit: int, counter: TokenCounter) -> bool:
