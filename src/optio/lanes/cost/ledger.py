@@ -352,6 +352,39 @@ class CostLedger:
         with self._lock:
             return self._is_closed(run_id)
 
+    def knows(self, run_id: str) -> bool:
+        """Whether this ledger has ever recorded anything for a run.
+
+        The other half of the distinction :meth:`is_finalised` draws. That one
+        separates *this run is over* from *I have never seen it*; this one
+        answers the second question directly, because an all-zero snapshot for a
+        run nobody metered is indistinguishable from one for a run that has not
+        started -- and only the first is a lie.
+
+        It matters because run end is broadcast to **every** registered
+        observer, not only the lane that metered the run. A second tracer
+        provider in the same process -- two agents, a test suite, a service that
+        reconfigures tracing -- gives a second lane with its own ledger, and
+        that ledger is asked about runs it never saw. Answering from its zeros
+        reports the full budget as available for a run that has been spending
+        the whole time (ADR-044).
+
+        Deliberately does **not** also report recently-closed runs. Every caller
+        pairs this with :meth:`is_finalised`, which already returns early for
+        those, so an ``or self._is_closed(run_id)`` here cannot change any
+        outcome -- a mutation removing it left every test green, which is how it
+        was found. An untestable branch in a correctness check is worse than no
+        branch: it looks like protection and cannot be shown to protect.
+
+        Args:
+            run_id: The run's identifier.
+
+        Returns:
+            ``True`` if the run has open or reconciled state in this ledger.
+        """
+        with self._lock:
+            return run_id in self._runs
+
     def evict(self, run_id: str) -> None:
         """Drop all state for a run.
 

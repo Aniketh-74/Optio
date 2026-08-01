@@ -50,6 +50,7 @@ Summaries live in [IMPLEMENTATION.md §15](../../../IMPLEMENTATION.md); full rec
 | [041](adr-041-coverage-should-not-depend-on-whose-api-key-is-to-hand.md) | Coverage should not depend on whose API key is to hand | Accepted |
 | [042](adr-042-the-extension-point-existed-and-nothing-could-reach-it.md) | The extension point existed and nothing outside could reach it | Accepted |
 | [043](adr-043-id-is-an-address-and-addresses-are-recycled.md) | `id()` is an address, and addresses are recycled | Accepted |
+| [044](adr-044-a-lane-must-not-report-on-a-run-it-never-saw.md) | A lane must not report on a run it never saw | Accepted |
 
 ADRs 000, 001, and 004 were expanded first because M0 code already depended on them: they
 determine what the library is allowed to do, and what it must never do.

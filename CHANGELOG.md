@@ -23,6 +23,23 @@ be promoted to the top level deliberately.
 
 ### Fixed
 
+- **A second tracer provider in the same process could report a full budget for a run it never
+  metered ([ADR-044](docs/design/adr/adr-044-a-lane-must-not-report-on-a-run-it-never-saw.md)).**
+  Run end is broadcast to *every* registered observer, not only the lane that metered the run. Two
+  live providers -- two agents, a test suite, a service that reconfigures tracing -- means two cost
+  lanes, and the one that saw nothing answers from an empty ledger. Its zeros are indistinguishable
+  from "nothing attempted yet", the one state where a full budget genuinely is available, so it
+  emitted `budget_remaining = <the whole limit>` for a run that had been spending throughout.
+
+  **That is the value which guarantees a budget policy never fires** -- the exact failure
+  `test_an_unknown_model_reports_no_cost_rather_than_a_free_run` was written to prevent. The
+  arithmetic guard was already correct; the hole was in who was allowed to run it. A lane now stays
+  silent about runs it never observed.
+
+  Exposed by the ADR-043 fix: before it, foreign taps were mostly never installed, so they were not
+  around to answer. Fixing one silent failure revealed the one it had been hiding.
+
+
 - **A new tracer provider could be left with no tap at all, so nothing was metered
   ([ADR-043](docs/design/adr/adr-043-id-is-an-address-and-addresses-are-recycled.md)).**
   `install_tap` tracked tapped providers in a dict keyed by `id(provider)`. `id()` is a memory
