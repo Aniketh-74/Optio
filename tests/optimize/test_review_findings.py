@@ -365,6 +365,52 @@ class TestTheCounterWarmUpCoversTheEncodingsWeUse:
         assert "gpt-4" in warmed
 
 
+class TestTheBenchmarkPricesTheOneHourBandToo:
+    """A ninth instance, found by sweeping for the pattern rather than reported.
+
+    ``ArmResult`` carries ``cache_write_tokens`` and had **no field at all** for
+    the one-hour band, so ``run_arm`` could not accumulate it and
+    ``ABResult.cost_usd`` priced every 2x write at 1.25x.
+
+    The comment directly above ``cost_usd`` describes removing this exact
+    asymmetry for the five-minute band -- "the identical asymmetry ADR-021
+    removed from ``SavingsReport``, reproduced inside the benchmark that
+    measures it" -- and then leaves the hour band with it. Third occurrence of
+    one mistake, each one layer further out.
+    """
+
+    def test_an_arm_records_the_hour_band(self) -> None:
+        from optio_optimize.bench.metrics import ArmResult
+
+        assert hasattr(ArmResult(name="x"), "cache_write_1h_tokens")
+
+    def test_an_hour_write_is_priced_above_a_five_minute_one(self) -> None:
+        from optio_optimize.bench.metrics import ABResult, ArmResult, QualityResult
+
+        def _arm(hour: int) -> ArmResult:
+            return ArmResult(
+                name="optimized",
+                input_tokens=10_000,
+                output_tokens=100,
+                cache_write_tokens=10_000,
+                cache_write_1h_tokens=hour,
+            )
+
+        def _ab(hour: int) -> ABResult:
+            return ABResult(
+                workload="w",
+                baseline=_arm(0),
+                optimized=_arm(hour),
+                quality=QualityResult(),
+                model="claude-haiku-4-5",
+            )
+
+        result = _ab(0)
+        hourly = _ab(10_000)
+
+        assert hourly.cost_usd(hourly.optimized) > result.cost_usd(result.optimized)  # type: ignore[operator]
+
+
 class TestTheReasoningBudgetConvergesRatherThanCollapsing:
     """Finding 6, and the one of the eight that is **wrong**.
 

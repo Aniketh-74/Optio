@@ -62,6 +62,11 @@ be promoted to the top level deliberately.
   `last_decline_reason` survived onto a successfully marked request, answering ADR-027's "why did
   this not cache?" about the wrong one.
 
+  Sweeping for the pattern rather than waiting to be told found a **ninth**: `ArmResult` had no
+  one-hour field at all, so the benchmark priced every 2x write at 1.25x. The comment directly above
+  `ABResult.cost_usd` describes removing that exact asymmetry for the five-minute band; the hour band
+  kept it. Same mistake, one layer further out, third occurrence.
+
   The eighth finding — that `reasoning_budget` ratchets down to its floor — is **wrong**, and is
   rejected with tests rather than an argument. The 2.0 multiplier is a damping term: a budget falls
   only while the model uses under half of it. Simulated over 60 turns it settles at 6,000, 32,000,
