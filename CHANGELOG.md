@@ -23,6 +23,24 @@ be promoted to the top level deliberately.
 
 ### Added
 
+- **`Optimizer` accepts a `counter`, so you can count with your vendor's own tokenizer
+  ([ADR-042](docs/design/adr/adr-042-the-extension-point-existed-and-nothing-could-reach-it.md)).**
+  Every savings figure here is a token count, and every count goes through `TokenCounter` -- a
+  two-method Protocol anything can implement. `Pipeline` has accepted one since ADR-038. `Optimizer`,
+  the public entry point, did not -- so the extension point existed, was typed, was documented, and
+  **nothing outside the package could reach it.** Every count for every vendor went through
+  `tiktoken`, whose `o200k_base` fallback is what Anthropic and Google models resolved to.
+
+  That is not a small approximation: ADR-036 measured Anthropic billing 1.29x what the raw JSON
+  tokenizes to for tool schemas against OpenAI's 0.65 -- opposite directions.
+
+  Provider-reported usage still wins over any counter, and that precedence is now asserted rather
+  than assumed: a counter is an estimate, the provider's number is the bill, and a counter that could
+  override it would make reports *less* accurate on every provider that reports usage. The supplied
+  counter is also the one warmed at construction, so ADR-038's fix applies to the tokenizer actually
+  in use.
+
+
 - **Model limits now say where they came from, and the tables are no longer one vendor
   ([ADR-041](docs/design/adr/adr-041-coverage-should-not-depend-on-whose-api-key-is-to-hand.md)).**
   `CONTEXT_WINDOW` and `MAX_OUTPUT_TOKENS` carried 15 Anthropic models and nothing else. Not because

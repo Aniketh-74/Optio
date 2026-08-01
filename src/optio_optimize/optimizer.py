@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from optio_optimize.stages.diagnostics import PrefixFinding
     from optio_optimize.stages.semantic_cache import SimilarityFn
     from optio_optimize.stages.summarize import Summarizer
+    from optio_optimize.tokens import TokenCounter
     from optio_optimize.types import LLMRequest, LLMResponse
 
 
@@ -48,6 +49,7 @@ class Optimizer:
         summarizer: Summarizer | None = None,
         similarity_fn: SimilarityFn | None = None,
         cascade_verifier: Verifier | None = None,
+        counter: TokenCounter | None = None,
         **overrides: Any,
     ) -> None:
         """Build an optimizer.
@@ -78,6 +80,23 @@ class Optimizer:
                 empty and truncated answers but does not judge correctness; a
                 caller who needs semantic verification supplies their own.
                 Ignored unless ``cascade_routing`` is on.
+            counter: Tokenizer used for every count this package makes.
+                Defaults to :func:`~optio_optimize.tokens.default_counter`,
+                which is ``tiktoken`` where available and a character heuristic
+                otherwise.
+
+                Supply one to count with the vendor's own tokenizer. The
+                default resolves *every* model through ``tiktoken``, including
+                Anthropic's and Google's, and the vendors genuinely differ:
+                ADR-036 measured Anthropic billing **1.29x** what the raw JSON
+                tokenizes to for tool schemas against OpenAI's **0.65** --
+                opposite directions, not just different magnitudes. Every
+                savings figure rests on this, so a caller who can count exactly
+                should be able to.
+
+                ``Pipeline`` has accepted one since ADR-038; until ADR-042 this
+                entry point did not pass it through, which made the extension
+                point unreachable from outside the package.
             **overrides: Individual config fields, e.g. ``semantic_cache=True``.
 
         Raises:
@@ -112,6 +131,7 @@ class Optimizer:
             if stages is not None
             else build_stages(self.config, summarizer=summarizer, similarity_fn=similarity_fn),
             tracer_provider=tracer_provider,
+            counter=counter,
         )
         # Cascade is not a stage (ADR-023): it wraps the provider call rather
         # than transforming the request, so it lives beside the pipeline, not in
