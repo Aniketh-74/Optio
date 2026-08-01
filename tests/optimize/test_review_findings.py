@@ -312,7 +312,7 @@ class TestTheCounterWarmUpCoversTheEncodingsWeUse:
                 return len(text) // 4
 
         config = OptimizeConfig()
-        Pipeline(config=config, stages=build_stages(config), counter=_RecordingCounter())  # type: ignore[arg-type]
+        Pipeline(config=config, stages=build_stages(config), counter=_RecordingCounter())
 
         # Named models rather than encoding names: this package must not depend
         # on tiktoken's internal naming to state which families it warms.
@@ -333,7 +333,7 @@ class TestTheCounterWarmUpCoversTheEncodingsWeUse:
                 raise RuntimeError("no vocabulary here")
 
         config = OptimizeConfig()
-        pipeline = Pipeline(config=config, stages=build_stages(config), counter=_AngryCounter())  # type: ignore[arg-type]
+        pipeline = Pipeline(config=config, stages=build_stages(config), counter=_AngryCounter())
 
         assert pipeline is not None
 
@@ -360,7 +360,7 @@ class TestTheCounterWarmUpCoversTheEncodingsWeUse:
                 return len(text) // 4
 
         config = OptimizeConfig()
-        Pipeline(config=config, stages=build_stages(config), counter=_PartlyAngryCounter())  # type: ignore[arg-type]
+        Pipeline(config=config, stages=build_stages(config), counter=_PartlyAngryCounter())
 
         assert "gpt-4" in warmed
 
@@ -448,7 +448,7 @@ class TestTheReasoningBudgetConvergesRatherThanCollapsing:
         stage = ReasoningBudgetStage()
         ctx = StageContext(
             config=OptimizeConfig(reasoning_budget=True),
-            counter=HeuristicCounter(),  # type: ignore[arg-type]
+            counter=HeuristicCounter(),
         )
         applied: list[int] = []
         for _ in range(turns):
@@ -530,7 +530,7 @@ class TestExpiryIsObservableInAGrowingConversation:
         stage = PrefixCacheStage(clock=lambda: now[0])
         ctx = StageContext(
             config=OptimizeConfig(cache_ttl_selection=True),
-            counter=HeuristicCounter(),  # type: ignore[arg-type]
+            counter=HeuristicCounter(),
         )
 
         stage.before(self._turn(0), ctx)
@@ -555,7 +555,7 @@ class TestExpiryIsObservableInAGrowingConversation:
         stage = PrefixCacheStage(clock=lambda: now[0])
         ctx = StageContext(
             config=OptimizeConfig(cache_ttl_selection=True),
-            counter=HeuristicCounter(),  # type: ignore[arg-type]
+            counter=HeuristicCounter(),
         )
 
         stage.before(self._turn(0), ctx)
@@ -577,7 +577,7 @@ class TestExpiryIsObservableInAGrowingConversation:
         stage = PrefixCacheStage(clock=lambda: now[0])
         ctx = StageContext(
             config=OptimizeConfig(cache_ttl_selection=True),
-            counter=HeuristicCounter(),  # type: ignore[arg-type]
+            counter=HeuristicCounter(),
         )
         other = self._turn(0)
         tenant_b = LLMRequest(

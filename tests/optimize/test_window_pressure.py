@@ -270,7 +270,7 @@ class TestTheCheapGuardCannotSkipARealFinding:
                 return len(text) // 4
 
         counter = _RecordingCounter()
-        ctx = StageContext(config=OptimizeConfig(), counter=counter)  # type: ignore[arg-type]
+        ctx = StageContext(config=OptimizeConfig(), counter=counter)
         stage = WindowPressureStage()
 
         stage.before(_request("claude-haiku-4-5", words=50), ctx)
