@@ -294,9 +294,12 @@ def count_request(request: LLMRequest, counter: TokenCounter | None = None) -> i
 #: This is a correction for *overstating savings*, which is the direction this
 #: project treats as the serious one: uncorrected, ``minify_tools`` reported
 #: 3,240 tokens saved on ``mcp_agent`` where the provider billed 1,210 fewer.
-#: It is calibrated against one provider and one model. Anthropic renders
-#: schemas differently again and has not been measured; the factor is still
-#: closer for it than 1.0 is, because raw JSON is verbose everywhere.
+#: It is calibrated against one provider and one model, which is why it is now
+#: the *fallback* rather than the answer: ADR-036 measured Anthropic at **1.29**
+#: -- billing more than the raw JSON rather than less -- so this value applies
+#: only to models :data:`TOOL_SCHEMA_CALIBRATION_BY_MODEL` does not name. It is
+#: the lowest measured ratio, so an unrecognized vendor is under-counted rather
+#: than over-counted.
 TOOL_SCHEMA_CALIBRATION = 0.65
 
 #: The same ratio per vendor, because it is not the same per vendor -- and the
