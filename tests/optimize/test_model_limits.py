@@ -136,4 +136,4 @@ class TestTheTablesAgreeWithWhatIsPriced:
         for model, window in CONTEXT_WINDOW.items():
             cap = MAX_OUTPUT_TOKENS.get(model)
             if cap is not None:
-                assert cap < window, model
+                assert cap.tokens < window.tokens, model

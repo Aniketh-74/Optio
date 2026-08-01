@@ -21,6 +21,36 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Added
+
+- **Model limits now say where they came from, and the tables are no longer one vendor
+  ([ADR-041](docs/design/adr/adr-041-coverage-should-not-depend-on-whose-api-key-is-to-hand.md)).**
+  `CONTEXT_WINDOW` and `MAX_OUTPUT_TOKENS` carried 15 Anthropic models and nothing else. Not because
+  anything in the code is Anthropic-specific -- `_limit_for` is a string lookup -- but because every
+  value had to be *measured*, measurement needs an API key, and **coverage had quietly become a
+  function of whose key was to hand.**
+
+  A table entry is now a `Limit`: the number, whether it was measured or is the vendor's published
+  figure, a source, and the date the source said so. A bare `int` is no longer a valid entry, so the
+  citation is structural rather than a convention. `context_window_for` and `max_output_tokens_for`
+  return `int | None` exactly as before; `context_window_provenance` and
+  `max_output_tokens_provenance` are new.
+
+  Three states, not two: absent means "no evidence either way" and stays distinct from "the vendor
+  states this". Seven Anthropic models remain absent because a probe established only that their
+  window exceeds 217,554.
+
+  First non-Anthropic rows either table has ever carried: **`gpt-4o` and `gpt-4o-mini` at 128,000
+  context and 16,384 output**, read off OpenAI's pages, costing nothing. That cap is load-bearing --
+  16,384 against 128,000 is the widest gap in either table, and `adaptive_max_tokens` now has
+  something to clamp to on OpenAI where it previously had nothing.
+
+- **`gemini-2.0-flash` is listed by Google as "Shut down".** Found while looking up its token limits.
+  This package prices it, and it is the only Google model priced. The row is kept with a dated note
+  rather than deleted -- removing a price silently changes what every historical report meant -- but
+  it should not be used for new work. The ADR-029 shape, caught by reading the vendor's page rather
+  than by a 404.
+
 ### Fixed
 
 - **Seven defects a green suite was hiding
