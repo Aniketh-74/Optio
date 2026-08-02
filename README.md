@@ -2,7 +2,7 @@
 
 **Economic cost and outcome quality signals for agent runs — in the OpenTelemetry GenAI vocabulary.**
 
-> **Status: alpha (0.1.0).** All three lanes work end to end and every signal in the contract is
+> **Status: alpha (0.2.0).** All three lanes work end to end and every signal in the contract is
 > implemented, on 99% coverage with 100% on the ledger and the fail-open guard. What "alpha"
 > means here, concretely:
 >
