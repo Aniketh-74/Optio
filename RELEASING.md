@@ -38,6 +38,14 @@ generates the SBOM, and verifies the wheel installs — then stops and waits for
 approve. Without the environment the upload would happen automatically on any tag, including
 one pushed by mistake.
 
+## Which version number
+
+`0.x` until the OTel GenAI semantic conventions reach Stable upstream. A semconv rename is a
+breaking change here (ADR-002), so shipping `1.0.0` against a Development-stability vocabulary
+would spend a major version on someone else's churn rather than on a decision made here. The full
+reasoning and the three conditions for `1.0.0` are in
+[ADR-046](docs/design/adr/adr-046-1-0-0-waits-for-the-vocabulary-underneath.md).
+
 ## Cutting a release
 
 1. **Update the version** in `pyproject.toml`. `__version__` reads from installed metadata, so
