@@ -21,6 +21,10 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] — 2026-08-02
+
 ### Fixed
 
 - **A second tracer provider in the same process could report a full budget for a run it never
@@ -1555,5 +1559,6 @@ never touches the hot path.
 - **The enterprise control plane (M6+) is not implemented** and is out of scope for this line
   of releases (ADR-007).
 
-[Unreleased]: https://github.com/Aniketh-74/Agent-Meter/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Aniketh-74/Agent-Meter/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Aniketh-74/Agent-Meter/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Aniketh-74/Agent-Meter/releases/tag/v0.2.0
+[0.1.0]: https://github.com/Aniketh-74/Agent-Meter/commit/840e7f8
