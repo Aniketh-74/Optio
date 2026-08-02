@@ -102,36 +102,74 @@ class TestTheWarmUpHappensAtConstruction:
         assert pipeline is not None
 
 
-class TestTheFirstRequestGetsTheWholePipeline:
-    def test_a_slow_first_count_does_not_starve_the_first_request(self) -> None:
-        """The invariant, stated against the behaviour a user sees.
+class _RecordsWhoPaidTheInitializer:
+    """A counter whose expensive first call is *recorded* rather than slept.
 
-        ``trim_history`` shortens this conversation. If the first request pays a
-        lazy initializer out of its own budget, it is skipped and the prompt
-        goes to the provider at full length -- silently, and at full price.
+    The earlier version of these tests slept 400 ms on call one and then asserted
+    on which stages had run. That was flaky **and** weak, which is an unusual
+    combination and worth stating:
+
+    *Flaky*, because the assertion raced a 100 ms wall-clock budget on a shared
+    CI runner. It failed on ``py3.12/ubuntu`` and the Windows wheel job while
+    passing everywhere else, and 0 times in 15 local runs.
+
+    *Weak*, because the budget is checked **between** stages, so the stage that
+    pays the initializer still completes and still fires. Measured both ways:
+    warmed and unwarmed both trimmed the conversation to 8 messages. The
+    assertion could not distinguish the bug from the fix -- it was reporting on
+    the weather.
+
+    The invariant does not need a clock. It is simply: *no stage pays the first
+    call*. That is a fact about call ordering, and it is exact.
+    """
+
+    is_exact = False
+
+    def __init__(self) -> None:
+        self._inner = HeuristicCounter()
+        self.calls = 0
+        self.first_call_paid_by: str | None = None
+        self.phase = "construction"
+
+    def count_text(self, text: str, model: str = "") -> int:
+        self.calls += 1
+        if self.calls == 1:
+            self.first_call_paid_by = self.phase
+        return self._inner.count_text(text, model)
+
+
+class TestTheFirstRequestGetsTheWholePipeline:
+    def test_construction_pays_the_initializer_not_the_first_request(self) -> None:
+        """The invariant, without a clock in it.
+
+        Whoever makes call one pays the vocabulary load. If that is a stage, the
+        request it belongs to loses whatever budget the load consumes, and the
+        stages behind it are skipped -- silently, and at full price.
         """
-        counter = _SlowFirstCounter()
+        counter = _RecordsWhoPaidTheInitializer()
         config = OptimizeConfig()
         pipeline = Pipeline(config=config, stages=build_stages(config), counter=counter)
 
-        first = pipeline.prepare(_request())
+        counter.phase = "first request"
+        pipeline.prepare(_request())
 
-        assert len(first.request.messages) < 81
+        assert counter.first_call_paid_by == "construction"
 
-    def test_the_first_request_is_optimized_as_much_as_the_second(self) -> None:
+    def test_the_first_request_runs_the_same_stages_as_the_second(self) -> None:
         """Stated as the general invariant rather than as one stage's outcome.
 
-        Any future counter with a lazy initializer fails here, which is the
-        point -- the defect was never about ``tiktoken`` specifically.
+        Compares the stage lists rather than a message count: two requests can
+        agree on length while disagreeing about which stages produced it, and
+        the defect is about *which stages ran*.
         """
-        counter = _SlowFirstCounter()
+        counter = _RecordsWhoPaidTheInitializer()
         config = OptimizeConfig()
         pipeline = Pipeline(config=config, stages=build_stages(config), counter=counter)
 
         first = pipeline.prepare(_request())
         second = pipeline.prepare(_request())
 
-        assert len(first.request.messages) == len(second.request.messages)
+        assert first.fired == second.fired
 
     def test_prefix_cache_reaches_the_first_request(self) -> None:
         """The stage that was being lost, named.
@@ -146,7 +184,13 @@ class TestTheFirstRequestGetsTheWholePipeline:
         decline would pass whether or not the bug were fixed.
         """
         counter = _SlowFirstCounter()
-        config = OptimizeConfig()
+        # The budget is set here rather than left at the 100 ms default so the
+        # margin is a stated quantity instead of an accident. Real work on this
+        # request measures ~8 ms, so 300 ms tolerates a runner nearly forty
+        # times slower than this machine; the unwarmed 400 ms first call still
+        # exceeds it, so the test keeps failing when the bug returns. At the
+        # default the margin was 16x, and CI found the edge of it.
+        config = OptimizeConfig(latency_budget_ms=300.0)
         pipeline = Pipeline(config=config, stages=build_stages(config), counter=counter)
         request = LLMRequest(
             model="claude-haiku-4-5",
