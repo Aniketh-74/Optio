@@ -7,28 +7,28 @@
 > means here, concretely:
 >
 > - **State is in-process only.** `store_backend="redis"` is rejected at setup rather than
->   silently ignored ([ADR-005](docs/design/adr/)).
+>   silently ignored ([ADR-005](https://github.com/Aniketh-74/Agent-Meter/tree/main/docs/design/adr/)).
 > - **The signal names may still move.** They are pinned to OTel GenAI semconv 1.37.0, which is
->   itself marked Development-stability upstream ([ADR-002](docs/design/adr/)).
+>   itself marked Development-stability upstream ([ADR-002](https://github.com/Aniketh-74/Agent-Meter/tree/main/docs/design/adr/)).
 > - **Detector accuracy is measured against synthetic traffic.** The 0/1200 false-positive rate
->   is a regression gate, not a claim about your agent ([docs/testing.md](docs/testing.md)).
+>   is a regression gate, not a claim about your agent ([docs/testing.md](https://github.com/Aniketh-74/Agent-Meter/blob/main/docs/testing.md)).
 >
 > Each adapter *is* now verified against the real framework — a CI job per framework installs
 > LangGraph, CrewAI, the OpenAI Agents SDK and the Claude Agent SDK and runs the adapter against
-> genuine objects, including the cases it must refuse ([R-TECH-3](IMPLEMENTATION.md)).
+> genuine objects, including the cases it must refuse ([R-TECH-3](https://github.com/Aniketh-74/Agent-Meter/blob/main/IMPLEMENTATION.md)).
 >
 > The fail-open guarantee is not provisional: it is a blocking CI gate on every commit.
-> See [IMPLEMENTATION.md](IMPLEMENTATION.md) for the full design and milestone plan.
+> See [IMPLEMENTATION.md](https://github.com/Aniketh-74/Agent-Meter/blob/main/IMPLEMENTATION.md) for the full design and milestone plan.
 
 | Lane | Signals | Status |
 |---|---|---|
 | **Cost** | spend, worst-case projection, budget headroom | Working |
 | **Behavior** | loop / repetition / retry-storm state | Working |
-| **Quality** | groundedness, task success, cost-per-successful-task | Working — **off by default** (opt-in, [ADR-003](docs/design/adr/)) |
+| **Quality** | groundedness, task success, cost-per-successful-task | Working — **off by default** (opt-in, [ADR-003](https://github.com/Aniketh-74/Agent-Meter/tree/main/docs/design/adr/)) |
 
 Adapters: LangGraph, OpenAI Agents SDK, CrewAI, Claude Agent SDK.
-Policy packs: [OPA/Rego, Cedar, Microsoft AGT](policies/).
-Runnable demo: [`examples/demo`](examples/demo/) — one command, no API keys.
+Policy packs: [OPA/Rego, Cedar, Microsoft AGT](https://github.com/Aniketh-74/Agent-Meter/tree/main/policies/).
+Runnable demo: [`examples/demo`](https://github.com/Aniketh-74/Agent-Meter/tree/main/examples/demo/) — one command, no API keys.
 
 Agent governance engines (Microsoft Agent Governance Toolkit, OPA, Cedar) can decide whether an agent action is **allowed** and **safe**. None of them can decide whether an agent run is **affordable** or **good**.
 
@@ -113,7 +113,7 @@ Enabling or disabling lanes never changes agent behavior, nothing blocks the age
 
 ## Signals
 
-The emitted attributes are the integration contract. [`docs/signals.md`](docs/signals.md) is authoritative; names are mirrored as constants in `optio.semconv` and asserted by contract tests.
+The emitted attributes are the integration contract. [`docs/signals.md`](https://github.com/Aniketh-74/Agent-Meter/blob/main/docs/signals.md) is authoritative; names are mirrored as constants in `optio.semconv` and asserted by contract tests.
 
 | Signal | Type | Lane |
 |---|---|---|
@@ -156,11 +156,11 @@ precise percentile split.
 The window-size row is the one that is a structural guarantee rather than a measurement:
 classification is O(1) in the window, not O(window), so raising `behavior_window_size` to catch
 longer cycles costs memory but not latency. It used to cost both — 370 µs per step at a window of
-1000 ([docs/testing.md](docs/testing.md)).
+1000 ([docs/testing.md](https://github.com/Aniketh-74/Agent-Meter/blob/main/docs/testing.md)).
 
 `import optio` takes ~158 ms (median of 12 cold starts), against a 500 ms budget.
 
-Detector accuracy on the synthetic corpus (see [docs/behavior.md](docs/behavior.md) for what that
+Detector accuracy on the synthetic corpus (see [docs/behavior.md](https://github.com/Aniketh-74/Agent-Meter/blob/main/docs/behavior.md) for what that
 corpus does and does not model):
 
 | Measure | Result |
@@ -175,7 +175,7 @@ rate is trivially achievable by never detecting anything.
 
 `optio` never changes a request (ADR-001). `optio_optimize` is the separate, opt-in package that
 does: caching, history trimming, deduplication, and retrieval pruning, sitting in the request path
-rather than beside it ([ADR-013](docs/design/adr/adr-013-optimization-lives-in-a-separate-package.md)).
+rather than beside it ([ADR-013](https://github.com/Aniketh-74/Agent-Meter/blob/main/docs/design/adr/adr-013-optimization-lives-in-a-separate-package.md)).
 Installing `optio` alone never pulls it in.
 
 ```python
@@ -257,7 +257,7 @@ model = OpenAIChatCompletionsModel(model="gpt-4o-mini", openai_client=client)
 ```
 
 **Emits spans `optio` already knows how to price**, opt-in via `Optimizer(emit_spans=True)`
-([ADR-014](docs/design/adr/adr-014-optimize-emits-spans-optio-already-knows-how-to-read.md)) — no
+([ADR-014](https://github.com/Aniketh-74/Agent-Meter/blob/main/docs/design/adr/adr-014-optimize-emits-spans-optio-already-knows-how-to-read.md)) — no
 code changed on the `optio` side, and `optio_optimize` still imports nothing from `optio` (checked
 by `lint-imports`, not just claimed). Don't combine with other GenAI OTel instrumentation on the
 same calls, or both will emit `gen_ai.usage.*` for the same request and `optio`'s cost lane will
@@ -292,16 +292,16 @@ from optio import instrument, meter, RunContext, Config, BudgetPolicy, current_r
 ```
 
 …plus `optio.__version__` and `optio.GENAI_SEMCONV_VERSION`, the OTel GenAI semconv release the
-signal names are pinned to ([ADR-002](docs/design/adr/)). Read that one if you need to branch on
+signal names are pinned to ([ADR-002](https://github.com/Aniketh-74/Agent-Meter/tree/main/docs/design/adr/)). Read that one if you need to branch on
 which vocabulary a given install emits — it changes with a semconv bump, independently of
 `__version__`.
 
 Everything reachable only through a submodule — `optio.lanes.*`, `optio.runtime.*`,
 `optio.store.*`, `optio.adapters.*` — is **internal**, and may change in any release including a
 patch. Those modules are importable, documented and fully typed because contributors read them,
-not as a stability promise ([ADR-012](docs/design/adr/adr-012-the-public-api-is-the-top-level-package-only.md)).
+not as a stability promise ([ADR-012](https://github.com/Aniketh-74/Agent-Meter/blob/main/docs/design/adr/adr-012-the-public-api-is-the-top-level-package-only.md)).
 
-The signal names in [docs/signals.md](docs/signals.md) are the *other* half of the compatibility
+The signal names in [docs/signals.md](https://github.com/Aniketh-74/Agent-Meter/blob/main/docs/signals.md) are the *other* half of the compatibility
 surface, and the stricter one: a Rego or Cedar policy matching `gen_ai.run.projected_cost` stops
 matching silently if the name moves, so renaming one is a breaking change even though no Python
 signature changed.
@@ -320,7 +320,7 @@ pytest
 lint-imports          # §3.1 layer boundaries
 ```
 
-Contributor rules — including the ones that are non-negotiable (fail-open, the ledger invariant, signal names from `semconv.py` only) — are in [CONTRIBUTING.md](CONTRIBUTING.md) and §16 of IMPLEMENTATION.md.
+Contributor rules — including the ones that are non-negotiable (fail-open, the ledger invariant, signal names from `semconv.py` only) — are in [CONTRIBUTING.md](https://github.com/Aniketh-74/Agent-Meter/blob/main/CONTRIBUTING.md) and §16 of IMPLEMENTATION.md.
 
 ## License
 
