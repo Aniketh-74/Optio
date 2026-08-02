@@ -161,9 +161,27 @@ class TestTheFirstRequestGetsTheWholePipeline:
         Compares the stage lists rather than a message count: two requests can
         agree on length while disagreeing about which stages produced it, and
         the defect is about *which stages ran*.
+
+        Two deliberate choices here, both learned from this test failing on CI
+        after the first attempt to fix it:
+
+        *A stated budget.* Request one is legitimately slower than request two
+        even with a warm tokenizer -- ``MemoizingCounter`` has nothing cached,
+        the regexes are uncompiled, the bytecode is cold. Left at the 100 ms
+        default this compared "did the same stages run" against a clock that
+        request one loses on its own merits, and the Windows sdist runner found
+        that: ``[] != ['trim_history']``. The gap being measured must be the
+        initializer, not the cache warming up behind it.
+
+        *A counter that actually pays one.* With a recording counter there is no
+        initializer to skip, so removing the warm-up changed nothing and this
+        test could not fail. It needs the slow one to have anything to detect.
         """
-        counter = _RecordsWhoPaidTheInitializer()
-        config = OptimizeConfig()
+        counter = _SlowFirstCounter()
+        # 300 ms against ~8 ms of real work: forty times the headroom a warm
+        # first request needs, and still less than the 400 ms an unwarmed one
+        # would spend on the initializer alone.
+        config = OptimizeConfig(latency_budget_ms=300.0)
         pipeline = Pipeline(config=config, stages=build_stages(config), counter=counter)
 
         first = pipeline.prepare(_request())
