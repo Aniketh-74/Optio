@@ -11,7 +11,7 @@ Pre-1.0, only the latest minor line receives fixes.
 ## Reporting a vulnerability
 
 **Please do not open a public issue.** Use GitHub's private reporting:
-[Security → Report a vulnerability](https://github.com/Aniketh-74/Agent-Meter/security/advisories/new).
+[Security → Report a vulnerability](https://github.com/Aniketh-74/Optio/security/advisories/new).
 
 This is a solo-maintained project (R-OPS-1). Expect an acknowledgement within a week; if you
 have heard nothing in two, assume it was missed and escalate by opening a public issue that
