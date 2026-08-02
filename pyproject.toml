@@ -81,11 +81,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Aniketh-74/Agent-Meter"
-Documentation = "https://github.com/Aniketh-74/Agent-Meter/blob/main/docs/signals.md"
-Source = "https://github.com/Aniketh-74/Agent-Meter"
-Issues = "https://github.com/Aniketh-74/Agent-Meter/issues"
-Changelog = "https://github.com/Aniketh-74/Agent-Meter/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/Aniketh-74/Optio"
+Documentation = "https://github.com/Aniketh-74/Optio/blob/main/docs/signals.md"
+Source = "https://github.com/Aniketh-74/Optio"
+Issues = "https://github.com/Aniketh-74/Optio/issues"
+Changelog = "https://github.com/Aniketh-74/Optio/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/optio", "src/optio_optimize"]

@@ -34,6 +34,30 @@ LINKS = [
 ]
 
 
+def test_every_github_url_names_the_same_repository() -> None:
+    """A rename that misses a file leaves links working only by redirect.
+
+    GitHub 301s a renamed repository, so a half-finished rename is invisible
+    until someone claims the old name -- at which point the README on PyPI, the
+    sidebar links, and the security-report link all point at a stranger's repo.
+    ``Agent-Meter`` -> ``Optio`` touched 27 references across five files, and
+    nothing here would have noticed if one had been left behind.
+
+    The files checked are the ones whose URLs reach users who cannot see this
+    repo: ``pyproject`` supplies the PyPI sidebar, README is the landing page,
+    and SECURITY is where a vulnerability report is meant to go.
+    """
+    seen: dict[str, list[str]] = {}
+    for name in ("README.md", "pyproject.toml", "CHANGELOG.md", "SECURITY.md", "RELEASING.md"):
+        text = (REPO / name).read_text(encoding="utf-8")
+        for owner_repo in re.findall(r"github\.com/([\w.-]+/[\w.-]+)", text):
+            seen.setdefault(owner_repo.removesuffix(".git"), []).append(name)
+
+    assert len(seen) == 1, (
+        f"links point at more than one repository: { {k: sorted(set(v)) for k, v in seen.items()} }"
+    )
+
+
 def test_the_readme_has_no_relative_links() -> None:
     """They render as dead links on PyPI, which is where this file is read."""
     relative = [link for link in LINKS if not link.startswith(("http", "mailto:"))]
@@ -41,9 +65,16 @@ def test_the_readme_has_no_relative_links() -> None:
     assert relative == [], f"{len(relative)} relative link(s) would 404 on PyPI: {relative[:5]}"
 
 
-@pytest.mark.parametrize(
-    "link", sorted({link for link in LINKS if "github.com/Aniketh-74/Agent-Meter" in link})
-)
+#: ``.../blob/main/path`` and ``.../tree/main/path`` links, whatever the repo is
+#: called. Deliberately not pinned to an owner/repo: the first version of this
+#: hardcoded ``Aniketh-74/Agent-Meter``, and when the repository was renamed the
+#: parameter set emptied and pytest skipped the test rather than failing it. A
+#: guard that silently stops guarding is worse than no guard, and it failed in
+#: exactly the way it existed to catch.
+_REPO_FILE_LINK = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+/(?:blob|tree)/main/(.+)$")
+
+
+@pytest.mark.parametrize("link", sorted({link for link in LINKS if _REPO_FILE_LINK.match(link)}))
 def test_every_repo_link_points_at_something_that_exists(link: str) -> None:
     """Absolute URLs cannot be checked by the filesystem, so check the path part.
 
@@ -52,8 +83,21 @@ def test_every_repo_link_points_at_something_that_exists(link: str) -> None:
     target verifiable without a network call: the URL is decomposed back to a
     repo path and that path must exist here.
     """
-    path = re.sub(r"^https://github\.com/Aniketh-74/Agent-Meter/(?:blob|tree)/main/", "", link)
-    assert (REPO / path.rstrip("/")).exists(), f"{link} points at a path not in this repo"
+    match = _REPO_FILE_LINK.match(link)
+    assert match is not None
+    assert (REPO / match.group(1).rstrip("/")).exists(), f"{link} points at a path not in this repo"
+
+
+def test_the_link_check_actually_has_links_to_check() -> None:
+    """The parametrised test above is only as good as its parameter set.
+
+    An empty set is a *pass* in pytest's eyes -- it reports a skip and the suite
+    stays green -- so the set being non-empty has to be asserted somewhere that
+    fails loudly.
+    """
+    assert [link for link in LINKS if _REPO_FILE_LINK.match(link)], (
+        "no repo file links found; the link check is silently inert"
+    )
 
 
 def test_the_status_banner_matches_the_packaged_version() -> None:

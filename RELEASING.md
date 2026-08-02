@@ -18,7 +18,7 @@ You only do this once, and only you can do it — it needs your PyPI account.
    |---|---|
    | PyPI project name | `optio` |
    | Owner | `Aniketh-74` |
-   | Repository name | `Agent-Meter` |
+   | Repository name | `Optio` |
    | Workflow name | `release.yml` |
    | Environment name | `pypi` |
 
