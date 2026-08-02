@@ -114,7 +114,14 @@ def test_the_status_banner_matches_the_packaged_version() -> None:
     declared_match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
     assert declared_match is not None, "pyproject.toml has no top-level version"
     declared = declared_match.group(1)
-    banner = re.search(r"Status:\s*\w+\s*\(([^)]+)\)", README.read_text(encoding="utf-8"))
+    # Matches the blockquote banner opening the Status section --
+    # ``> **alpha (0.2.0).**`` -- rather than a literal "Status:" prefix, which
+    # the banner dropped once it moved under a `## Status` heading and became
+    # redundant. Anchored to the blockquote so it cannot drift onto some other
+    # parenthesised version elsewhere in the file.
+    banner = re.search(
+        r"^>\s*\*\*[a-z]+\s*\((\d+\.\d+\.\d+)\)", README.read_text(encoding="utf-8"), re.MULTILINE
+    )
 
     assert banner is not None, "the README status banner is missing or reworded"
     assert banner.group(1) == declared, (
