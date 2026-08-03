@@ -552,6 +552,16 @@ def _same_provider_at(
         A provider of the same class serving ``model``, or ``None`` if that
         class cannot be rebuilt.
     """
+    if isinstance(provider, RecordingProvider):
+        # --record wraps the provider before any audit builds its second arm,
+        # and a recording cannot be mirrored: its header names one provider
+        # and one model, so a second model's exchanges in the same file would
+        # corrupt the provenance. The second arm is built from the provider
+        # actually being recorded, and its calls go unrecorded. Found live:
+        # --record + --route-models-audit could not build the cheap arm at
+        # all, so the flag that exists to keep what a run pays for made the
+        # run impossible.
+        provider = provider.inner
     if isinstance(provider, SimulatedProvider):
         return replace(provider, model=model)
     try:

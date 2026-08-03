@@ -64,6 +64,26 @@ be promoted to the top level deliberately.
   naive check silently routes an async client down the sync branch — a mutation run confirmed
   ten tests catch that on this SDK.
 
+- **ADR-015's evidence bar has been met: all four ALTERED-tier stages measured live, isolated,
+  on `claude-haiku-4-5`, for $0.85 total — and all four stay off by default, each now with a
+  measured reason** ([addendum](docs/design/adr/adr-015-evidence-bar-for-promoting-an-altered-tier-stage.md)).
+  `semantic_cache` served a wrong answer on **7 of 8** adversarial near-duplicates at the shipped
+  threshold, and the similarity distributions overlap with the dangerous population on top, so no
+  threshold fixes it. `compress_prompt` cut cost **77%** on `rag_queries` but flipped two correct
+  `INSUFFICIENT CONTEXT` refusals into confident unsupported answers (floor: 1/10). `route_models`
+  regresses **1 in 12** short-hard requests for a 3× input price cut, with all five decline guards
+  holding live. `summarize_history` with a real summarizer recalled **0 of 4** planted facts and
+  cost more than sending full history, while free `trim_history` recalled 4 of 4. Every run is
+  recorded under `docs/evidence/` (ADR-039), so re-checking any number costs nothing.
+
+### Fixed
+
+- **`--record` made `--route-models-audit` impossible to run.** The recording wrapper is applied
+  before the audit builds its cheap second arm, and `_same_provider_at` tried to mirror the
+  wrapper rather than the provider inside it — so the flag that exists to keep what a run pays
+  for prevented the run. Found by the first live routing audit; the second arm is now built from
+  the recorded provider's inner client.
+
 ## [0.2.0] — 2026-08-02
 
 ### Fixed

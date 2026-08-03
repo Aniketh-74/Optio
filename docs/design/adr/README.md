@@ -21,7 +21,7 @@ Summaries live in [IMPLEMENTATION.md §15](../../../IMPLEMENTATION.md); full rec
 | [012](adr-012-the-public-api-is-the-top-level-package-only.md) | The public API is the top-level package only | Accepted |
 | [013](adr-013-optimization-lives-in-a-separate-package.md) | Optimization lives in a separate package (`optio_optimize`) | Accepted |
 | [014](adr-014-optimize-emits-spans-optio-already-knows-how-to-read.md) | `optio_optimize` integrates by emitting spans, not by calling `optio` | Accepted |
-| [015](adr-015-evidence-bar-for-promoting-an-altered-tier-stage.md) | Evidence bar for promoting an `ALTERED`-tier stage out of "experimental" | Accepted — evidence gathering in progress |
+| [015](adr-015-evidence-bar-for-promoting-an-altered-tier-stage.md) | Evidence bar for promoting an `ALTERED`-tier stage out of "experimental" | Accepted — evidence gathered 2026-08-03; all four stay off |
 | [016](adr-016-the-in-scope-test-for-a-cost-technique.md) | The in-scope test for a cost technique | Accepted |
 | [017](adr-017-batch-dispatch-is-a-second-surface.md) | Batch dispatch is a second surface, not a stage | Accepted — implemented |
 | [018](adr-018-reasoning-budget-is-a-cost-lever-and-an-altered-one.md) | Reasoning budget is a cost lever, and an `ALTERED` one | Accepted — amended after the live run |
