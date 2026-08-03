@@ -78,15 +78,17 @@ class TestItReportsAPromptThatCannotFit:
     def test_a_request_under_pressure_is_reported_before_it_fails(self) -> None:
         """The point of the diagnostic: warn while the caller can still act.
 
-        65,000 words is ~162,500 tokens, which the 1.15 margin inflates past
-        90% of 200,000 but not past 200,000 itself. That band exists only
-        because both thresholds go through ``fits_in_window``; comparing raw
-        tokens against ``limit * PRESSURE_RATIO`` made it empty, and this test
-        is what found that.
+        52,000 words is ~130,000 tokens, which the compounded Claude margin
+        (1.15 heuristic x 1.28 measured tiktoken undercount, ADR-049) inflates
+        to ~191,000: past 90% of 200,000 but not past 200,000 itself. That band
+        exists only because both thresholds go through ``fits_in_window``;
+        comparing raw tokens against ``limit * PRESSURE_RATIO`` made it empty,
+        and this test is what found that. It was first written at 65,000 words,
+        which the vendor margin correctly moved past the hard limit.
         """
         stage = WindowPressureStage()
 
-        stage.before(_request("claude-haiku-4-5", words=65_000), _ctx())
+        stage.before(_request("claude-haiku-4-5", words=52_000), _ctx())
 
         kinds = [f.kind for f in stage.findings]
         assert "prompt_near_context_window" in kinds
@@ -395,6 +397,35 @@ class TestTheSafetyMarginIsAppliedInTheRightDirection:
         request = _request("claude-haiku-4-5", words=60_000)
         raw = count_request(request, ctx.counter)
         ctx = _ctx(context_limit=int(raw * 1.08))
+
+        stage.before(request, ctx)
+
+        assert [f.kind for f in stage.findings] == ["prompt_exceeds_context_window"]
+
+    def test_an_exact_count_of_a_claude_model_is_still_margined(self) -> None:
+        """tiktoken's "exact" is exact for OpenAI vocabularies, not Anthropic's.
+
+        Measured 2026-08-03: it undercounts Claude by 1.042-1.275 depending on
+        text shape (ADR-049), and the worst shape exceeds the 1.15 heuristic
+        margin -- so an exact counter counting a Claude model must not be
+        trusted to the edge either. The limit sits at 1.1x the raw count:
+        inside the measured undercount, so trusting the count admits a request
+        the provider rejects.
+        """
+
+        class _ExactCounter:
+            is_exact = True
+
+            def count_text(self, text: str, model: str = "") -> int:
+                return len(text) // 4
+
+        counter = _ExactCounter()
+        stage = WindowPressureStage()
+        from optio_optimize.tokens import count_request
+
+        request = _request("claude-haiku-4-5", words=60_000)
+        raw = count_request(request, counter)
+        ctx = StageContext(config=OptimizeConfig(context_limit=int(raw * 1.1)), counter=counter)
 
         stage.before(request, ctx)
 

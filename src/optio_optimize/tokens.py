@@ -8,12 +8,18 @@ Two accuracy tiers, because the two uses have genuinely different requirements:
 
 **Measuring savings** needs a *consistent* estimator, not an exact one. Savings
 are a ratio between two counts produced by the same counter, so a uniform bias
-largely cancels. The heuristic tier is adequate here and costs nothing.
+largely cancels. The heuristic tier is adequate here and costs nothing. On
+Anthropic models the *absolute* figures are understated by a measured 4-27%
+depending on text shape (ADR-049), because the exact tier is OpenAI's
+tokenizer; the ratios remain trustworthy for the cancellation reason above.
 
 **Budgeting against a context window** needs an *accurate* one. "Will this fit
 in 128k?" answered by a heuristic that runs 15% low is a request that fails at
 the provider. Use the exact tier for that, and note that the library degrades to
-a conservative safety margin when it is unavailable.
+a conservative safety margin when it is unavailable. "Exact" is itself a claim
+about a vendor pairing, not a counter: :func:`fits_in_window` applies a second,
+measured margin when the model belongs to a vendor ``tiktoken`` does not know
+(:data:`TEXT_UNDERCOUNT_BY_MODEL`).
 
 The exact tier requires ``tiktoken``, which is an optional dependency: it is a
 large wheel with a Rust extension, and forcing it on someone who only wants
@@ -377,7 +383,59 @@ def count_tools(
     return int(raw * tool_schema_calibration_for(model))
 
 
-def fits_in_window(tokens: int, limit: int, counter: TokenCounter) -> bool:
+#: How far the offline "exact" tier undercounts a vendor's own tokenizer, at
+#: worst across the text shapes the stages actually count.
+#:
+#: **Measured, not guessed** (ADR-049). ``tiktoken`` has no Anthropic
+#: vocabulary: ``encoding_for_model`` falls back to ``o200k_base``, so its
+#: counts are exact for OpenAI models and an *estimate* for Claude. Against
+#: ``messages.count_tokens`` on ``claude-haiku-4-5``, 2026-08-03, via
+#: ``scripts/measure_anthropic_tokenizer_gap.py``:
+#:
+#: ================  ==========  ==========  ======
+#: sample            tiktoken    anthropic   ratio
+#: ================  ==========  ==========  ======
+#: prose             469         524         1.117
+#: chat turn         373         392         1.051
+#: json tool result  456         475         1.042
+#: code              720         918         1.275
+#: ================  ==========  ==========  ======
+#:
+#: The spread (0.233) is too wide for one *correcting* constant, and the
+#: request path cannot tell the shapes apart -- the two-way dense/prose
+#: classifier above cuts across them, putting 1.042 and 1.275 in the same
+#: class. So this table holds the **worst measured shape**, rounded up and
+#: never down, and is applied only where under-counting is the dangerous
+#: direction: limit decisions in :func:`fits_in_window`. Savings figures stay
+#: uncorrected, because they are ratios of two counts from the same counter
+#: and a uniform bias largely cancels there (see the module docstring).
+TEXT_UNDERCOUNT_BY_MODEL: dict[str, float] = {
+    "claude": 1.28,
+}
+
+
+def text_undercount_for(model: str) -> float:
+    """The worst measured undercount of the offline tokenizer for a vendor.
+
+    Longest-prefix match against :data:`TEXT_UNDERCOUNT_BY_MODEL`, falling back
+    to ``1.0``: an unmeasured vendor gets no margin, because inventing one is
+    what ADR-015 forbids, and the cost of that honesty is bounded -- the
+    heuristic margin still applies to inexact counts.
+
+    Args:
+        model: Model name, as a caller wrote it.
+
+    Returns:
+        Multiplier a limit decision must apply before trusting a count.
+    """
+    best = ""
+    for name in TEXT_UNDERCOUNT_BY_MODEL:
+        if model.startswith(name) and len(name) > len(best):
+            best = name
+    return TEXT_UNDERCOUNT_BY_MODEL[best] if best else 1.0
+
+
+def fits_in_window(tokens: int, limit: int, counter: TokenCounter, model: str = "") -> bool:
     """Whether a token count fits a context window, allowing for estimator error.
 
     Applies a safety margin to inexact counts. Being wrong in the optimistic
@@ -385,6 +443,17 @@ def fits_in_window(tokens: int, limit: int, counter: TokenCounter) -> bool:
     wrong pessimistically means trimming slightly more history than strictly
     necessary. The asymmetry is the whole reason this function exists rather
     than a bare ``<`` at each call site.
+
+    Two error sources, composed by multiplication because both are worst on
+    dense text and can co-occur: the heuristic's error against ``tiktoken``
+    (1.15, applied when ``counter`` is inexact) and ``tiktoken``'s error
+    against the vendor's own tokenizer (:func:`text_undercount_for`, applied
+    when ``model`` names a measured vendor). The vendor margin assumes the
+    exact tier here is ``tiktoken``: ADR-048 keeps the genuinely exact
+    ``AnthropicCounter`` off the request path, and handing one in anyway
+    errs pessimistically -- the safe direction.
     """
-    effective = tokens if counter.is_exact else int(tokens * _HEURISTIC_SAFETY_MARGIN)
+    margin = 1.0 if counter.is_exact else _HEURISTIC_SAFETY_MARGIN
+    margin *= text_undercount_for(model)
+    effective = int(tokens * margin)
     return effective <= limit

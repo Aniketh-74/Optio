@@ -376,7 +376,7 @@ class WindowPressureStage(Stage):
             return []
 
         tokens = count_request(request, ctx.counter)
-        if not fits_in_window(tokens, limit, ctx.counter):
+        if not fits_in_window(tokens, limit, ctx.counter, model=request.model):
             # `fits_in_window` inflates an inexact count rather than trusting
             # it, and this stage inherits that asymmetry rather than
             # re-deciding it: warning once unnecessarily costs a log line,
@@ -405,7 +405,8 @@ class WindowPressureStage(Stage):
         # the second time in this module a threshold written one way could not
         # detect the thing it was written for (see the tool-ordering comment
         # above).
-        if not fits_in_window(tokens, int(limit * PRESSURE_RATIO), ctx.counter):
+        near_limit = int(limit * PRESSURE_RATIO)
+        if not fits_in_window(tokens, near_limit, ctx.counter, model=request.model):
             return [
                 PrefixFinding(
                     kind="prompt_near_context_window",

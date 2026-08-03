@@ -81,3 +81,6 @@ remedy rather than an unexamined default.
 The same shape generalises: an exact counter for any vendor is an instrument, and the request path
 wants a fast offline estimate calibrated *against* one. This ADR is the first half of that pattern.
 The second half is a constant with a date on it.
+
+*Addendum, 2026-08-03: the measurement was run the same day. The constant and where it landed are
+ADR-049.*

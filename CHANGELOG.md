@@ -39,11 +39,21 @@ be promoted to the top level deliberately.
   exact one.
 
 - **`scripts/measure_anthropic_tokenizer_gap.py`** compares `tiktoken`'s estimate against Anthropic's
-  own count across prose, chat turns, JSON tool results and code. **No constant ships with it** — the
-  measurement has not been run, and inventing the number it would produce is what ADR-015 forbids.
-  Until someone runs it (an API key and a few seconds; the endpoint is free), every Anthropic prose
-  figure in this package remains an OpenAI estimate. That is now a stated gap with a one-command
-  remedy.
+  own count across prose, chat turns, JSON tool results and code. It shipped with no constant —
+  inventing the number it would produce is what ADR-015 forbids — and was then run on 2026-08-03,
+  which produced the entry below.
+
+- **Context-window decisions on Claude models now allow for `tiktoken`'s measured undercount
+  ([ADR-049](docs/design/adr/adr-049-exact-is-a-claim-about-a-vendor-not-a-counter.md)).**
+  The measurement found `tiktoken` undercounting Anthropic on every text shape — 1.042 (JSON) to
+  **1.275 (code)** — which is past even the 1.15 margin reserved for counts that admit to being
+  estimates. So a code-heavy Claude prompt that "fit exactly" could be 27% over the window, and the
+  provider's rejection is what the user would have seen. `fits_in_window` now takes the model and
+  applies `TEXT_UNDERCOUNT_BY_MODEL` (`{"claude": 1.28}`, the worst measured shape) on top of the
+  exactness rule; margins compound for an inexact counter, and an unmeasured vendor gets no margin
+  rather than an invented one. Savings figures are deliberately uncorrected — they are ratios where
+  a uniform bias cancels — and the module docstring now states the 4–27% absolute understatement
+  instead of a multiplier pretending otherwise.
 
 ## [0.2.0] — 2026-08-02
 

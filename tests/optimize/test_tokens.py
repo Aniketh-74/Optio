@@ -21,6 +21,7 @@ from optio_optimize.tokens import (
     count_request,
     default_counter,
     fits_in_window,
+    text_undercount_for,
 )
 from optio_optimize.types import LLMRequest, Message
 
@@ -190,3 +191,51 @@ class TestRequestCounting:
         """Guessing low means a provider-side rejection the user sees as a crash."""
         assert not fits_in_window(950, limit=1000, counter=HeuristicCounter())
         assert fits_in_window(950, limit=1000, counter=CountingInner())
+
+
+class TestTheExactTierIsOnlyExactForItsOwnVendor:
+    """tiktoken has no Anthropic vocabulary, and ``is_exact`` used to hide that.
+
+    ``encoding_for_model`` falls back to ``o200k_base`` for Claude models, so
+    the "exact" tier is exact for OpenAI and an *estimator* for Anthropic --
+    measured 2026-08-03 against ``messages.count_tokens``, it undercounts by
+    1.042-1.275 depending on text shape (ADR-049). The worst shape, code at
+    1.275, is beyond even the 1.15 heuristic margin, so a limit decision that
+    trusted the count to the edge admitted requests the provider rejects.
+    """
+
+    def test_a_claude_count_is_not_trusted_to_the_edge(self) -> None:
+        # 950 * 1.28 = 1,216: over the window once the measured undercount is
+        # allowed for, however exact the counter claims to be.
+        assert not fits_in_window(
+            950, limit=1000, counter=CountingInner(), model="claude-sonnet-4-5"
+        )
+
+    def test_an_openai_count_from_its_own_tokenizer_is_trusted_exactly(self) -> None:
+        """The margin is per-vendor, not a new global pessimism."""
+        assert fits_in_window(999, limit=1000, counter=CountingInner(), model="gpt-4o")
+
+    def test_an_unmeasured_vendor_keeps_the_old_behaviour(self) -> None:
+        """No measurement, no margin -- inventing one is what ADR-015 forbids."""
+        assert fits_in_window(999, limit=1000, counter=CountingInner(), model="mistral-large")
+
+    def test_the_margins_compound_for_a_heuristic_count_of_a_claude_model(self) -> None:
+        """Two error sources stack: heuristic-vs-tiktoken, tiktoken-vs-vendor.
+
+        Both are worst on dense text, so they can co-occur; multiplying the
+        margins is the worst-case composition, not a new guess. 700 tokens
+        passes either margin alone (805 and 896) and fails their product
+        (1,030).
+        """
+        assert fits_in_window(700, limit=1000, counter=HeuristicCounter())
+        assert fits_in_window(700, limit=1000, counter=CountingInner(), model="claude-haiku-4-5")
+        assert not fits_in_window(
+            700, limit=1000, counter=HeuristicCounter(), model="claude-haiku-4-5"
+        )
+
+    def test_the_margin_covers_the_worst_measured_shape(self) -> None:
+        """1.28 exists because code measured 1.275; a mutation to anything
+        below that reopens the gap the measurement closed."""
+        assert text_undercount_for("claude-haiku-4-5") >= 1.275
+        assert text_undercount_for("gpt-4o") == 1.0
+        assert text_undercount_for("") == 1.0
