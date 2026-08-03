@@ -53,6 +53,8 @@ Summaries live in [IMPLEMENTATION.md §15](../../../IMPLEMENTATION.md); full rec
 | [044](adr-044-a-lane-must-not-report-on-a-run-it-never-saw.md) | A lane must not report on a run it never saw | Accepted |
 | [045](adr-045-the-readme-is-a-distribution-artifact.md) | The README is a distribution artifact, not a repo file | Accepted |
 | [046](adr-046-1-0-0-waits-for-the-vocabulary-underneath.md) | 1.0.0 waits for the vocabulary underneath | Accepted |
+| [047](adr-047-what-ships-must-look-like-a-library.md) | What ships must look like a library to the tools that consume it | Accepted |
+| [048](adr-048-the-exact-counter-is-an-instrument-not-a-request-path.md) | The exact counter is an instrument, not a request path | Accepted |
 
 ADRs 000, 001, and 004 were expanded first because M0 code already depended on them: they
 determine what the library is allowed to do, and what it must never do.
