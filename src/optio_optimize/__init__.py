@@ -14,7 +14,21 @@ That is a materially different bargain and the package states it plainly:
 * **Some stages change the answer.** Every one is off by default and named in
   :attr:`~optio_optimize.config.OptimizeConfig.lossy_enabled` when on.
 
-Typical use::
+**Typical use is one line against a client you already built**, for either
+vendor, synchronous or asynchronous -- the wrapper detects which::
+
+    from anthropic import Anthropic
+    from optio_optimize import wrap_anthropic_client
+
+    client = wrap_anthropic_client(Anthropic())
+    client.messages.create(...)  # optimized from here on
+
+The client is mutated and returned, so callers keep the object they built with
+one method replaced, and every parameter this package does not model rides
+through untouched.
+
+The lower-level path is still there for a provider this package has no adapter
+for -- it costs you the translation into :class:`LLMRequest`::
 
     from optio_optimize import Optimizer
 
@@ -42,6 +56,8 @@ imports it, and an import-linter contract keeps it that way.
 
 from __future__ import annotations
 
+from optio_optimize.adapters.anthropic import wrap_anthropic_client
+from optio_optimize.adapters.openai_agents import wrap_openai_client
 from optio_optimize.batch import (
     BatchError,
     BatchHandle,
@@ -116,4 +132,6 @@ __all__ = [
     "config_from_mapping",
     "default_verifier",
     "items_from",
+    "wrap_anthropic_client",
+    "wrap_openai_client",
 ]
