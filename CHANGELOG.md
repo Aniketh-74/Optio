@@ -21,7 +21,29 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`AnthropicCounter` — exact token counts, for free
+  ([ADR-048](docs/design/adr/adr-048-the-exact-counter-is-an-instrument-not-a-request-path.md)).**
+  ADR-042 made the counter pluggable and shipped no implementation of one. This is the first counter
+  here that is *exact* for a vendor rather than `tiktoken` applied to everybody:
+  `messages.count_tokens` returns the number Anthropic will bill and bills nothing to say so.
+
+  **It is an instrument, not a request-path counter**, and the design follows from that. `count_request`
+  calls `count_text` once per message and once per tool, so a forty-turn conversation with twenty
+  tools is sixty network round trips against a 100 ms latency budget. A test asserts that round-trip
+  count rather than leaving it as a warning in a docstring. `default_counter()` stays offline.
+
+  Failures are loud, inverting ADR-013's rule on purpose: a stage must never break a request, but an
+  instrument that quietly substituted an estimate would return a number indistinguishable from an
+  exact one.
+
+- **`scripts/measure_anthropic_tokenizer_gap.py`** compares `tiktoken`'s estimate against Anthropic's
+  own count across prose, chat turns, JSON tool results and code. **No constant ships with it** — the
+  measurement has not been run, and inventing the number it would produce is what ADR-015 forbids.
+  Until someone runs it (an API key and a few seconds; the endpoint is free), every Anthropic prose
+  figure in this package remains an OpenAI estimate. That is now a stated gap with a one-command
+  remedy.
 
 ## [0.2.0] — 2026-08-02
 
