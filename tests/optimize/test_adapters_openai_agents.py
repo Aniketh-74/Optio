@@ -37,7 +37,7 @@ import pytest
 pytest.importorskip("openai")
 
 import httpx
-from openai import NOT_GIVEN, AsyncOpenAI
+from openai import NOT_GIVEN, AsyncOpenAI, OpenAI
 
 from optio_optimize.adapters.openai_agents import wrap_openai_client
 
@@ -94,6 +94,12 @@ def client(fake_openai: _FakeOpenAI) -> Iterator[AsyncOpenAI]:
     transport = httpx.MockTransport(fake_openai.handler)
     async_client = AsyncOpenAI(api_key="test", http_client=httpx.AsyncClient(transport=transport))
     yield async_client
+
+
+@pytest.fixture
+def sync_client(fake_openai: _FakeOpenAI) -> Iterator[OpenAI]:
+    transport = httpx.MockTransport(fake_openai.handler)
+    yield OpenAI(api_key="test", http_client=httpx.Client(transport=transport))
 
 
 def _basic_kwargs(**overrides: Any) -> dict[str, Any]:
@@ -316,6 +322,98 @@ class TestTrimHistoryShrinksTheRealRequest:
         assert len(sent) == 1 + 1 + 1 + 4
         assert sent[1]["content"] == "q0", "the opening question is the task; it is never history"
         assert sent[-1]["content"] == "final question"
+
+
+class TestSyncClientsArePlugAndPlayToo:
+    """The wrapper only spoke async, and "async only" is not plug and play.
+
+    That phrase is the Anthropic adapter's own stated standard for itself, and
+    this adapter did not meet it: every synchronous ``OpenAI()`` caller -- the
+    SDK's default and its documentation's default -- got a wrapper that
+    replaced ``create`` with a coroutine function, so their next call returned
+    an un-awaited coroutine instead of a completion. Detection now decides the
+    branch, the same way ``wrap_anthropic_client`` decides it.
+    """
+
+    def test_a_sync_call_returns_the_providers_own_content(
+        self, sync_client: OpenAI, fake_openai: _FakeOpenAI
+    ) -> None:
+        wrap_openai_client(sync_client, exact_cache=False, prefix_cache=False)
+
+        response = sync_client.chat.completions.create(**_basic_kwargs())
+
+        assert response.choices[0].message.content == "hello there"
+        assert len(fake_openai.requests) == 1
+
+    def test_a_sync_cache_hit_makes_no_real_request_and_zeroes_usage(
+        self, sync_client: OpenAI, fake_openai: _FakeOpenAI
+    ) -> None:
+        """Both halves of the cache contract, on the branch that never had it:
+        the second call must not reach the provider, and must not re-report
+        the first call's bill."""
+        wrap_openai_client(sync_client, exact_cache=True, prefix_cache=False)
+        kwargs = _basic_kwargs()
+
+        first = sync_client.chat.completions.create(**kwargs)
+        second = sync_client.chat.completions.create(**kwargs)
+
+        assert len(fake_openai.requests) == 1
+        assert first.usage is not None and first.usage.prompt_tokens == 50
+        assert second.usage is not None and second.usage.prompt_tokens == 0
+        assert second.choices[0].message.content == first.choices[0].message.content
+
+    def test_a_sync_streaming_call_reaches_the_real_client_unmodified(
+        self, sync_client: OpenAI, fake_openai: _FakeOpenAI
+    ) -> None:
+        """Same stance as the async branch: nothing here can act on a token
+        stream without buffering it, so ``stream=True`` bypasses entirely."""
+        wrap_openai_client(sync_client, exact_cache=True)
+        fake_openai.handler = lambda request: httpx.Response(  # type: ignore[method-assign]
+            200,
+            content=(
+                b'data: {"id":"x","object":"chat.completion.chunk","created":1,'
+                b'"model":"gpt-4o","choices":[]}\n\ndata: [DONE]\n\n'
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+        stream = sync_client.chat.completions.create(
+            model="gpt-4o", messages=[{"role": "user", "content": "hi"}], stream=True
+        )
+
+        # Must not raise; consuming it proves a real stream came back.
+        assert list(stream) is not None
+
+    def test_untranslatable_sync_kwargs_fall_back_to_the_real_client(
+        self, sync_client: OpenAI, fake_openai: _FakeOpenAI
+    ) -> None:
+        wrap_openai_client(sync_client, exact_cache=False)
+
+        response = sync_client.chat.completions.create(
+            model="gpt-4o",
+            messages=["not-a-dict"],  # type: ignore[list-item]
+            temperature=0.0,
+        )
+
+        assert response.choices[0].message.content == "hello there"
+        assert len(fake_openai.requests) == 1
+
+    def test_detection_survives_the_sdks_required_args_decorator(
+        self, client: AsyncOpenAI, sync_client: OpenAI
+    ) -> None:
+        """The Anthropic adapter's hardest-won lesson, applied to this SDK.
+
+        Both SDKs come from the same generator and wrap ``create`` in a
+        ``@required_args`` decorator that eats the coroutine marker, so a naive
+        ``iscoroutinefunction`` answers False for *both* clients -- silently
+        routing an async client down the sync branch, where the wrapper does
+        nothing and reports success. Eight of eleven Anthropic tests passed
+        that way once; this pins the unwrap on this SDK too.
+        """
+        from optio_optimize.adapters.openai_agents import _is_async
+
+        assert _is_async(client.chat.completions.create)
+        assert not _is_async(sync_client.chat.completions.create)
 
 
 class TestOmitSentinelNormalization:
