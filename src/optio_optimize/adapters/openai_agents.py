@@ -18,9 +18,13 @@ for a Chat-Completions-backed model, not a shape this package invented. That
 also means it composes with anything else built on an ``AsyncOpenAI``
 client, the Agents SDK included but not required to import.
 
-**Why async.** ``Model.get_response`` is ``async def`` and abstract, with no
-synchronous alternative -- the reason ``Optimizer.acall``/``Pipeline.aexecute``
-exist at all (see ``pipeline.py``).
+**Sync and async both.** The Agents SDK's ``Model.get_response`` is ``async
+def`` and abstract -- the reason ``Optimizer.acall``/``Pipeline.aexecute``
+exist at all (see ``pipeline.py``) -- and the first version of this wrapper
+took that as license to speak only async. But the plain ``openai`` SDK's
+default client is the synchronous ``OpenAI``, and "async only" is not plug
+and play (the Anthropic adapter's own words). Which client arrived gets
+detected rather than declared.
 
 **Streaming is not optimized.** A stage pipeline built around one request
 producing one response has nothing meaningful to do with a token stream, and
@@ -41,10 +45,11 @@ instrumentor at runtime is fragile, so the tradeoff is made legible instead
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from optio_optimize import wire
 from optio_optimize.optimizer import Optimizer
@@ -53,7 +58,7 @@ from optio_optimize.types import LLMRequest, LLMResponse, Message
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from openai import AsyncOpenAI
+    from openai import AsyncOpenAI, OpenAI
     from openai.types.chat import ChatCompletion
 
 _log = logging.getLogger("optio_optimize")
@@ -73,16 +78,25 @@ _RAW = wire.RAW_CONTENT_KEY
 _NATIVE = "_native"
 
 
+_Client = TypeVar("_Client", "OpenAI", "AsyncOpenAI")
+
+
 def wrap_openai_client(
-    client: AsyncOpenAI,
+    client: _Client,
     optimizer: Optimizer | None = None,
     **overrides: Any,
-) -> AsyncOpenAI:
+) -> _Client:
     """Route ``client.chat.completions.create`` through an ``Optimizer``.
 
     Mutates and returns the same client (matching the identity contract
     ``optio``'s own adapters use, §6.7): callers keep the object they built,
     with one method replaced.
+
+    Works on both ``OpenAI`` and ``AsyncOpenAI``; which one it is gets
+    detected rather than declared, the same way
+    :func:`~optio_optimize.adapters.anthropic.wrap_anthropic_client` decides —
+    the first version of this wrapper spoke only async, which is not plug and
+    play for the SDK's own default client.
 
     Args:
         client: The client to wrap. Non-streaming ``create`` calls on it are
@@ -99,59 +113,124 @@ def wrap_openai_client(
         ``client``, with ``chat.completions.create`` replaced.
     """
     active = optimizer if optimizer is not None else Optimizer(**overrides)
-    original_create = cast(
-        "Callable[..., Awaitable[ChatCompletion]]", client.chat.completions.create
-    )
+    original_create = client.chat.completions.create
+
+    # The real method is a complex @overload (sync/async, stream/non-stream);
+    # replacing it with one concrete signature is exactly what this wrapper
+    # needs to do, so the codes mypy raises for it are expected.
+    if _is_async(original_create):
+        client.chat.completions.create = _async_create(  # type: ignore[method-assign,assignment]
+            cast("Callable[..., Awaitable[ChatCompletion]]", original_create), active
+        )
+    else:
+        client.chat.completions.create = _sync_create(  # type: ignore[method-assign,assignment]
+            cast("Callable[..., ChatCompletion]", original_create), active
+        )
+    return client
+
+
+def _is_async(create: Any) -> bool:
+    """Whether ``chat.completions.create`` is a coroutine function.
+
+    ``inspect.iscoroutinefunction`` alone answers **False for both** clients:
+    this SDK comes from the same generator as Anthropic's and wraps ``create``
+    in the same ``@required_args`` decorator, which eats the coroutine marker.
+    Unwrapping first recovers it. The Anthropic adapter documents what the
+    naive check does — an async client silently routed down the sync branch,
+    where the wrapper does nothing and reports success.
+    """
+    return inspect.iscoroutinefunction(inspect.unwrap(create))
+
+
+def _async_create(
+    original: Callable[..., Awaitable[ChatCompletion]],
+    active: Optimizer,
+) -> Callable[..., Awaitable[ChatCompletion]]:
+    """Build the replacement for an ``AsyncOpenAI``'s ``create``."""
 
     async def optimized_create(**kwargs: Any) -> ChatCompletion:
         if kwargs.get("stream"):
             # Nothing here can act on a token stream without buffering it,
             # which defeats the point of asking for one.
-            return await original_create(**kwargs)
+            return await original(**kwargs)
 
-        try:
-            request = _request_from_kwargs(kwargs)
-        except Exception as exc:  # noqa: BLE001 - must never break the caller
-            # Translation runs before any provider call, so falling back
-            # here costs nothing extra -- unlike a failure after a real call
-            # already happened, this can't double-bill anyone. Pipeline's own
-            # fail-open guarantee covers every stage; it does not cover this
-            # wrapper's own kwargs-to-LLMRequest step, which runs outside it.
-            _log.warning(
-                "optio_optimize: could not translate the request (%s); "
-                "calling the provider directly, unoptimized",
-                type(exc).__name__,
-            )
-            return await original_create(**kwargs)
+        request = _translate(kwargs)
+        if request is None:
+            return await original(**kwargs)
 
         async def call_provider(sent: LLMRequest) -> LLMResponse:
-            completion = await original_create(**_kwargs_from_request(sent, kwargs))
+            completion = await original(**_kwargs_from_request(sent, kwargs))
             return _response_from_completion(completion)
 
-        response = await active.acall(request, call_provider)
-        native = response.extra.get(_NATIVE)
-        if response.served_from is None and native is not None:
-            # A real call happened on *this* request (possibly transformed);
-            # hand back exactly what the provider returned rather than a
-            # reconstruction that would drop fields this package never
-            # modeled (system_fingerprint, service_tier, moderation, ...).
-            return cast("ChatCompletion", native)
-        # served_from is set: some stage served this without calling the
-        # provider *this time* -- exact_cache stores the prior real
-        # ChatCompletion in extra[_NATIVE] via dataclasses.replace, which
-        # preserves every field it doesn't explicitly zero, `extra` included.
-        # Returning that object here would hand back its original non-zero
-        # `usage` for a call that cost nothing, silently double-billing every
-        # cache hit in anyone's eyes but LLMResponse's own zeroed fields.
-        # Reconstructed fresh instead, from the numbers optio_optimize
-        # actually reports.
-        return _completion_from_response(response, kwargs)
+        return _unwrap(await active.acall(request, call_provider), kwargs)
 
-    # The real method is a complex @overload (sync/async, stream/non-stream);
-    # replacing it with one concrete async signature is exactly what this
-    # wrapper needs to do, so both codes mypy raises for it are expected.
-    client.chat.completions.create = optimized_create  # type: ignore[method-assign,assignment]
-    return client
+    return optimized_create
+
+
+def _sync_create(
+    original: Callable[..., ChatCompletion],
+    active: Optimizer,
+) -> Callable[..., ChatCompletion]:
+    """Build the replacement for a sync ``OpenAI``'s ``create``."""
+
+    def optimized_create(**kwargs: Any) -> ChatCompletion:
+        if kwargs.get("stream"):
+            return original(**kwargs)
+
+        request = _translate(kwargs)
+        if request is None:
+            return original(**kwargs)
+
+        def call_provider(sent: LLMRequest) -> LLMResponse:
+            completion = original(**_kwargs_from_request(sent, kwargs))
+            return _response_from_completion(completion)
+
+        return _unwrap(active.call(request, call_provider), kwargs)
+
+    return optimized_create
+
+
+def _translate(kwargs: dict[str, Any]) -> LLMRequest | None:
+    """Build an :class:`LLMRequest`, or ``None`` to fall back untouched.
+
+    Translation runs before any provider call, so falling back here costs
+    nothing extra -- unlike a failure after a real call already happened, this
+    can't double-bill anyone. Pipeline's own fail-open guarantee covers every
+    stage; it does not cover this wrapper's own kwargs-to-LLMRequest step,
+    which runs outside it.
+    """
+    try:
+        return _request_from_kwargs(kwargs)
+    except Exception as exc:  # noqa: BLE001 - must never break the caller
+        _log.warning(
+            "optio_optimize: could not translate the request (%s); "
+            "calling the provider directly, unoptimized",
+            type(exc).__name__,
+        )
+        return None
+
+
+def _unwrap(response: LLMResponse, kwargs: dict[str, Any]) -> ChatCompletion:
+    """Return the provider's own object, or a fresh one for a cache hit.
+
+    ``served_from`` is the gate rather than "is a native object available".
+    When it is unset, a real call happened on *this* request (possibly
+    transformed) and the provider's own ``ChatCompletion`` goes back verbatim,
+    keeping every field this package never modeled (system_fingerprint,
+    service_tier, moderation, ...).
+
+    When it is set, some stage served this without calling the provider *this
+    time* -- and ``exact_cache`` stores the prior real ``ChatCompletion`` in
+    ``extra[_NATIVE]`` via ``dataclasses.replace``, which preserves ``extra``.
+    Returning that object here would hand back its original non-zero ``usage``
+    for a call that cost nothing, silently double-billing every cache hit in
+    anyone's eyes but ``LLMResponse``'s own zeroed fields. Reconstructed fresh
+    instead, from the numbers optio_optimize actually reports.
+    """
+    native = response.extra.get(_NATIVE)
+    if response.served_from is None and native is not None:
+        return cast("ChatCompletion", native)
+    return _completion_from_response(response, kwargs)
 
 
 def _numeric_or_none(value: object) -> float | None:

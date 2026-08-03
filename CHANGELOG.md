@@ -55,6 +55,15 @@ be promoted to the top level deliberately.
   a uniform bias cancels — and the module docstring now states the 4–27% absolute understatement
   instead of a multiplier pretending otherwise.
 
+- **`wrap_openai_client` now works on the synchronous `OpenAI` client too.** It only spoke
+  async — defensible when the target was the Agents SDK, whose `Model.get_response` is
+  `async def`, but the plain `openai` SDK's default client is synchronous, and "async only"
+  is not plug and play (the Anthropic adapter's own stated standard, which it already meets).
+  Sync or async is now detected rather than declared, with the same `inspect.unwrap` guard
+  both SDKs need: their shared `@required_args` decorator eats the coroutine marker, and the
+  naive check silently routes an async client down the sync branch — a mutation run confirmed
+  ten tests catch that on this SDK.
+
 ## [0.2.0] — 2026-08-02
 
 ### Fixed
