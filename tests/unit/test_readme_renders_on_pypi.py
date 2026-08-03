@@ -100,6 +100,61 @@ def test_the_link_check_actually_has_links_to_check() -> None:
     )
 
 
+#: Tags and attributes PyPI's sanitizer keeps, for the HTML this README uses.
+#:
+#: **Copied from `readme_renderer.clean`'s `ALLOWED_TAGS`/`ALLOWED_ATTRIBUTES`
+#: on 2026-08-03**, rather than imported from it. `readme_renderer` is not a
+#: declared dependency of this project -- CI installs `twine` ad hoc in the
+#: packaging job and nowhere else -- so an import here would be an
+#: `importorskip`, and a skip is how the link check in this very file went
+#: inert once already. A literal list always runs.
+#:
+#: The failure this guards is quiet: bleach *drops* a disallowed tag rather
+#: than erroring, so `twine check --strict` passes (it only asks whether the
+#: description parses) and the centered header renders flat on the live page.
+_PYPI_SAFE_HTML: dict[str, set[str]] = {
+    "h1": {"align", "id"},
+    "p": {"align", "class", "id"},
+    "a": {"href", "id", "title"},
+    "img": {"align", "alt", "class", "height", "id", "src", "width"},
+    "strong": set(),
+    "br": set(),
+}
+
+#: Fenced code blocks, stripped before scanning for HTML: a `<` inside an
+#: example is content, not markup.
+_FENCED = re.compile(r"```.*?```", re.DOTALL)
+
+
+def test_the_hero_html_survives_pypis_sanitizer() -> None:
+    """The centered header is HTML, and PyPI allows only some of it."""
+    prose = _FENCED.sub("", README.read_text(encoding="utf-8"))
+
+    problems: list[str] = []
+    for tag, attributes in re.findall(r"<(\w+)((?:\s+[\w-]+=\"[^\"]*\")*)\s*/?>", prose):
+        allowed = _PYPI_SAFE_HTML.get(tag.lower())
+        if allowed is None:
+            problems.append(f"<{tag}> is not in PyPI's allowlist and would be dropped")
+            continue
+        for name in re.findall(r"([\w-]+)=", attributes):
+            if name.lower() not in allowed:
+                problems.append(f"<{tag} {name}=...> would be stripped by PyPI")
+
+    assert not problems, "; ".join(sorted(set(problems)))
+
+
+def test_the_readme_still_has_hero_html_to_check() -> None:
+    """The check above passes trivially if the HTML is ever removed.
+
+    Same failure shape as the link check below: a guard whose input set
+    emptied. If the hero becomes plain markdown this test should be deleted
+    deliberately, not left passing over nothing.
+    """
+    prose = _FENCED.sub("", README.read_text(encoding="utf-8"))
+
+    assert 'align="center"' in prose, "the centered hero is gone; this guard now checks nothing"
+
+
 def test_the_status_banner_matches_the_packaged_version() -> None:
     """`pip install optio` shows this banner above everything else.
 

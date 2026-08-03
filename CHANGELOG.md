@@ -76,6 +76,22 @@ be promoted to the top level deliberately.
   cost more than sending full history, while free `trim_history` recalled 4 of 4. Every run is
   recorded under `docs/evidence/` (ADR-039), so re-checking any number costs nothing.
 
+- **The plug-and-play wrappers are public API now: `wrap_anthropic_client` and
+  `wrap_openai_client` are exported from `optio_optimize` directly.** They existed and worked, but
+  reaching them meant `from optio_optimize.adapters.anthropic import ...` — a submodule path that
+  ADR-012 calls internal and changeable in a patch release. So the easy path had no promise
+  attached and the package docstring taught the hard one (hand-translating an SDK call into
+  `LLMRequest`). That is ADR-042's shape a second time: the extension point existed and the public
+  API did not name it. `optio_optimize` also gains the public-API test `optio` has had since
+  0.1.0, including a subprocess check that importing the package still pulls in neither vendor SDK.
+
+- **The README teaches plug-and-play first.** It opened on `Optimizer.call(request, provider_fn)`
+  and never mentioned either client wrapper, so the landing page documented the path that requires
+  translating your own requests. It now leads with the one-line client wrap for both vendors, and a
+  test asserts the centered header uses only HTML that PyPI's sanitizer keeps — `twine check`
+  validates that a description *parses*, not that its markup survives, so a hero can render
+  centered on GitHub and flat on PyPI with nothing failing.
+
 ### Fixed
 
 - **`--record` made `--route-models-audit` impossible to run.** The recording wrapper is applied
