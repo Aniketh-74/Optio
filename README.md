@@ -236,7 +236,7 @@ is trivially achievable by never detecting anything.
 
 ## Status
 
-> **alpha (0.2.0).** All three lanes work end to end and every signal in the contract is
+> **alpha (0.3.0).** All three lanes work end to end and every signal in the contract is
 > implemented, on 99% coverage with 100% on the ledger and the fail-open guard.
 >
 > - **State is in-process only.** `store_backend="redis"` is rejected at setup rather than silently

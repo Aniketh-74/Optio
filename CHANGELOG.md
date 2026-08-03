@@ -21,6 +21,12 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-04
+
+**Upgrade if you use the synchronous `OpenAI()` client with `optio_optimize`** — it was silently
+broken, and this release fixes it. The plug-and-play wrappers are also public API now, and the four
+answer-changing stages have been measured live for the first time.
+
 ### Added
 
 - **`AnthropicCounter` — exact token counts, for free
@@ -1636,6 +1642,7 @@ never touches the hot path.
 - **The enterprise control plane (M6+) is not implemented** and is out of scope for this line
   of releases (ADR-007).
 
-[Unreleased]: https://github.com/Aniketh-74/Optio/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Aniketh-74/Optio/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Aniketh-74/Optio/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Aniketh-74/Optio/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Aniketh-74/Optio/commit/840e7f8
