@@ -1,0 +1,71 @@
+﻿LIVE run against recording(anthropic(claude-sonnet-4-5)), spend cap $0.60
+Both arms call the real API, so this bills roughly twice one pass.
+
+route_models audit -- claude-sonnet-4-5 vs claude-haiku-4-5 (3.0x cheaper input)
+
+accuracy on short prompts, graded against known answers:
+  easy  claude-sonnet-4-5: 100%   claude-haiku-4-5: 100%   (4 probes)
+  hard  claude-sonnet-4-5: 88%   claude-haiku-4-5: 75%   (8 probes)
+
+regression rate: 8.3% (1/12 probes the requested model got right and the cheap one did not)
+
+# easy
+  [cheap model ok] What is the capital of Japan?
+    claude-sonnet-4-5 'Tokyo'
+    claude-haiku-4-5 'Tokyo'
+    expected     tokyo
+  [cheap model ok] What is the chemical symbol for gold?
+    claude-sonnet-4-5 'Au'
+    claude-haiku-4-5 'Au'
+    expected     au
+  [cheap model ok] What is 15% of 200?
+    claude-sonnet-4-5 '30'
+    claude-haiku-4-5 '30'
+    expected     30
+  [cheap model ok] How many days are in a leap year?
+    claude-sonnet-4-5 '366 days'
+    claude-haiku-4-5 '366 days.'
+    expected     366
+
+# hard
+  [cheap model ok] How many times does the letter r appear in the word strawberry?
+    claude-sonnet-4-5 'Three times.'
+    claude-haiku-4-5 '3'
+    expected     3 | three
+  [cheap model ok] Which is larger, 9.11 or 9.9? Reply with just the number.
+    claude-sonnet-4-5 '9.9'
+    claude-haiku-4-5 '9.9'
+    expected     9.9
+  [cheap model ok] A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much does the ball cost?
+    claude-sonnet-4-5 '5 cents'
+    claude-haiku-4-5 '$0.05'
+    expected     0.05 | 5 cents | five cents
+  [cheap model ok] Alice is taller than Bob. Bob is taller than Carol. Is Carol taller than Alice?
+    claude-sonnet-4-5 'No.'
+    claude-haiku-4-5 'No.'
+    expected     no
+  [cheap model ok] What is 17 times 24, minus 89?
+    claude-sonnet-4-5 '319'
+    claude-haiku-4-5 '319'
+    expected     319
+  [both wrong] If today is Wednesday, what day of the week is it 100 days from now?
+    claude-sonnet-4-5 'Saturday'
+    claude-haiku-4-5 'Thursday'
+    expected     friday
+  [REGRESSION] What is the 4th letter from the end of the word extraordinary?
+    claude-sonnet-4-5 'n'
+    claude-haiku-4-5 'D'
+    expected     n
+  [cheap model ok] A car travels 60 km in 45 minutes. What is its speed in km per hour?
+    claude-sonnet-4-5 '80 km per hour'
+    claude-haiku-4-5 '80 km/h'
+    expected     80
+
+decline guards, checked live against real request shapes:
+  [ok] tools attached
+  [ok] response_format set
+  [ok] already the cheap model
+  [ok] over the token ceiling
+  [ok] routable request is routed
+
+spent $0.0030 across 24 live calls

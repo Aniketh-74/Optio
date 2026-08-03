@@ -9,6 +9,8 @@ these call it directly.
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from optio_optimize.bench.__main__ import (
@@ -126,6 +128,29 @@ class TestRouteModelsCheapModelResolution:
 
     def test_an_explicit_cheap_model_always_wins_over_the_table(self) -> None:
         assert _resolve_cheap_model("claude-haiku-4", "gpt-4o") == "claude-haiku-4"
+
+
+class TestRecordingComposesWithTwoProviderAudits:
+    def test_the_second_arm_is_built_from_the_recorded_providers_inner(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """``--record`` + ``--route-models-audit`` exited 2 on 2026-08-03.
+
+        ``--record`` wraps the provider before the audit builds its cheap arm,
+        and ``_same_provider_at`` tried to mirror the *wrapper* --
+        ``RecordingProvider(model=..., guard=...)`` is not a constructor it
+        has. The audit that cost real money to reach was unreachable with the
+        flag that exists to keep what it paid for.
+        """
+        from optio_optimize.bench.__main__ import _same_provider_at
+        from optio_optimize.bench.recording import RecordingProvider
+
+        recording = RecordingProvider(SimulatedProvider(), tmp_path / "run.jsonl")
+
+        second = _same_provider_at(recording, "gpt-4o-mini", None)
+
+        assert second is not None
+        assert second.model == "gpt-4o-mini"
 
     def test_a_known_model_resolves_from_the_table(self) -> None:
         assert _resolve_cheap_model(None, "gpt-4o") == "gpt-4o-mini"

@@ -1,6 +1,6 @@
 # ADR-015 — Evidence bar for promoting an ALTERED-tier stage out of "experimental"
 
-**Status:** Accepted
+**Status:** Accepted — addendum 2026-08-03: evidence gathered live for all four stages; all four stay off
 **Date:** 2026-07-29
 **Related:** ADR-013, ADR-014, §9, `src/optio_optimize/eval/`
 
@@ -272,3 +272,94 @@ holds itself to, regardless of what the eval gate alone shows.
 (stay off / stay off with guardrail changes / default changes) is recorded as an addendum here —
 the same pattern ADR-005 used when its Redis half turned out to be half-implemented — so the
 decision and the evidence that produced it live in the same document.
+
+---
+
+## Addendum (2026-08-03) — the evidence, gathered
+
+All four stages measured live against `claude-haiku-4-5` (the vendor whose prefix caching this
+library controls, so it measures strictly more), isolated per rule 2, recorded under
+`docs/evidence/` so re-checking is free (ADR-039). Total spend for everything below: **$0.85**.
+The nondeterminism floor was measured first, because a divergence number without its floor
+measures nothing: **1/10 byte-identical prompts diverged** on `rag_queries` ($0.04, 20 calls,
+`2026-08-03-control-rag-queries-claude-haiku-4-5.jsonl`).
+
+### `semantic_cache` — stays off; the risk is inherent to the mechanism
+
+`--semantic-cache-audit` at the shipped threshold 0.97: **false-positive rate 87.5%** (7/8 fired
+adversarial probes served a wrong answer), benign hit rate 37.5% (3/8). $0.0108, 38 calls,
+`2026-08-03-semantic-cache-audit-claude-haiku-4-5.jsonl`.
+
+Every category this ADR named fired wrongly at least once: a changed number (50→500 seats), a
+changed entity (Platform→Security team), a negation ("is **not** covered" answered "Yes,
+covered"), a changed date (March→September).
+
+The deeper finding is in the similarity distributions, and it forecloses the guardrail-change
+outcome this ADR held open: adversarial pairs scored **0.955–0.989** while legitimate rewordings
+scored **0.923–0.978**. The populations overlap with the dangerous one *on top*, because changing
+one load-bearing word costs less lexical similarity than rephrasing a sentence. No threshold
+separates them — derived from the same recorded similarities, the 0.90 config floor fires every
+adversarial probe including the one 0.97 correctly declined, and any threshold high enough to be
+safe fires on nothing benign either. A lexical metric cannot be tuned out of this; only a metric
+that knows *which* words matter could be, and that is a different stage, not a different number.
+
+### `compress_prompt` — stays off; evidence partial, and the first isolated point found a worse failure than the one it chased
+
+`--isolate --stage compress_prompt --judge` on `rag_queries`: input tokens **−84.2%**, cost
+**−77.2%** ($0.02004 → $0.00457), end-to-end latency −43.9%. $0.0265, 29 calls,
+`2026-08-03-compress-prompt-rag-queries-claude-haiku-4-5.jsonl`.
+
+The +71.4% output anomaly this ADR flagged **did not reproduce** in isolation on this model:
+output tokens moved −4.2%. The confounded run's alarm belonged to the bundle, not this stage.
+
+Quality: 1 identical, 7 judged equivalent, **2 divergent against a floor of 1** — and both
+divergences read the same way. The baseline correctly answered `INSUFFICIENT CONTEXT` to a
+question about a quarter the retrieved documents never confirm; the compressed arm **asserted the
+fact anyway** ("revenue in Q7 was driven primarily by subscription growth…"). Compression removed
+exactly the hedging context that let the model see the answer was not there: a correct refusal
+flipped into a confident unsupported answer, the silent direction rule 4 exists for.
+
+The bar requires three structurally different workloads and this is one, so the evidence is
+explicitly partial. Its direction is still a finding: the guardrail was right to exist.
+
+### `route_models` — stays off, now with the number an operator needs
+
+`--route-models-audit`, `claude-sonnet-4-5` routed to `claude-haiku-4-5` (3× cheaper input),
+graded against ground truth rather than a judge: easy probes 4/4 for both models; hard probes
+sonnet 88% vs haiku 75%; **regression rate 8.3%** — 1 of 12 probes the requested model got right
+and the cheap one missed ("4th letter from the end of *extraordinary*"). All **five decline
+guards held live** (tools, response_format, already-cheap, token ceiling, routable-is-routed).
+$0.006 across two attempts, 24 graded calls,
+`2026-08-03-route-models-audit-sonnet-to-haiku.jsonl` with full output beside it.
+
+This ADR committed to the number existing rather than to a threshold: it exists. **One in twelve
+short-hard requests regresses** for a 3× input price cut on routed traffic; whether that trade is
+acceptable belongs to whoever supplies `cheap_model`, exactly as written above.
+
+### `summarize_history` — stays off; the extra call bought nothing
+
+`--recall-audit` with a real live-calling summarizer (haiku), `recent_turns=6`, all 4 probes
+interpretable (the control arm answered every planted fact correctly). $0.0219, 30 calls,
+`2026-08-03-recall-audit-claude-haiku-4-5.jsonl`:
+
+| arm | recalled | silently wrong | total tokens (incl. summarizer) |
+|---|---|---|---|
+| full history | 100% | 0% | 1,154 |
+| trim_history | 100% | 0% | **492** |
+| summarize_history | **0%** | 0% | 1,364 |
+
+The summarizer lost all four planted facts *and* cost more total tokens than sending the full
+history, once its own four calls are counted. It failed honestly — every miss said `NOT IN
+CONTEXT`, silently-wrong stayed at zero, and the tool-call boundary held — but this ADR's test
+was comparative, and trimming kept everything, free, because `trim_history` anchors the opening
+exchange, which is where a conversation's load-bearing facts actually live. One summarizer
+prompt, one model, one conversation shape; a better summarizer could raise the recall number, but
+it starts 862 tokens behind a free alternative before preserving a single fact trim would have
+dropped.
+
+### What generalizes
+
+One vendor, one model, one day. The `semantic_cache` finding is the most portable — the
+similarity metric is computed by this library, not by a model, so the overlap of its
+distributions travels to every vendor. The other three are one-model measurements and say so.
+Re-running any of them costs one command against the recordings' stated caps.
