@@ -56,6 +56,7 @@ from typing import TYPE_CHECKING, Final
 from optio import semconv
 
 if TYPE_CHECKING:
+    from optio.lanes.behavior.store import WindowState
     from optio.lanes.behavior.window import BehaviorWindow
 
 #: Minimum steps before any pathology may be reported. Below this there is not
@@ -109,25 +110,50 @@ HEALTHY: Final = Verdict(state=semconv.LOOP_STATE_HEALTHY, repeat_count=0)
 def classify(window: BehaviorWindow) -> Verdict:
     """Classify a run's health from its step-signature window.
 
+    A thin wrapper over :func:`classify_state`, which is where the logic lives
+    and what a shared backend feeds. Kept because the detector suite, the
+    property tests and the semconv contract test all classify a window they
+    have just built, and rewriting those call sites would mean editing the
+    regression net for the change that introduced the split.
+
     Args:
         window: The run's window. Not mutated.
+
+    Returns:
+        The verdict.
+    """
+    return classify_state(window.state(LOOP_MAX_DISTINCT))
+
+
+def classify_state(state: WindowState) -> Verdict:
+    """Classify a run's health from a summary of its recent steps.
+
+    Takes a :class:`~optio.lanes.behavior.store.WindowState` rather than a
+    window so the same logic serves a process-local window and a shared backend
+    that computed the summary server-side (ADR-050).
+
+    Args:
+        state: The window's summary. ``top_counts`` must be descending.
 
     Returns:
         The verdict. ``healthy`` whenever the evidence is insufficient or
         ambiguous.
     """
-    # Counts come from the window, which maintains them as steps are added.
-    # Recomputing them here made every step cost O(window); see
-    # `BehaviorWindow.add`. Read-only: the counter is the window's own state.
-    size = len(window)
-    call_counts = window.call_counts
-    repeat_count = max(call_counts.values()) if call_counts else 0
+    # Every number here was computed where the steps live -- incrementally by
+    # `BehaviorWindow.add` in process, or by one Lua script on a shared server.
+    # Recomputing them from the raw steps made each step cost O(window); see
+    # `BehaviorWindow.add` for the measurement that removed it.
+    size = state.size
+    # `top_counts` is descending, so the largest is the first -- and it may be
+    # absent entirely, which indexing without the guard would raise on. A
+    # detector that raises breaks the lane rather than declining.
+    repeat_count = state.top_counts[0] if state.top_counts else 0
 
     if size < MIN_STEPS_FOR_VERDICT:
         # Report the count as evidence, but never a pathology this early.
         return Verdict(state=semconv.LOOP_STATE_HEALTHY, repeat_count=repeat_count)
 
-    errors = window.error_count
+    errors = state.errors
     if errors >= RETRY_STORM_MIN_ERRORS and errors / size >= RETRY_STORM_ERROR_RATE:
         return Verdict(state=semconv.LOOP_STATE_RETRY_STORM, repeat_count=repeat_count)
 
@@ -142,8 +168,12 @@ def classify(window: BehaviorWindow) -> Verdict:
     # below any useful threshold, making a cycle of length >= 2 structurally
     # undetectable: precisely the case Section 6.4 names in the definition of
     # `looping`.
-    distinct_calls = len(call_counts)
-    cycle_share = sum(count for _, count in call_counts.most_common(LOOP_MAX_DISTINCT)) / size
+    #
+    # `top_counts` is already truncated to LOOP_MAX_DISTINCT by whoever built
+    # the state, which is why `distinct_calls` is carried separately: it is the
+    # number of *keys*, and summing a truncated list cannot recover it.
+    distinct_calls = state.distinct_calls
+    cycle_share = sum(state.top_counts) / size
     if cycle_share >= LOOP_DOMINANCE and distinct_calls <= LOOP_MAX_DISTINCT:
         return Verdict(state=semconv.LOOP_STATE_LOOPING, repeat_count=repeat_count)
 

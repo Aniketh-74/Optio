@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 from optio import semconv
+from optio.lanes.behavior.store import WindowState
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -312,6 +313,31 @@ class BehaviorWindow:
         if signature.errored:
             self._errors += 1
         self._total += 1
+
+    def state(self, k: int) -> WindowState:
+        """Summarise this window for a verdict.
+
+        Reads the aggregates :meth:`add` already maintains, so this is
+        O(distinct log k) rather than O(window) -- ``Counter.most_common(k)``
+        uses a heap once ``k`` is given, instead of sorting everything.
+
+        The return is a fixed shape on purpose. It is what a shared backend
+        sends over a network per step, and a summary that grew with ``maxlen``
+        would tax anyone who widened the window to catch longer cycles, which
+        is the exact cost :meth:`add` exists to have already removed.
+
+        Args:
+            k: How many of the largest per-call counts to include.
+
+        Returns:
+            The state.
+        """
+        return WindowState(
+            size=len(self._steps),
+            errors=self._errors,
+            distinct_calls=len(self._call_counts),
+            top_counts=tuple(count for _, count in self._call_counts.most_common(k)),
+        )
 
     @property
     def call_counts(self) -> Counter[tuple[str, str]]:
