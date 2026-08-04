@@ -167,6 +167,33 @@ cost against *window size*:
 The window is now counted incrementally on append. Widening it to catch longer cycles is a
 memory decision rather than a latency one.
 
+**What the row above does *not* say, found while making it a test (ADR-050).** Per-step cost is
+flat in window *size*, and that is the claim — but the driver it is flat against is the number of
+**distinct calls** the window holds, not the window bound. Finding the top `k` counts means
+scanning the live ones on both backends: `Counter.most_common(k)` over the keys in memory, `HVALS`
+plus a bounded insertion in Lua. The two coincide only when a workload's tool diversity is bounded,
+which the benchmark's was — 64 tool names.
+
+A first version of the test let every step name a new tool, making `distinct == window`, and
+"found" a 4.7× regression that was really the workload. Measured with diversity held at 64 and the
+window varied, and then the other way around:
+
+| axis | 50 | 200 | 1000 |
+|---|---|---|---|
+| window size (64 distinct calls) | 12.6 µs | 14.7 µs | 13.2 µs |
+| distinct calls (window 1000) | — | — | 8.3 µs at 8 → **35.1 µs at 1000** |
+
+The growth is real and points the safe way: it peaks when every step is different, which is the
+case with no loop to detect, and it is cheapest on the tight cycles the lane exists to catch. Even
+the worst case is two orders of magnitude inside SC-5. Both axes are now asserted separately in
+`tests/bench/test_overhead.py` so the distinction cannot silently collapse again.
+
+**Over Redis**, the same step costs ~620 µs against a ~500 µs bare `PING` on this machine (Windows,
+Docker Desktop NAT — a Linux loopback is several times faster). The benchmark asserts the *ratio*,
+under three round trips, rather than the absolute: a step is one Lua script by construction, so a
+regression there means the script started doing real work, and the ratio means the same thing on
+any hardware.
+
 The risk that swap introduces is drift — stored counts diverging from the deque — and drift is
 invisible to every other test in the suite, because the deque itself stays correct. Three
 property tests in `TestIncrementalCountsMatchARecount` compare against a full recount on *every*

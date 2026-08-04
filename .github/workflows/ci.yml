@@ -617,4 +617,9 @@ jobs:
         # budgets to be verified by benchmark, not measured results" -- this is
         # the verification, so an empty suite is a failure rather than a pass.
         # -s so the measured numbers appear in the log and can be published.
+        #
+        # No Redis service here on purpose: the two shared-store benchmarks
+        # carry the `redis` marker as well, so the Redis job runs them for real
+        # with OPTIO_REQUIRE_REDIS set. They skip here rather than being
+        # measured twice against two different network paths.
         run: pytest -v -s -m bench

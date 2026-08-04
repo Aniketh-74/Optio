@@ -49,6 +49,42 @@ be promoted to the top level deliberately.
   the usual skip into a failure, because a job whose purpose is running them must not pass by not
   running them.
 
+- **Loop detection works across processes too**
+  ([ADR-050](docs/design/adr/adr-050-the-store-speaks-the-domain.md)).
+  The same bug as the budget one, failing the opposite way. A sharded budget **over**-spends,
+  because four quarters each look affordable. A sharded step window **under**-reports: four
+  quarters each fall below `MIN_STEPS_FOR_VERDICT`, and the detector is *required* to answer
+  `healthy` when the evidence is thin (§6.4). So the agent is stuck, every worker reports healthy,
+  nothing raises and no metric moves. Four spawned processes now classify one run from all of its
+  steps; the in-memory counterpart runs the same twelve steps four ways and then one way, which is
+  what separates "these steps were not pathological" from "the sharding hid it".
+
+  **What crosses the wire is five numbers.** `classify` never iterates the step signatures — it
+  reads the window size, the error count, the distinct-call count and the top two counts, and
+  nothing else. The obvious port returns the `Counter`: up to `behavior_window_size` entries per
+  step, 1,000 at the documented ceiling, turning an O(1)-in-window-size guarantee the README
+  publishes **as measured** into O(window) in bytes without failing a single existing test. So the
+  Lua reduces server-side and returns four fields, and a test asserts that against the wire rather
+  than against the parsed object.
+
+  The eviction arithmetic now exists in Python and in Lua, which is the highest-risk surface in
+  the change: a divergence would not raise, it would give one run two different verdicts depending
+  on where it ran. A Hypothesis property test steps both backends together and compares after
+  **every** step, since a divergence that a later eviction cancels out would pass a final-state
+  check having produced wrong verdicts throughout.
+
+### Changed
+
+- **The overhead table now separates two things it had been conflating.** Classification is flat
+  in `behavior_window_size` — that claim holds and is now asserted rather than measured once by
+  hand. But the axis it is flat *against* is the number of **distinct calls** a window holds, and
+  the two coincide only when a workload's tool diversity is bounded. The published figure's
+  workload used 64 tool names, so the distinction never showed. Measured both ways: 12.6 → 13.2 µs
+  across windows of 50 to 1000 at fixed diversity, and 8.3 → 35.1 µs as diversity goes from 8 to
+  1000 distinct calls. The growth points the safe way — it peaks when every step is different,
+  which is the case with no loop to detect — and the worst case is two orders of magnitude inside
+  the SC-5 budget. Both axes are now separate benchmark assertions.
+
 ### Fixed
 
 - **A shipped error message pointed at a repository this project no longer owns.** The

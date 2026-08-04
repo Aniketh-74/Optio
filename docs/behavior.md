@@ -183,29 +183,42 @@ hours, rather than as any test failure.
 
 ### If you raise `behavior_window_size`
 
-O(window) is a real slope, not a formality, and the setting is yours to change.
-Measured end to end on a full instrumented step:
+Raising it costs memory, not latency. Measured end to end on a full instrumented
+step, with an agent cycling through 64 tools:
 
 | `behavior_window_size` | p99 per step | share of the 5 ms budget |
 |---|---|---|
-| 50 (default) | 177 µs | 3.5% |
-| 200 | 240 µs | 4.8% |
-| 1,000 | 564 µs | 11.3% |
-| 5,000 | 1,178 µs | 23.6% |
+| 50 (default) | 228 µs | 4.6% |
+| 200 | 238 µs | 4.8% |
+| 1,000 | 244 µs | 4.9% |
+| 5,000 | 290 µs | 5.8% |
 
-Every value stays inside SC-5, so there is no cliff to fall off — but a 100×
-window costs roughly 7× the overhead, and `classify` alone goes from 17 µs to
-1.1 ms. Profiling confirms it is the hot path's largest single component at any
-window size.
+A 100× window for 7% more overhead. This used to be a real slope — 177 µs to
+1,178 µs across the same range — because `classify` rebuilt a counter over the
+whole window on every step. The counts are now maintained incrementally on
+append, so widening the window to hunt long-period cycles is a memory decision.
+
+**What does scale is how many *distinct* calls your window holds**, because
+finding the most-repeated ones means scanning the live counts. At a window of
+1,000 that is 8 µs per step with 8 distinct calls and 35 µs with 1,000 — and the
+growth points the safe way: it peaks when every step is different, which is the
+case with no loop to detect, and it is at its cheapest on exactly the tight
+cycles this lane exists to catch. Both axes are asserted separately in
+`tests/bench/test_overhead.py`, on both the in-process and the shared backend.
 
 The default is 50 because detection quality does not improve much beyond it: a
-loop that is invisible in 50 steps is usually not a loop. Raise it if you are
-hunting long-period cycles, and know what you are paying for.
+loop that is invisible in 50 steps is usually not a loop. The reason to raise it
+is a genuinely long-period cycle, and the cost of doing so is per-run memory —
+roughly one small tuple per retained step.
 
-Deliberately **not** optimised. An incremental counter would make this O(1) per
-step, and at 0.33% of the budget that would be optimising something nobody is
-waiting on while adding state that has to stay consistent with the deque —
-exactly the trade §16 rule 10 forbids without a benchmark demanding it.
+### Across processes
+
+If your agent is sharded across workers, set `store_backend="redis"`. Without it
+each worker keeps its own window, sees a fraction of the run, and — because the
+detector must answer `healthy` when the evidence is thin — reports `healthy` for
+an agent that is visibly stuck. Nothing raises and no metric moves; it is the
+quiet direction. A step against the shared store is one Lua script and one round
+trip, and returns the same four numbers whatever the window size.
 
 ---
 
