@@ -71,6 +71,23 @@ class TestAbstractContracts:
             missing = [name for name in required if not hasattr(backend, name)]
             assert not missing, f"{backend.__name__} is missing {missing}"
 
+    def test_both_behavior_backends_satisfy_their_protocol(self):
+        """The same check for the behaviour lane's own Protocol.
+
+        Per-lane rather than shared, which is the point of ADR-050: a store
+        that spoke both domains would have to offer primitives, and primitives
+        cannot express either lane's atomicity requirement.
+        """
+        from optio.lanes.behavior.store import BehaviorStore
+        from optio.lanes.behavior.store_memory import InMemoryBehaviorStore
+        from optio.lanes.behavior.store_redis import RedisBehaviorStore
+
+        required = [name for name in vars(BehaviorStore) if not name.startswith("_")]
+        assert required, "the Protocol declares no operations"
+        for backend in (InMemoryBehaviorStore, RedisBehaviorStore):
+            missing = [name for name in required if not hasattr(backend, name)]
+            assert not missing, f"{backend.__name__} is missing {missing}"
+
     def test_cost_and_behavior_are_enabled_by_default(self):
         # Cost landed in M2, behavior in M3. Quality (M5) is off by default
         # regardless (ADR-003), so it must not appear even once it exists.
