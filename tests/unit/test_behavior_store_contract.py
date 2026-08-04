@@ -1,9 +1,7 @@
 """One suite, every behaviour backend, so "interchangeable" is a checked claim.
 
 Parametrised over the backends: a rule that holds in memory and not in Redis
-fails here rather than in production. Redis joins the parameter list in a later
-task; the shape is fixed now so adding it is one line and every test below
-immediately applies to it.
+fails here rather than in production.
 
 The eviction cases are the load-bearing half. A window's aggregates are
 maintained incrementally on both backends -- a ``Counter`` in Python, a hash in
@@ -20,13 +18,28 @@ import pytest
 
 from optio.lanes.behavior.store import BehaviorStore
 from optio.lanes.behavior.store_memory import InMemoryBehaviorStore
+from optio.lanes.behavior.store_redis import RedisBehaviorStore
+from tests.integration.test_redis_ledger import connect_or_skip
 
 
-@pytest.fixture(params=["memory"])
+@pytest.fixture(params=["memory", "redis"])
 def store(request: pytest.FixtureRequest) -> Iterator[BehaviorStore]:
-    """A backend under test."""
-    assert request.param == "memory"
-    yield InMemoryBehaviorStore()
+    """A backend under test.
+
+    Redis skips when no server is reachable, which keeps this suite runnable on
+    a laptop -- and the gate sets ``OPTIO_REQUIRE_REDIS`` so the same skip is a
+    failure there, because a job whose purpose is running these must not pass
+    by not running them.
+    """
+    if request.param == "memory":
+        yield InMemoryBehaviorStore()
+        return
+
+    client = connect_or_skip(timeout_ms=1000)
+    client._redis.flushdb()
+    yield RedisBehaviorStore(client, ttl_seconds=60.0)
+    client._redis.flushdb()
+    client.close()
 
 
 class TestRecordingBuildsAWindow:
