@@ -58,6 +58,29 @@ def test_every_github_url_names_the_same_repository() -> None:
     )
 
 
+def test_no_source_file_points_at_the_old_repository_name() -> None:
+    """The rename to Optio reached five root files and stopped there.
+
+    ``test_every_github_url_names_the_same_repository`` checks README,
+    pyproject, CHANGELOG, SECURITY and RELEASING -- the files whose URLs reach
+    people who cannot see this repo. It never looked at ``src/``, and
+    ``config.py``'s ``store_backend='redis'`` error still told users to track
+    the work at ``github.com/Aniketh-74/Agent-Meter/issues``.
+
+    GitHub 301s a renamed repository, so that link works right up until someone
+    claims the old name -- at which point a shipped library is directing users
+    to a stranger's issue tracker from inside an error message.
+    """
+    offenders: dict[str, str] = {}
+    for path in (REPO / "src").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for owner_repo in re.findall(r"github\.com/([\w.-]+/[\w.-]+)", text):
+            if owner_repo.removesuffix(".git") != "Aniketh-74/Optio":
+                offenders[str(path.relative_to(REPO))] = owner_repo
+
+    assert not offenders, f"source files naming another repository: {offenders}"
+
+
 def test_the_readme_has_no_relative_links() -> None:
     """They render as dead links on PyPI, which is where this file is read."""
     relative = [link for link in LINKS if not link.startswith(("http", "mailto:"))]

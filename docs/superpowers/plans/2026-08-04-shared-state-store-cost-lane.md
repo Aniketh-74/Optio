@@ -332,9 +332,7 @@ class RedisClient:
             if "NOSCRIPT" in str(exc):
                 self._shas[name] = self._redis.script_load(self._sources[name])
                 try:
-                    return self._redis.evalsha(
-                        self._shas[name], len(keys), *keys, *args
-                    )
+                    return self._redis.evalsha(self._shas[name], len(keys), *keys, *args)
                 except Exception as retry_exc:  # noqa: BLE001 - normalised below
                     raise StoreUnavailable(f"redis script failed: {name}") from retry_exc
             raise StoreUnavailable(f"redis unavailable running {name}") from exc
@@ -837,44 +835,43 @@ return 'OK'
 The Python wrapper translates the sentinel returns into the same exceptions the in-memory backend raises, so the contract suite cannot tell the backends apart:
 
 ```python
-    def reserve(self, run_id: str, step_id: str, projected: float) -> None:
-        """Record a step's worst-case cost before it runs."""
-        if projected < 0:
-            raise LedgerInvariantError(
-                f"cannot reserve a negative cost ({projected}) for {run_id}/{step_id}"
-            )
-        result = self._client.run_script(
-            "reserve",
-            self._keys(run_id),
-            [step_id, repr(float(projected)), str(self._ttl_ms)],
+def reserve(self, run_id: str, step_id: str, projected: float) -> None:
+    """Record a step's worst-case cost before it runs."""
+    if projected < 0:
+        raise LedgerInvariantError(
+            f"cannot reserve a negative cost ({projected}) for {run_id}/{step_id}"
         )
-        if result == "CLOSED":
-            raise LedgerInvariantError(
-                f"cannot reserve on closed run {run_id!r}; the run's cost "
-                f"has already been reported"
-            )
+    result = self._client.run_script(
+        "reserve",
+        self._keys(run_id),
+        [step_id, repr(float(projected)), str(self._ttl_ms)],
+    )
+    if result == "CLOSED":
+        raise LedgerInvariantError(
+            f"cannot reserve on closed run {run_id!r}; the run's cost has already been reported"
+        )
 
-    def reconcile(self, run_id: str, step_id: str, actual: float) -> None:
-        """Replace a step's reservation with its actual cost."""
-        if actual < 0:
-            raise LedgerInvariantError(
-                f"cannot reconcile a negative cost ({actual}) for {run_id}/{step_id}"
-            )
-        result = self._client.run_script(
-            "reconcile",
-            self._keys(run_id),
-            [step_id, repr(float(actual)), str(self._ttl_ms)],
+
+def reconcile(self, run_id: str, step_id: str, actual: float) -> None:
+    """Replace a step's reservation with its actual cost."""
+    if actual < 0:
+        raise LedgerInvariantError(
+            f"cannot reconcile a negative cost ({actual}) for {run_id}/{step_id}"
         )
-        if result == "CLOSED":
-            raise LedgerInvariantError(
-                f"cannot reconcile {run_id}/{step_id} on a closed run; "
-                f"the run's cost has already been reported"
-            )
-        if result == "NOTOPEN":
-            raise LedgerInvariantError(
-                f"no open reservation for {run_id}/{step_id}; "
-                f"either reconciled twice or never reserved"
-            )
+    result = self._client.run_script(
+        "reconcile",
+        self._keys(run_id),
+        [step_id, repr(float(actual)), str(self._ttl_ms)],
+    )
+    if result == "CLOSED":
+        raise LedgerInvariantError(
+            f"cannot reconcile {run_id}/{step_id} on a closed run; "
+            f"the run's cost has already been reported"
+        )
+    if result == "NOTOPEN":
+        raise LedgerInvariantError(
+            f"no open reservation for {run_id}/{step_id}; either reconciled twice or never reserved"
+        )
 ```
 
 Also implement `snapshot`, `close_run`, `is_finalised`, `knows`, `evict`, `run_count`, plus two test-only helpers used above: `ttl_seconds_remaining(run_id)` and `drop_payload_for_test(run_id)`.
@@ -976,17 +973,14 @@ In `src/optio/config.py`: add the field, delete the rejection block, require a U
 Replace the `if self.store_backend == "redis":` rejection with:
 
 ```python
-        if self.store_backend == "redis" and not self.redis_url:
-            # Setup-time failure, per §4.2: fail-open governs the runtime path,
-            # not configuration that names a backend it cannot reach.
-            raise OptioConfigError(
-                "store_backend='redis' needs redis_url. Set it, or use the "
-                "default store_backend='memory'."
-            )
-        if self.store_timeout_ms <= 0:
-            raise OptioConfigError(
-                f"store_timeout_ms must be positive, got {self.store_timeout_ms}"
-            )
+if self.store_backend == "redis" and not self.redis_url:
+    # Setup-time failure, per §4.2: fail-open governs the runtime path,
+    # not configuration that names a backend it cannot reach.
+    raise OptioConfigError(
+        "store_backend='redis' needs redis_url. Set it, or use the default store_backend='memory'."
+    )
+if self.store_timeout_ms <= 0:
+    raise OptioConfigError(f"store_timeout_ms must be positive, got {self.store_timeout_ms}")
 ```
 
 Add `OPTIO_STORE_TIMEOUT_MS` to `from_env`, and update the `store_backend`/`redis_url` docstring lines to describe a backend that works.
