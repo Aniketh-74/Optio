@@ -18,7 +18,7 @@ import pytest
 
 from optio.lanes.quality.store import QualityStep
 from optio.lanes.quality.store_redis import _PREFIX, RedisQualityStore
-from tests.integration.test_redis_ledger import connect_or_skip, reset_optio_keys
+from tests.integration.test_redis_ledger import connect_or_skip, needs_driver, reset_optio_keys
 
 pytestmark = [pytest.mark.integration, pytest.mark.redis]
 
@@ -148,3 +148,115 @@ class TestLifecycle:
         store._client._redis.rpush("optio:b:other:steps", "0tool")
 
         assert store.run_count() == 1
+
+
+class TestTheConfiguredBackendActuallyReachesTheLane:
+    """ADR-005's addendum exists because a setting was read by nobody.
+
+    ``store_backend='redis'`` was accepted, validated, given an extra and an
+    env var, and no lane ever looked at it. Asserting the config parses would
+    have passed then too, so these assert the object graph. This is the third
+    and last lane wired to that setting, and the one most exposed to the same
+    omission: quality is off by default, so nothing in a default configuration
+    would have noticed the branch missing.
+    """
+
+    def test_redis_config_builds_a_redis_backed_quality_lane(self) -> None:
+        from optio.config import Config
+        from optio.lanes.quality.lane import QualityLane
+        from optio.lanes.registry import enabled_lanes
+        from tests.integration.test_redis_ledger import REDIS_URL
+
+        connect_or_skip().close()
+
+        lanes = enabled_lanes(Config(quality_lane=True, store_backend="redis", redis_url=REDIS_URL))
+
+        quality = next(lane for lane in lanes if isinstance(lane, QualityLane))
+        assert isinstance(quality._store, RedisQualityStore)
+
+    def test_the_default_config_stays_in_process(self) -> None:
+        """The zero-infrastructure default is why SC-1 is achievable; a change
+        that quietly networked it would be a regression."""
+        from optio.config import Config
+        from optio.lanes.quality.lane import QualityLane
+        from optio.lanes.quality.store_memory import InMemoryQualityStore
+        from optio.lanes.registry import enabled_lanes
+
+        lanes = enabled_lanes(Config(quality_lane=True))
+
+        quality = next(lane for lane in lanes if isinstance(lane, QualityLane))
+        assert isinstance(quality._store, InMemoryQualityStore)
+
+    def test_all_three_lanes_get_their_own_client(self) -> None:
+        """Independent lifecycles, by contract (Section 3.1).
+
+        A shared connection would make each lane's timeout budget depend on
+        which other lanes happened to be enabled, and closing one lane's client
+        would silently blind the others.
+        """
+        from optio.config import Config
+        from optio.lanes.behavior.lane import BehaviorLane
+        from optio.lanes.behavior.store_redis import RedisBehaviorStore
+        from optio.lanes.cost.lane import CostLane
+        from optio.lanes.cost.ledger_redis import RedisLedgerStore
+        from optio.lanes.quality.lane import QualityLane
+        from optio.lanes.registry import enabled_lanes
+        from tests.integration.test_redis_ledger import REDIS_URL
+
+        connect_or_skip().close()
+
+        lanes = enabled_lanes(Config(quality_lane=True, store_backend="redis", redis_url=REDIS_URL))
+
+        quality = next(lane for lane in lanes if isinstance(lane, QualityLane))
+        behavior = next(lane for lane in lanes if isinstance(lane, BehaviorLane))
+        cost = next(lane for lane in lanes if isinstance(lane, CostLane))
+        assert isinstance(quality._store, RedisQualityStore)
+        assert isinstance(behavior._store, RedisBehaviorStore)
+        assert isinstance(cost.ledger._store, RedisLedgerStore)
+
+        clients = [quality._store._client, behavior._store._client, cost.ledger._store._client]
+        assert len({id(client) for client in clients}) == 3
+
+    def test_a_disabled_quality_lane_opens_no_connection(self) -> None:
+        """Off by default (ADR-003), and that has to mean *no infrastructure
+        touched*. Building a client for a lane nobody enabled would make an
+        unreachable Redis fail setup for users who never asked for scoring."""
+        from optio.config import Config
+        from optio.lanes.registry import enabled_lanes
+
+        # Port 1 is reserved and never listening. With quality off and the other
+        # two lanes off, nothing should reach for it.
+        config = Config(
+            quality_lane=False,
+            cost_lane=False,
+            behavior_lane=False,
+            store_backend="redis",
+            redis_url="redis://localhost:1/15",
+            store_timeout_ms=200,
+        )
+
+        assert enabled_lanes(config) == []
+
+    @needs_driver
+    def test_an_unreachable_redis_fails_at_setup_not_at_runtime(self) -> None:
+        """Loud here, fail-open later (Section 4.2).
+
+        Covers the quality lane specifically: with the other two disabled,
+        nothing else in the graph would touch Redis, so a lane that skipped its
+        ping would reach the agent's path before failing.
+        """
+        from optio.config import Config
+        from optio.lanes.registry import enabled_lanes
+        from optio.store.redis_client import StoreUnavailableError
+
+        config = Config(
+            quality_lane=True,
+            cost_lane=False,
+            behavior_lane=False,
+            store_backend="redis",
+            redis_url="redis://localhost:1/15",
+            store_timeout_ms=200,
+        )
+
+        with pytest.raises(StoreUnavailableError):
+            enabled_lanes(config)

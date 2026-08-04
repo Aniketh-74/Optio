@@ -12,7 +12,8 @@ unscored runs, because its denominator is genuinely unknown.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import sys
+from dataclasses import astuple, dataclass
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -22,7 +23,7 @@ from opentelemetry.trace import StatusCode
 from optio import semconv
 from optio.config import Config
 from optio.lanes.quality.judge import Judge, JudgeRequest, JudgeRunner, JudgeScores
-from optio.lanes.quality.lane import MAX_RETAINED_SPANS, QualityLane
+from optio.lanes.quality.lane import QualityLane
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -75,6 +76,23 @@ def scoring_judge(groundedness: float = 0.9, task_success: float = 0.8) -> Judge
 def enabled(**overrides: object) -> Config:
     """Config with the quality lane on."""
     return Config(quality_lane=True, **overrides)  # type: ignore[arg-type]
+
+
+def _state_values(lane: QualityLane) -> list[object]:
+    """Every value the lane's store is holding, across all runs.
+
+    Reaches into the in-memory backend deliberately: what the lane retains is a
+    memory-safety property with no public surface, and the whole point of the
+    two tests below is that it stays small and holds nothing it should not.
+    """
+    runs = lane._store._runs  # type: ignore[attr-defined]
+    return [value for summary in runs.values() for value in astuple(summary)]
+
+
+def _state_size(lane: QualityLane, run_id: str) -> int:
+    """The size in bytes of one run's retained state."""
+    summary = lane._store._runs[run_id]  # type: ignore[attr-defined]
+    return sys.getsizeof(summary) + sys.getsizeof(summary.last)
 
 
 class TestTheLaneIsSilentWhenOff:
@@ -228,12 +246,16 @@ class TestTheJudgeIsToldTheTruth:
         ``docs/quality.md`` shows a user passing it straight to their evaluator
         as ``steps=request.step_count``.
 
-        It was ``len(spans)``, and the span buffer is capped at
-        :data:`MAX_RETAINED_SPANS` -- so every run longer than that reported the
-        cap. A 500-step run told the judge it took 64. Wrong rather than
-        missing, and plausible enough that nobody would query it.
+        It was ``len(spans)``, and the span buffer was capped at 64 -- so every
+        longer run reported the cap. A 500-step run told the judge it took 64.
+        Wrong rather than missing, and plausible enough that nobody would query
+        it.
+
+        The buffer and its cap are both gone now (ADR-050), so the count is the
+        only thing left that could be wrong. 104 remains the case: it is past
+        where the old cap sat, which is where the bug showed.
         """
-        steps = MAX_RETAINED_SPANS + 40
+        steps = 104
         run = FakeRun(sampled=True)
         lane, runner = recording_lane()
         for _ in range(steps):
@@ -242,17 +264,15 @@ class TestTheJudgeIsToldTheTruth:
 
         assert [request.step_count for request in runner.requests] == [steps]
 
-    def test_the_count_is_released_with_the_spans(self) -> None:
-        """A second per-run dictionary is a second thing to leak.
-
-        The lane's whole eviction discipline exists because per-run state in a
+    def test_state_is_released_for_every_run(self) -> None:
+        """The lane's eviction discipline exists because per-run state in a
         long-lived agent process grows without bound -- the bug stress testing
-        found in the ledger after every unit test missed it. ``run_count()``
-        observes the span buffer, so a counter released separately, or not at
-        all, would be invisible to it.
+        found in the ledger after every unit test missed it.
 
-        Reaching in is deliberate, as it is for the span cap below: this is a
-        memory-safety property with no public surface.
+        Guarded a second per-run dictionary until ADR-050. The count and the
+        step now live in one store, released together by one call, so
+        ``run_count()`` observes all of it and there is nothing left that could
+        leak separately.
         """
         lane = QualityLane(enabled(quality_sample_rate=1.0), judge=scoring_judge())
         for index in range(20):
@@ -261,7 +281,6 @@ class TestTheJudgeIsToldTheTruth:
                 lane.process_span(answered(), run)
             lane.on_run_end(run)
 
-        assert lane._steps == {}, "the step counters outlived their runs"
         assert lane.run_count() == 0
 
     def test_a_straggling_step_does_not_resume_the_previous_count(self) -> None:
@@ -281,15 +300,39 @@ class TestTheJudgeIsToldTheTruth:
 
 
 class TestStateIsBounded:
-    def test_spans_are_capped_per_run(self) -> None:
+    def test_a_run_costs_the_same_however_long_it_gets(self) -> None:
+        """Replaces a test that asserted the span buffer honoured its cap of 64.
+
+        The buffer is gone (ADR-050), and with it the cap: scoring reads a step
+        count and the final step, so the state per run is a counter and one
+        projection. That is a stronger property than the cap was -- bounded
+        memory used to be a rule someone had to remember to enforce, and is now
+        a consequence of the shape.
+
+        Measured rather than asserted structurally, because "the shape cannot
+        grow" is exactly the kind of claim that quietly stops being true when a
+        field is added.
+        """
+        lane = QualityLane(enabled())
+        short, long = FakeRun("short"), FakeRun("long")
+
+        lane.process_span(answered(), short)
+        for _ in range(5_000):
+            lane.process_span(answered(), long)
+
+        assert _state_size(lane, "long") == _state_size(lane, "short")
+
+    def test_the_lane_holds_no_span_references(self) -> None:
+        """A retained span is what kept this lane process-local, and it is also
+        an object graph the agent's framework may expect to release. Holding one
+        is now a bug rather than a design."""
         run = FakeRun()
         lane = QualityLane(enabled())
-        for _ in range(MAX_RETAINED_SPANS * 3):
-            lane.process_span(answered(), run)
+        original = answered()
 
-        # Reaching in is deliberate: the bound is a memory-safety property of a
-        # long-lived agent process, and there is no public way to observe it.
-        assert len(lane._spans[run.run_id]) == MAX_RETAINED_SPANS
+        lane.process_span(original, run)
+
+        assert original not in _state_values(lane)
 
     def test_only_the_final_step_decides_the_verdict(self) -> None:
         """An error mid-run that the agent recovered from is not a failed task.
@@ -316,11 +359,18 @@ class TestStateIsBounded:
 
         assert values(lane.on_run_end(run))[semconv.RUN_SUCCESS] is False
 
-    def test_the_newest_spans_are_kept(self) -> None:
-        # The heuristic judges the final answer, so the tail is what matters.
+    def test_the_last_step_of_a_long_run_still_decides(self) -> None:
+        """The heuristic judges the final answer, so the tail is what matters.
+
+        Asserted over a long run as well as a two-step one because the buffer
+        that used to hold the tail was capped, and a run past the cap took a
+        different code path through it. There is no buffer now, so the two are
+        the same path -- but the property is the one users depend on, and it
+        costs a few hundred microseconds to keep checking it directly.
+        """
         run = FakeRun()
         lane = QualityLane(enabled())
-        for _ in range(MAX_RETAINED_SPANS):
+        for _ in range(200):
             lane.process_span(answered(), run)
         lane.process_span(span({}, errored=True), run)
 

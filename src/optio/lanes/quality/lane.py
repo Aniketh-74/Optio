@@ -26,16 +26,21 @@ number derived from a guess is worse than no number.
 
 ## Memory
 
-Scoring needs the run's spans, so the lane holds them until run end. That is an
-unbounded retention in a long-lived agent process, so the buffer is capped per
-run (:data:`MAX_RETAINED_SPANS`) and released when the run ends -- the same
-eviction discipline the cost ledger and behavior window follow.
+The lane held every run's spans until run end, capped at 64, because scoring
+needed them. Deriving what scoring actually reads showed it needs a step count
+and the final step -- so the buffer is gone, and the state per run is a counter
+and one :class:`~optio.lanes.quality.store.QualityStep` (ADR-050). Bounded
+memory stops being a cap someone has to remember to enforce and becomes a
+property of the shape: a run costs the same at three steps or thirty thousand.
+
+State is still released at run end, which is the discipline all three lanes
+share. A long-lived agent process that never releases per-run state leaks
+whatever that state happens to be.
 """
 
 from __future__ import annotations
 
 import logging
-import threading
 from typing import TYPE_CHECKING, Final
 
 from optio import semconv
@@ -43,6 +48,7 @@ from optio.lanes.base import Lane, Signal
 from optio.lanes.quality import heuristic
 from optio.lanes.quality.judge import JudgeRequest, JudgeRunner, JudgeScores
 from optio.lanes.quality.sampling import Tier, decide
+from optio.lanes.quality.store_memory import InMemoryQualityStore
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import ReadableSpan
@@ -50,14 +56,9 @@ if TYPE_CHECKING:
     from optio.config import Config
     from optio.lanes.base import RunLike
     from optio.lanes.quality.judge import Judge
+    from optio.lanes.quality.store import QualityStore
 
 _log: Final = logging.getLogger("optio")
-
-#: Spans retained per run for scoring. The heuristic reads only the last one and
-#: the judge gets a summary, so this is a bound rather than a requirement: a
-#: 10,000-step run must not accumulate 10,000 span references waiting for a
-#: verdict that inspects one of them.
-MAX_RETAINED_SPANS: Final = 64
 
 #: ``task_success`` at or above this counts as a success. A judge score is a
 #: confidence, and turning it into a boolean needs a line somewhere; 0.5 is the
@@ -72,7 +73,9 @@ class QualityLane(Lane):
 
     name = "quality"
 
-    def __init__(self, config: Config, judge: Judge | None = None) -> None:
+    def __init__(
+        self, config: Config, judge: Judge | None = None, store: QualityStore | None = None
+    ) -> None:
         """Create the lane.
 
         Args:
@@ -81,13 +84,17 @@ class QualityLane(Lane):
                 optio ships no default judge, because a default would
                 spend the user's money the moment they enabled the lane
                 (Section 10).
+            store: Where per-run scoring state lives. Defaults to the
+                process-local backend, which is correct for a single process
+                and wrong in a way nothing reports for a run sharded across
+                workers -- so the registry injects the shared one when
+                configured.
         """
         super().__init__(config)
-        self._lock = threading.RLock()
-        self._spans: dict[str, list[ReadableSpan]] = {}
-        # Counted separately from the buffer, because the buffer is capped and
-        # the count is not a measurement of it. See `on_run_end`.
-        self._steps: dict[str, int] = {}
+        # The lock that guarded the span buffer moved into the store with the
+        # state it protects. One here would say nothing about a run another
+        # process is writing.
+        self._store: QualityStore = store if store is not None else InMemoryQualityStore()
         self._runner = JudgeRunner(judge)
 
         if config.quality_lane and judge is None:
@@ -112,16 +119,12 @@ class QualityLane(Lane):
         Returns:
             Always empty.
         """
-        with self._lock:
-            self._steps[run.run_id] = self._steps.get(run.run_id, 0) + 1
-            retained = self._spans.setdefault(run.run_id, [])
-            if len(retained) < MAX_RETAINED_SPANS:
-                retained.append(span)
-            else:
-                # Keep the tail rather than the head: the heuristic judges the
-                # final answer, so the most recent spans are the relevant ones.
-                retained[:-1] = retained[1:]
-                retained[-1] = span
+        # Projected here rather than retained. A span is not serializable, and
+        # holding one is what kept this lane process-local. The store overwrites
+        # the step it holds, so which step counts as last is decided by arrival
+        # order -- within a process today, across every worker on a shared
+        # backend.
+        self._store.record(run.run_id, heuristic.project(span))
         return []
 
     def on_run_end(self, run: RunLike) -> list[Signal]:
@@ -134,28 +137,27 @@ class QualityLane(Lane):
             Quality signals, or empty when the run was not scored or the
             evidence did not support a verdict.
         """
-        with self._lock:
-            # Popped together, under one lock, so the count cannot outlive the
-            # buffer and be handed to the *next* run's judge as a plausible
-            # number.
-            spans = self._spans.pop(run.run_id, None)
-            step_count = self._steps.pop(run.run_id, 0)
+        # One call, so the read and the release are the same event. The count
+        # cannot outlive the step it describes and be handed to the next run's
+        # judge as a plausible number.
+        summary = self._store.close_run(run.run_id)
 
         decision = decide(run, self.config)
         if not decision.tier.scores:
             self._runner.discard(run.run_id)
             return []
 
-        if spans is None:
+        if summary is None:
             # Run end can fire more than once (M1-2); the first call took the
-            # spans. Re-scoring would emit a second, weaker verdict over the
-            # first -- the failure the behavior lane hit in M3.
+            # state. Re-scoring would emit a second, weaker verdict over the
+            # first -- the failure the behavior lane hit in M3, and here it
+            # would overwrite a judge result the user paid for.
             return []
 
         signals: list[Signal] = []
-        inline = heuristic.score(heuristic.project(spans[-1]) if spans else None)
+        inline = heuristic.score(summary.last)
 
-        scores = self._judge_scores(run, decision.tier, step_count)
+        scores = self._judge_scores(run, decision.tier, summary.step_count)
         if scores is not None:
             if scores.groundedness is not None:
                 signals.append(Signal(semconv.RUN_QUALITY_GROUNDEDNESS, scores.groundedness))
@@ -194,12 +196,11 @@ class QualityLane(Lane):
         return self._runner.collect(run.run_id)
 
     def run_count(self) -> int:
-        """Return how many runs are holding retained spans.
+        """Return how many runs are holding scoring state.
 
         Exposed so a test can observe that state is released.
         """
-        with self._lock:
-            return len(self._spans)
+        return self._store.run_count()
 
     def shutdown(self) -> None:
         """Release the judge's worker pool."""

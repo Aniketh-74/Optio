@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from optio.lanes.behavior.store import BehaviorStore
     from optio.lanes.cost.ledger import CostLedger
     from optio.lanes.quality.judge import Judge
+    from optio.lanes.quality.store import QualityStore
 
 
 def enabled_lanes(config: Config) -> list[Lane]:
@@ -64,7 +65,13 @@ def enabled_lanes(config: Config) -> list[Lane]:
         # that legitimately knows both sides. A judge with the wrong signature
         # fails inside the runner, which treats it as a judge that declined --
         # a missing signal, never an agent error (ADR-004).
-        lanes.append(QualityLane(config, judge=cast("Judge | None", config.judge)))
+        lanes.append(
+            QualityLane(
+                config,
+                judge=cast("Judge | None", config.judge),
+                store=_quality_store(config),
+            )
+        )
 
     if config.cost_lane:
         from optio.lanes.cost.lane import CostLane
@@ -161,3 +168,40 @@ def _behavior_store(config: Config) -> BehaviorStore:
     # is short again, so the lane under-reports rather than misreporting, which
     # is the direction Section 6.4 requires.
     return RedisBehaviorStore(client, ttl_seconds=config.run_ttl_seconds)
+
+
+def _quality_store(config: Config) -> QualityStore:
+    """Build the scoring store over the configured backend.
+
+    The third and last of ADR-050's per-lane stores, and the same shape as the
+    other two: in-memory unless configured otherwise, its own client, and an
+    unreachable server raising **here** at setup rather than on the agent's path
+    (Section 4.2).
+
+    Reached only when ``quality_lane`` is enabled, which is off by default
+    (ADR-003) -- so a user who has not opted into scoring never opens this
+    connection.
+
+    Args:
+        config: Active configuration.
+
+    Returns:
+        The process-local backend, or the Redis one when configured.
+
+    Raises:
+        StoreUnavailableError: If ``store_backend='redis'`` and the server does
+            not answer at setup.
+    """
+    from optio.lanes.quality.store_memory import InMemoryQualityStore
+
+    if config.store_backend != "redis":
+        return InMemoryQualityStore()
+
+    from optio.lanes.quality.store_redis import RedisQualityStore
+    from optio.store.redis_client import RedisClient
+
+    # `redis_url` is guaranteed non-empty: Config rejects the combination at
+    # construction, so the fallback here is unreachable rather than a default.
+    client = RedisClient(config.redis_url or "", timeout_ms=config.store_timeout_ms)
+    client.ping()
+    return RedisQualityStore(client, ttl_seconds=config.run_ttl_seconds)
