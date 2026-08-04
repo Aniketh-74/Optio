@@ -29,6 +29,8 @@ from optio.runtime.run_context import RunContext
 from optio.runtime.span_tap import OptioSpanTap
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from opentelemetry.sdk.trace import ReadableSpan
 
 pytestmark = pytest.mark.bench
@@ -200,6 +202,33 @@ def test_snapshot_with_many_open_reservations_stays_within_budget() -> None:
     assert per_call < BUDGET_P99_SECONDS
 
 
+#: Timed repetitions to take the best of. Scheduling noise only ever makes a
+#: measurement *slower*, so the minimum of several is the closest estimate of
+#: what the code costs -- the standard reason ``timeit`` reports the minimum
+#: rather than the mean.
+#:
+#: A single sample each side made this test load-sensitive: it failed once
+#: inside a full two-minute suite run, then passed five times in isolation and
+#: three times on the unchanged tree. That is the failure mode
+#: ``tests/property/conftest.py`` already names -- turning "the machine was
+#: busy" into "the lane is broken" -- and a ratio between two single samples is
+#: exactly the shape that suffers from it, because either side can be the one
+#: that gets descheduled.
+_TIMING_REPEATS = 5
+
+
+def _best_of(measure: Callable[[], float]) -> float:
+    """Return the fastest of :data:`_TIMING_REPEATS` measurements.
+
+    Args:
+        measure: Runs one timed sample and returns seconds.
+
+    Returns:
+        The minimum observed.
+    """
+    return min(measure() for _ in range(_TIMING_REPEATS))
+
+
 def test_classification_is_flat_in_run_length() -> None:
     """The behavior lane must not get slower as a run gets longer.
 
@@ -218,16 +247,20 @@ def test_classification_is_flat_in_run_length() -> None:
     lane = BehaviorLane(Config(behavior_window_size=50))
     run = _Run()
 
-    def step_cost(after: int) -> float:
-        for n in range(after):
-            lane.process_span(_span_stub(f"tool_{n % 8}"), run)
+    def step_cost() -> float:
         start = time.perf_counter()
         for n in range(500):
             lane.process_span(_span_stub(f"tool_{n % 8}"), run)
         return (time.perf_counter() - start) / 500
 
-    early = step_cost(200)
-    late = step_cost(10_000)
+    def advance(steps: int) -> None:
+        for n in range(steps):
+            lane.process_span(_span_stub(f"tool_{n % 8}"), run)
+
+    advance(200)
+    early = _best_of(step_cost)
+    advance(10_000)
+    late = _best_of(step_cost)
 
     print(f"\nbehavior step: early {early * 1e6:.2f}us -> after 10k steps {late * 1e6:.2f}us")
     assert late < early * 5 + 1e-5, "behavior lane cost grows with run length"
@@ -282,11 +315,16 @@ def _store_step_cost(
     for n in range(warmup):
         record(run, ("tool", f"t{n % distinct}"), False, maxlen=maxlen, k=2)
 
-    start = time.perf_counter()
-    for n in range(samples):
-        record(run, ("tool", f"t{n % distinct}"), False, maxlen=maxlen, k=2)
-    elapsed = (time.perf_counter() - start) / samples
+    def once() -> float:
+        start = time.perf_counter()
+        for n in range(samples):
+            record(run, ("tool", f"t{n % distinct}"), False, maxlen=maxlen, k=2)
+        return (time.perf_counter() - start) / samples
 
+    # Best-of, for the reason given at `_best_of`: these feed a ratio, and a
+    # single descheduled sample on either side moves it more than any
+    # regression this test is meant to catch.
+    elapsed = _best_of(once)
     cast("Any", store).close_run(run, k=2)
     return elapsed
 

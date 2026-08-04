@@ -153,7 +153,7 @@ class QualityLane(Lane):
             return []
 
         signals: list[Signal] = []
-        inline = heuristic.score(spans)
+        inline = heuristic.score(heuristic.project(spans[-1]) if spans else None)
 
         scores = self._judge_scores(run, decision.tier, step_count)
         if scores is not None:
