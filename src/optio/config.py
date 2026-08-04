@@ -135,7 +135,7 @@ class Config:
                 "accepted and then ignored -- and in a multi-process deployment "
                 "that means silently wrong cost totals. Use the default "
                 "store_backend='memory'. Track the distributed path at "
-                "https://github.com/Aniketh-74/Agent-Meter/issues"
+                "https://github.com/Aniketh-74/Optio/issues"
             )
 
     @classmethod
