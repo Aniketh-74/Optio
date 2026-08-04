@@ -73,17 +73,43 @@ def connect_or_skip(timeout_ms: int = 2000) -> RedisClient:
     return client
 
 
+def reset_optio_keys(client: RedisClient) -> None:
+    """Delete every key this project owns, and nothing else.
+
+    Deliberately **not** ``flushdb()``. The default URL above points at port
+    6379, which on a developer's machine is very often some *other* project's
+    Redis -- and a database number was the only thing standing between a test
+    run and someone else's data. That is too sharp an edge for a fixture that
+    runs on every invocation of the suite, and it was found the way these things
+    usually are: by running the suite without the environment variable set and
+    then checking what was on 6379.
+
+    Every key optio writes is namespaced under ``optio:``. Scoping the reset to
+    that namespace makes the blast radius structural rather than a matter of
+    having picked the right database, and it costs nothing -- the backends
+    already scan this exact pattern for ``run_count``.
+
+    Args:
+        client: The client whose keyspace to clear.
+    """
+    keys = list(client._redis.scan_iter(match="optio:*", count=500))
+    if keys:
+        client._redis.delete(*keys)
+
+
 @pytest.fixture
 def store() -> Iterator[RedisLedgerStore]:
-    """A store against a flushed database.
+    """A store on a clean optio keyspace.
 
-    Database 15 by convention, and flushed rather than assumed empty: a test
-    that inherits another run's keys fails in ways that look like logic bugs.
+    Cleared rather than assumed empty: a test that inherits another run's keys
+    fails in ways that look like logic bugs. Cleared by namespace rather than by
+    database, so a shared server keeps its other tenants -- see
+    :func:`reset_optio_keys`.
     """
     client = connect_or_skip(timeout_ms=1000)
-    client._redis.flushdb()
+    reset_optio_keys(client)
     yield RedisLedgerStore(client, ttl_seconds=60.0, tombstone_ttl_seconds=300.0)
-    client._redis.flushdb()
+    reset_optio_keys(client)
     client.close()
 
 

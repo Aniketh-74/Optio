@@ -32,7 +32,7 @@ from optio.lanes.behavior.store import WindowState
 from optio.lanes.behavior.store_memory import InMemoryBehaviorStore
 from optio.lanes.behavior.store_redis import RedisBehaviorStore
 from optio.store.redis_client import RedisClient
-from tests.integration.test_redis_ledger import REDIS_URL, connect_or_skip
+from tests.integration.test_redis_ledger import REDIS_URL, connect_or_skip, reset_optio_keys
 
 pytestmark = [pytest.mark.integration, pytest.mark.redis]
 
@@ -77,9 +77,9 @@ def _step(worker: int, redis_url: str) -> None:
 
 @pytest.fixture
 def client() -> RedisClient:
-    """A client against a flushed database, or a skip."""
+    """A client on a clean optio keyspace, or a skip."""
     conn = connect_or_skip()
-    conn._redis.flushdb()
+    reset_optio_keys(conn)
     return conn
 
 
@@ -114,7 +114,7 @@ def test_four_processes_produce_one_looping_verdict(client: RedisClient) -> None
     assert state.distinct_calls == len(CYCLE)
     assert classify_state(state).state == semconv.LOOP_STATE_LOOPING
 
-    client._redis.flushdb()
+    reset_optio_keys(client)
     client.close()
 
 

@@ -20,7 +20,7 @@ import pytest
 from optio.lanes.cost.ledger_memory import InMemoryLedgerStore
 from optio.lanes.cost.ledger_redis import RedisLedgerStore
 from optio.store.redis_client import RedisClient
-from tests.integration.test_redis_ledger import REDIS_URL, connect_or_skip
+from tests.integration.test_redis_ledger import REDIS_URL, connect_or_skip, reset_optio_keys
 
 pytestmark = [pytest.mark.integration, pytest.mark.redis]
 
@@ -61,9 +61,9 @@ def _meter(worker: int, redis_url: str) -> None:
 
 @pytest.fixture
 def client() -> RedisClient:
-    """A client against a flushed database, or a skip."""
+    """A client on a clean optio keyspace, or a skip."""
     conn = connect_or_skip()
-    conn._redis.flushdb()
+    reset_optio_keys(conn)
     return conn
 
 
@@ -88,7 +88,7 @@ def test_four_processes_produce_one_correct_total(client: RedisClient) -> None:
     assert snap.reconciled_steps == WORKERS * STEPS_PER_WORKER
     assert snap.reserved == pytest.approx(0.0), "reservations were left open"
 
-    client._redis.flushdb()
+    reset_optio_keys(client)
     client.close()
 
 
