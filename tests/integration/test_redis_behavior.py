@@ -18,7 +18,7 @@ from collections.abc import Iterator
 import pytest
 
 from optio.lanes.behavior.store_redis import _PREFIX, RedisBehaviorStore
-from tests.integration.test_redis_ledger import connect_or_skip, needs_driver
+from tests.integration.test_redis_ledger import connect_or_skip, needs_driver, reset_optio_keys
 
 #: Both markers, deliberately. ``integration`` is the directory's convention and
 #: a contract test enforces it; ``redis`` is what the gate selects on.
@@ -27,11 +27,11 @@ pytestmark = [pytest.mark.integration, pytest.mark.redis]
 
 @pytest.fixture
 def store() -> Iterator[RedisBehaviorStore]:
-    """A backend against a live server, on a flushed database."""
+    """A backend against a live server, on a clean optio keyspace."""
     client = connect_or_skip(timeout_ms=1000)
-    client._redis.flushdb()
+    reset_optio_keys(client)
     yield RedisBehaviorStore(client, ttl_seconds=60.0)
-    client._redis.flushdb()
+    reset_optio_keys(client)
     client.close()
 
 

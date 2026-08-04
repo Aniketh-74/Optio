@@ -20,7 +20,7 @@ from optio.errors import LedgerInvariantError
 from optio.lanes.cost.ledger_memory import InMemoryLedgerStore
 from optio.lanes.cost.ledger_redis import RedisLedgerStore
 from optio.lanes.cost.ledger_store import LedgerStore
-from tests.integration.test_redis_ledger import connect_or_skip
+from tests.integration.test_redis_ledger import connect_or_skip, reset_optio_keys
 
 
 @pytest.fixture(params=["memory", "redis"])
@@ -37,9 +37,9 @@ def store(request: pytest.FixtureRequest) -> Iterator[LedgerStore]:
         return
 
     client = connect_or_skip(timeout_ms=1000)
-    client._redis.flushdb()
+    reset_optio_keys(client)
     yield RedisLedgerStore(client, ttl_seconds=60.0, tombstone_ttl_seconds=300.0)
-    client._redis.flushdb()
+    reset_optio_keys(client)
     client.close()
 
 
