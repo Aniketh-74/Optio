@@ -153,7 +153,10 @@ def test_package_is_typed():
         "optio.api",
         "optio.runtime.run_context",
         "optio.lanes.base",
-        "optio.store.base",
+        # `optio.store.base` was here until ADR-050 deleted it: the generic
+        # StateStore ABC that no consumer ever constructed. Replaced by the
+        # ledger's own Protocol, which has two live implementations.
+        "optio.lanes.cost.ledger_store",
     ],
 )
 def test_every_module_imports(module):

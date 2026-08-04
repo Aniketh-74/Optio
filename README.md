@@ -202,7 +202,7 @@ contradicted an earlier claim and the claim lost:
   run contradicts a simulated one — it has, twice.
 
 The reasoning behind each decision is in
-[50 ADRs](https://github.com/Aniketh-74/Optio/tree/main/docs/design/adr/).
+[51 ADRs](https://github.com/Aniketh-74/Optio/tree/main/docs/design/adr/).
 
 ## Overhead
 
@@ -239,8 +239,10 @@ is trivially achievable by never detecting anything.
 > **alpha (0.3.0).** All three lanes work end to end and every signal in the contract is
 > implemented, on 99% coverage with 100% on the ledger and the fail-open guard.
 >
-> - **State is in-process only.** `store_backend="redis"` is rejected at setup rather than silently
->   ignored ([ADR-005](https://github.com/Aniketh-74/Optio/tree/main/docs/design/adr/)).
+> - **State is in-process by default**, which needs no infrastructure and meters one process. Set
+>   `store_backend="redis"` for runs sharded across workers — proved by four processes metering
+>   one run to the exact total
+>   ([ADR-050](https://github.com/Aniketh-74/Optio/blob/main/docs/design/adr/adr-050-the-store-speaks-the-domain.md)).
 > - **The signal names may still move.** They are pinned to OTel GenAI semconv 1.37.0, which is
 >   itself marked Development-stability upstream
 >   ([ADR-002](https://github.com/Aniketh-74/Optio/tree/main/docs/design/adr/)).
@@ -297,7 +299,7 @@ name above appears in this file, so an undocumented export cannot ship.
 
 ```bash
 pip install -e ".[dev]"
-pytest                       # 2,253 tests
+pytest                       # 2,304 tests
 ruff check . && mypy         # lint + types
 lint-imports                 # architecture boundaries
 ```

@@ -21,6 +21,43 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-process runs report one correct cost total: `store_backend="redis"` works**
+  ([ADR-050](docs/design/adr/adr-050-the-store-speaks-the-domain.md)).
+  Per-run state was process-local, so an agent sharded across workers had each process metering a
+  fraction and believing it had the whole — **four workers, a `$0.50` budget, and `$2.00` got
+  through**, silently, because every process's arithmetic was internally consistent. A test now
+  spawns four real processes against one run and asserts the exact total; a second test measures
+  the in-memory backend's limitation rather than describing it.
+
+  ADR-005 left a `StateStore` ABC as the seam for this, and an audit found **nothing had ever
+  constructed one** — so its `get`/`set`/`incr`/`delete` shape was an untested guess, and it could
+  not express `reconcile` atomically, could not read a run's reservations as a collection, and
+  collapsed `is_finalised` into `unknown` under TTL. It is replaced by one Protocol per lane and
+  deleted along with `InMemoryStateStore`. `CostLedger` is now a facade over a `LedgerStore`;
+  its callers are unchanged and its existing tests were the regression net for the extraction.
+
+  Redis correctness rests on Lua: every compound operation is one script, so `reconcile` cannot
+  interleave. The TTL is an idle timeout refreshed on each write (an absolute expiry would drop a
+  long run's reservations mid-flight and send `budget_remaining` back to full), and a tombstone
+  outlives the payload so a late callback cannot resurrect a closed run. An unreachable store
+  emits **no** cost signal rather than a partial one — which needed no new code, because the
+  fail-open guard already absorbed it; what was missing was the proof, and that is now a test.
+
+  The gate runs these against a real Redis service container, with `OPTIO_REQUIRE_REDIS` turning
+  the usual skip into a failure, because a job whose purpose is running them must not pass by not
+  running them.
+
+### Fixed
+
+- **A shipped error message pointed at a repository this project no longer owns.** The
+  `store_backend='redis'` error still sent users to the pre-rename `Agent-Meter` issue tracker;
+  the rename guard only ever scanned five root files and never looked at `src/`. GitHub redirects
+  a rename, so it worked — and would have kept working until someone claimed the old name, at
+  which point a library would be directing users into a stranger's issue tracker. The guard now
+  scans `src/` too, which is also why this entry names the old repository without linking it.
+
 ## [0.3.0] — 2026-08-04
 
 **Upgrade if you use the synchronous `OpenAI()` client with `optio_optimize`** — it was silently
