@@ -1,7 +1,9 @@
 """One suite, every quality backend, so "interchangeable" is a checked claim.
 
 Parametrised over the backends: a rule that holds in memory and not in Redis
-fails here rather than in production.
+fails here rather than in production. The Redis leg matters more here than in
+the other lanes -- a quality score carries no arithmetic a reader could check,
+so a backend that returned a plausible wrong value would not be questioned.
 
 The contract is smaller than the other two lanes' because the lane asks less of
 it. ``record`` returns nothing -- quality is a run-scoped property and cannot be
@@ -18,13 +20,28 @@ import pytest
 
 from optio.lanes.quality.store import QualityStep, QualityStore
 from optio.lanes.quality.store_memory import InMemoryQualityStore
+from optio.lanes.quality.store_redis import RedisQualityStore
+from tests.integration.test_redis_ledger import connect_or_skip, reset_optio_keys
 
 
-@pytest.fixture(params=["memory"])
+@pytest.fixture(params=["memory", "redis"])
 def store(request: pytest.FixtureRequest) -> Iterator[QualityStore]:
-    """A backend under test."""
-    assert request.param == "memory"
-    yield InMemoryQualityStore()
+    """A backend under test.
+
+    Redis skips when no server is reachable, which keeps this suite runnable on
+    a laptop -- and the gate sets ``OPTIO_REQUIRE_REDIS`` so the same skip is a
+    failure there, because a job whose purpose is running these must not pass
+    by not running them.
+    """
+    if request.param == "memory":
+        yield InMemoryQualityStore()
+        return
+
+    client = connect_or_skip(timeout_ms=1000)
+    reset_optio_keys(client)
+    yield RedisQualityStore(client, ttl_seconds=60.0)
+    reset_optio_keys(client)
+    client.close()
 
 
 def _step(
