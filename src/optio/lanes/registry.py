@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from optio.config import Config
     from optio.lanes.base import Lane
+    from optio.lanes.cost.ledger import CostLedger
     from optio.lanes.quality.judge import Judge
 
 
@@ -67,7 +68,7 @@ def enabled_lanes(config: Config) -> list[Lane]:
     if config.cost_lane:
         from optio.lanes.cost.lane import CostLane
 
-        lanes.append(CostLane(config))
+        lanes.append(CostLane(config, ledger=_ledger(config)))
 
     if config.behavior_lane:
         from optio.lanes.behavior.lane import BehaviorLane
@@ -75,3 +76,45 @@ def enabled_lanes(config: Config) -> list[Lane]:
         lanes.append(BehaviorLane(config))
 
     return lanes
+
+
+def _ledger(config: Config) -> CostLedger:
+    """Build the ledger over the configured backend.
+
+    An unreachable Redis raises **here**, at setup, rather than on the agent's
+    path. A backend that cannot be reached at wiring time is a configuration
+    error and Section 4.2 says those fail loudly; a backend that stops
+    answering *later* is a runtime condition, and the lane fails open on it.
+
+    Args:
+        config: Active configuration.
+
+    Returns:
+        A ledger over the in-memory backend, or over Redis when configured.
+
+    Raises:
+        StoreUnavailableError: If ``store_backend='redis'`` and the server does
+            not answer at setup.
+    """
+    from optio.lanes.cost.ledger import CostLedger
+
+    if config.store_backend != "redis":
+        return CostLedger()
+
+    from optio.lanes.cost.ledger_redis import RedisLedgerStore
+    from optio.store.redis_client import RedisClient
+
+    # `redis_url` is guaranteed non-empty: Config rejects the combination at
+    # construction, so the fallback here is unreachable rather than a default.
+    client = RedisClient(config.redis_url or "", timeout_ms=config.store_timeout_ms)
+    client.ping()
+    return CostLedger(
+        store=RedisLedgerStore(
+            client,
+            ttl_seconds=config.run_ttl_seconds,
+            # Finality has to outlive the state it was derived from, or a late
+            # callback finds nothing and starts a second total under a run id
+            # that was already reported.
+            tombstone_ttl_seconds=config.run_ttl_seconds * 10,
+        )
+    )

@@ -66,17 +66,20 @@ class Config:
         behavior_lane: Emit loop/repeat/retry-storm signals.
         quality_lane: Emit outcome-quality signals. **Off by default** (ADR-003);
             enabling it opts into the sampled, tiered evaluator path.
-        store_backend: Where per-run state lives. Only ``memory`` is
-            implemented; ``redis`` is a designed-but-unbuilt path (ADR-005) and
-            is **rejected at construction** rather than silently ignored.
-        redis_url: Connection string for the unimplemented Redis backend. Kept
-            so the field does not have to be re-added (and so a config carrying
-            it stays loadable), but setting ``store_backend='redis'`` fails.
+        store_backend: Where per-run state lives. ``memory`` is the default and
+            needs no infrastructure (SC-1), but meters one process. ``redis``
+            shares one run's state across processes, which is what makes a
+            budget correct under multiple workers (ADR-050).
+        redis_url: Connection string, required when ``store_backend='redis'``.
+            Its absence is a setup error rather than a runtime surprise.
         quality_sample_rate: Fraction of runs routed to the async LLM-judge when
             the quality lane is on. Must be within ``[0.0, 1.0]``.
         run_ttl_seconds: Eviction TTL for run state orphaned by a missing run-end.
         behavior_window_size: Maximum step signatures retained per run. Bounds
             memory under long runs (Section 11).
+        store_timeout_ms: Connect and read timeout for a networked store. Short
+            by default because it sits on the agent's critical path, where a
+            dropped signal is cheaper than a stalled step (ADR-004).
         judge: The user's outcome evaluator, used only when ``quality_lane`` is
             on and a run is sampled. **Not settable from the environment**, and
             deliberately so: optio ships no default judge and constructs no
@@ -97,6 +100,7 @@ class Config:
     quality_sample_rate: float = 0.1
     run_ttl_seconds: float = DEFAULT_RUN_TTL_SECONDS
     behavior_window_size: int = 50
+    store_timeout_ms: int = 50
     # Typed as a callable rather than importing the Judge protocol: config sits
     # below lanes in the layering (Section 3.1), so it must not import one.
     judge: Callable[[Any], Any] | None = None
@@ -117,25 +121,20 @@ class Config:
             raise OptioConfigError(
                 f"store_backend must be one of {get_args(StoreBackend)}, got {self.store_backend!r}"
             )
-        if self.store_backend == "redis":
-            # Rejected rather than accepted-and-ignored. The Redis path of
-            # ADR-005 is designed but not implemented: no lane reads
-            # `store_backend`, and per-run state lives in RunContext, so a run
-            # configured for Redis would silently stay in-process. For a
-            # distributed deployment that is a wrong cost total (R-TECH-1)
-            # discovered in production, which is precisely the class of silent
-            # wrongness this project treats as its worst failure.
-            #
-            # Setup-time failure is the correct behaviour here (Section 4.2):
-            # fail-open governs the *runtime* path, not configuration that
-            # cannot do what it says.
+        if self.store_backend == "redis" and not self.redis_url:
+            # Setup-time failure, per Section 4.2: fail-open governs the
+            # *runtime* path, not configuration that names a backend it has no
+            # way to reach. Accepting this and discovering it later is the
+            # shape ADR-005's addendum refused to ship a second time.
             raise OptioConfigError(
-                "store_backend='redis' is not implemented in this release. "
-                "Per-run state is in-process only, so a Redis setting would be "
-                "accepted and then ignored -- and in a multi-process deployment "
-                "that means silently wrong cost totals. Use the default "
-                "store_backend='memory'. Track the distributed path at "
-                "https://github.com/Aniketh-74/Optio/issues"
+                "store_backend='redis' needs redis_url, which is unset. "
+                "Set it to your Redis connection string, or use the default "
+                "store_backend='memory' -- which needs no infrastructure and "
+                "meters one process."
+            )
+        if self.store_timeout_ms <= 0:
+            raise OptioConfigError(
+                f"store_timeout_ms must be positive, got {self.store_timeout_ms}"
             )
 
     @classmethod
@@ -164,6 +163,7 @@ class Config:
             quality_sample_rate=_env_float("QUALITY_SAMPLE_RATE", 0.1),
             run_ttl_seconds=_env_float("RUN_TTL_SECONDS", DEFAULT_RUN_TTL_SECONDS),
             behavior_window_size=int(_env_float("BEHAVIOR_WINDOW_SIZE", 50)),
+            store_timeout_ms=int(_env_float("STORE_TIMEOUT_MS", 50)),
         )
 
     def merged_with(self, **overrides: object) -> Config:
