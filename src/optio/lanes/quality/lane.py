@@ -85,6 +85,9 @@ class QualityLane(Lane):
         super().__init__(config)
         self._lock = threading.RLock()
         self._spans: dict[str, list[ReadableSpan]] = {}
+        # Counted separately from the buffer, because the buffer is capped and
+        # the count is not a measurement of it. See `on_run_end`.
+        self._steps: dict[str, int] = {}
         self._runner = JudgeRunner(judge)
 
         if config.quality_lane and judge is None:
@@ -110,6 +113,7 @@ class QualityLane(Lane):
             Always empty.
         """
         with self._lock:
+            self._steps[run.run_id] = self._steps.get(run.run_id, 0) + 1
             retained = self._spans.setdefault(run.run_id, [])
             if len(retained) < MAX_RETAINED_SPANS:
                 retained.append(span)
@@ -131,7 +135,11 @@ class QualityLane(Lane):
             evidence did not support a verdict.
         """
         with self._lock:
+            # Popped together, under one lock, so the count cannot outlive the
+            # buffer and be handed to the *next* run's judge as a plausible
+            # number.
             spans = self._spans.pop(run.run_id, None)
+            step_count = self._steps.pop(run.run_id, 0)
 
         decision = decide(run, self.config)
         if not decision.tier.scores:
@@ -147,7 +155,7 @@ class QualityLane(Lane):
         signals: list[Signal] = []
         inline = heuristic.score(spans)
 
-        scores = self._judge_scores(run, decision.tier, spans)
+        scores = self._judge_scores(run, decision.tier, step_count)
         if scores is not None:
             if scores.groundedness is not None:
                 signals.append(Signal(semconv.RUN_QUALITY_GROUNDEDNESS, scores.groundedness))
@@ -161,15 +169,17 @@ class QualityLane(Lane):
 
         return signals
 
-    def _judge_scores(
-        self, run: RunLike, tier: Tier, spans: list[ReadableSpan]
-    ) -> JudgeScores | None:
+    def _judge_scores(self, run: RunLike, tier: Tier, step_count: int) -> JudgeScores | None:
         """Dispatch and collect the judge, without blocking the run.
 
         Args:
             run: The run being scored.
             tier: The assigned tier.
-            spans: The run's retained spans.
+            step_count: How many steps the run took. The counted total, not
+                ``len(retained spans)`` -- the buffer is capped at
+                :data:`MAX_RETAINED_SPANS`, so measuring it reported the cap for
+                every longer run, and ``docs/quality.md`` shows users passing
+                this number straight into their own evaluator.
 
         Returns:
             Validated scores, or ``None``.
@@ -180,7 +190,7 @@ class QualityLane(Lane):
         # Content is the caller's to provide. optio passes no trace text of
         # its own (Section 10): a judge that needs prompts should be closed over
         # the user's own record of them.
-        self._runner.submit(JudgeRequest(run_id=run.run_id, step_count=len(spans), content={}))
+        self._runner.submit(JudgeRequest(run_id=run.run_id, step_count=step_count, content={}))
         return self._runner.collect(run.run_id)
 
     def run_count(self) -> int:

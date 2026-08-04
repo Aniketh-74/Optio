@@ -21,7 +21,7 @@ from opentelemetry.trace import StatusCode
 
 from optio import semconv
 from optio.config import Config
-from optio.lanes.quality.judge import Judge, JudgeRequest, JudgeScores
+from optio.lanes.quality.judge import Judge, JudgeRequest, JudgeRunner, JudgeScores
 from optio.lanes.quality.lane import MAX_RETAINED_SPANS, QualityLane
 
 if TYPE_CHECKING:
@@ -192,6 +192,92 @@ class TestNothingIsEmittedOnTheHotPath:
         # the hot path cheap (SC-5).
         lane = QualityLane(enabled())
         assert lane.process_span(answered(), FakeRun()) == []
+
+
+class RecordingRunner(JudgeRunner):
+    """A runner that remembers what it was asked to judge.
+
+    Reads what the lane *sends* rather than what the judge received. The judge
+    runs in a worker pool and ``collect`` waits ``DEFAULT_COLLECT_TIMEOUT``,
+    which is ``0.0`` -- so a judge that records what it saw is racing the pool,
+    and a test built on one passes or fails on scheduling. ``submit`` is called
+    synchronously on the run-end thread, and the request is the contract.
+    """
+
+    def __init__(self, judge: Judge | None) -> None:
+        super().__init__(judge)
+        self.requests: list[JudgeRequest] = []
+
+    def submit(self, request: JudgeRequest) -> bool:
+        """Record the request, then dispatch it normally."""
+        self.requests.append(request)
+        return super().submit(request)
+
+
+def recording_lane(**overrides: object) -> tuple[QualityLane, RecordingRunner]:
+    """A judging lane whose dispatches are observable."""
+    lane = QualityLane(enabled(quality_sample_rate=1.0, **overrides), judge=scoring_judge())
+    runner = RecordingRunner(scoring_judge())
+    lane._runner = runner
+    return lane, runner
+
+
+class TestTheJudgeIsToldTheTruth:
+    def test_the_step_count_is_the_run_length_not_the_buffer_size(self) -> None:
+        """``step_count`` is documented as "how many steps the run took", and
+        ``docs/quality.md`` shows a user passing it straight to their evaluator
+        as ``steps=request.step_count``.
+
+        It was ``len(spans)``, and the span buffer is capped at
+        :data:`MAX_RETAINED_SPANS` -- so every run longer than that reported the
+        cap. A 500-step run told the judge it took 64. Wrong rather than
+        missing, and plausible enough that nobody would query it.
+        """
+        steps = MAX_RETAINED_SPANS + 40
+        run = FakeRun(sampled=True)
+        lane, runner = recording_lane()
+        for _ in range(steps):
+            lane.process_span(answered(), run)
+        lane.on_run_end(run)
+
+        assert [request.step_count for request in runner.requests] == [steps]
+
+    def test_the_count_is_released_with_the_spans(self) -> None:
+        """A second per-run dictionary is a second thing to leak.
+
+        The lane's whole eviction discipline exists because per-run state in a
+        long-lived agent process grows without bound -- the bug stress testing
+        found in the ledger after every unit test missed it. ``run_count()``
+        observes the span buffer, so a counter released separately, or not at
+        all, would be invisible to it.
+
+        Reaching in is deliberate, as it is for the span cap below: this is a
+        memory-safety property with no public surface.
+        """
+        lane = QualityLane(enabled(quality_sample_rate=1.0), judge=scoring_judge())
+        for index in range(20):
+            run = FakeRun(f"run-{index}", sampled=True)
+            for _ in range(3):
+                lane.process_span(answered(), run)
+            lane.on_run_end(run)
+
+        assert lane._steps == {}, "the step counters outlived their runs"
+        assert lane.run_count() == 0
+
+    def test_a_straggling_step_does_not_resume_the_previous_count(self) -> None:
+        """Run end can fire more than once (M1-2), and a late span can land
+        after it. The count restarts rather than continuing, so a re-opened run
+        reports what it can actually account for."""
+        run = FakeRun(sampled=True)
+        lane, runner = recording_lane()
+        for _ in range(7):
+            lane.process_span(answered(), run)
+        lane.on_run_end(run)
+
+        lane.process_span(answered(), run)
+        lane.on_run_end(run)
+
+        assert [request.step_count for request in runner.requests] == [7, 1]
 
 
 class TestStateIsBounded:
