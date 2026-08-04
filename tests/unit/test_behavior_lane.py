@@ -115,7 +115,10 @@ class TestRunIsolation:
         assert errors == []
         assert lane.run_count() == 8
         for run in runs:
-            assert lane._windows[run.run_id].total_steps == 200
+            # Reaches through to the store since ADR-050 moved the windows and
+            # their lock there. The assertion is unchanged -- what it protects
+            # is that no step was lost, not where the dictionary lives.
+            assert lane._store._windows[run.run_id].total_steps == 200  # type: ignore[attr-defined]
 
 
 class TestWindowIsBounded:
@@ -125,7 +128,7 @@ class TestWindowIsBounded:
         for _ in range(5000):
             lane.process_span(span(), run)
 
-        assert len(lane._windows[run.run_id]) == 25
+        assert len(lane._store._windows[run.run_id]) == 25  # type: ignore[attr-defined]
 
     def test_repeat_count_is_bounded_by_the_window(self) -> None:
         # Not by the run length: a policy reading a count of 5000 from a
