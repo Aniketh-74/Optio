@@ -486,6 +486,94 @@ def test_disabled_lanes_cost_almost_nothing() -> None:
 QUALITY_BUDGET_P99_SECONDS = 0.010
 
 
+@pytest.mark.redis
+def test_a_quality_step_costs_one_round_trip_and_no_more() -> None:
+    """What the shared quality backend charges per step, measured.
+
+    Worth stating plainly rather than reassuring about: this lane emits nothing
+    per step, so on a shared backend it pays a round trip that buys nothing
+    until run end. The alternative -- accumulate locally, merge once at run end
+    -- was considered and deferred, because picking the run's genuinely final
+    step across processes then needs a comparable clock, and a wrong "last step"
+    is a wrong verdict rather than a missing one.
+
+    So the design keeps arrival order as the tiebreak, and the price is this
+    number. It is asserted as a ratio against a bare PING, not as an absolute,
+    so it means the same on a laptop and in CI: a step is one script by
+    construction, and a regression means the script started doing real work.
+    """
+    from optio.lanes.quality.store import QualityStep
+    from optio.lanes.quality.store_redis import RedisQualityStore
+    from tests.integration.test_redis_ledger import connect_or_skip
+
+    step = QualityStep(errored=False, finish_reasons=("stop",), output_tokens=50)
+    client = connect_or_skip(timeout_ms=2000)
+    try:
+        client.ping()
+        start = time.perf_counter()
+        for _ in range(200):
+            client.ping()
+        ping = (time.perf_counter() - start) / 200
+
+        store = RedisQualityStore(client, ttl_seconds=60.0)
+
+        def once() -> float:
+            start = time.perf_counter()
+            for _ in range(200):
+                store.record("bench-quality", step)
+            return (time.perf_counter() - start) / 200
+
+        for _ in range(200):
+            store.record("bench-quality", step)
+        record = _best_of(once)
+        store.close_run("bench-quality")
+    finally:
+        client.close()
+
+    print(f"\nredis quality: bare PING {ping * 1e6:.0f}us, record {record * 1e6:.0f}us")
+    assert record < ping * 3, (
+        f"a record costs {record / ping:.1f} round trips ({record * 1e6:.0f}us against a "
+        f"{ping * 1e6:.0f}us PING); the script is doing more than write four fields"
+    )
+    assert record < QUALITY_BUDGET_P99_SECONDS
+
+
+def test_a_quality_step_does_not_get_slower_as_the_run_gets_longer() -> None:
+    """The state is a counter and one step, so a step costs the same at 10 and
+    at 10,000 -- the property that let the 64-span buffer go entirely.
+
+    In-memory rather than over Redis, because here the work is the whole cost
+    rather than a fraction of a round trip, so a regression to O(run) would
+    actually be visible.
+    """
+    from optio.lanes.quality.store import QualityStep
+    from optio.lanes.quality.store_memory import InMemoryQualityStore
+
+    step = QualityStep(errored=False, finish_reasons=("stop",), output_tokens=50)
+    store = InMemoryQualityStore()
+
+    def cost(after: int) -> float:
+        run = f"bench-{after}"
+        for _ in range(after):
+            store.record(run, step)
+
+        def once() -> float:
+            start = time.perf_counter()
+            for _ in range(1000):
+                store.record(run, step)
+            return (time.perf_counter() - start) / 1000
+
+        elapsed = _best_of(once)
+        store.close_run(run)
+        return elapsed
+
+    early = cost(10)
+    late = cost(10_000)
+
+    print(f"\nquality record: after 10 steps {early * 1e6:.2f}us, after 10k {late * 1e6:.2f}us")
+    assert late < early * 2 + 1e-6, "per-step cost grew with run length"
+
+
 def test_quality_lane_inline_overhead_is_within_budget() -> None:
     """The heuristic tier stays within Section 11's 10 ms p99 budget.
 

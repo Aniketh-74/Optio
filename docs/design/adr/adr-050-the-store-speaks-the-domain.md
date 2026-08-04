@@ -165,3 +165,48 @@ counts rather than call identities and a test that failed there would be pinning
 Redis never promised.
 
 **Still open.** The quality lane. Its store is the last plan in this milestone.
+
+## Addendum — 2026-08-05: the quality lane, and what verifying a spec is worth
+
+All three lanes are on the shared store. The pattern held a third time — per-lane Protocol, two
+backends, one contract suite run against both, one multi-process proof — and three things are
+worth recording.
+
+**The spec's own projection claim did not survive being checked.** It required verification rather
+than trust, and that instruction earned its place. It supposed the retained spans were read for
+their count and by the tier decision, so `QualityStep` would carry the span name, its timestamps
+and the attributes that decision consults. But `sampling.decide` takes the run and the config and
+no spans at all, and the only consumer is `heuristic.score`, which reads **the last span alone** —
+three fields off it. So the store holds a counter and one projection, and the 64-span buffer is
+deleted rather than ported. `MAX_RETAINED_SPANS` goes with it: bounded memory stops being a rule
+someone has to remember and becomes a property of the shape.
+
+**Asking what `len(spans)` meant found a shipped bug.** `JudgeRequest.step_count` is documented as
+the run's length and passed by users into their own evaluators, and it was the size of a buffer
+capped at 64. Every longer run understated itself. It is fixed ahead of the extraction, so the
+store was built against a corrected contract rather than inheriting a wrong one. The general point
+is not about this bug: a projection is defined as *what the consumer reads*, so deriving one forces
+you to read every consumer, and that is a different activity from reviewing them.
+
+**`close_run` returning its own state was re-derived three times.** The ledger returns a snapshot,
+the behaviour window returns its state, and this store returns a summary — each time for the same
+reason, that reading and then releasing is two operations with a gap another worker's step can land
+in. The spec proposed `buffer`/`drain` here and the shape was corrected again during planning. Three
+independent derivations of one rule is the signal that it belongs in the Protocol conventions rather
+than in each lane's head: **a store's release operation returns what it released, and `None` means
+absence rather than emptiness.**
+
+**The cost accepted, and the alternative rejected.** This lane emits nothing per step, so a shared
+backend charges a round trip that buys nothing until run end — ~600 µs against a ~500 µs bare PING.
+Accumulating locally and merging once at run end would make that near-zero, and was rejected for
+now: picking the run's genuinely final step across processes then needs a comparable clock across
+machines, and a wrong "last step" is a wrong verdict rather than a missing one. Arrival order at
+the server is a rule with no clock in it. The lane is off by default, the number is published in
+the README rather than smoothed over, and the alternative is recorded here so the next person
+re-opens it deliberately.
+
+**Consequences.** 2,453 tests pass. The contract suites now run against both backends in all three
+lanes. A single test drives every lane through its real code path and rejects anything reaching a
+store that could not cross a process — recursively, since a span nested in a tuple is the shape a
+leak would actually take, and that test carries its own tests because a guard that cannot fail is
+worse than no guard.
