@@ -1,0 +1,146 @@
+"""The Redis backend against a real server.
+
+A fake would be faster and would prove less. Lua is what carries the atomicity
+here, and a fake's Lua implementation is exactly where it diverges from the
+real thing -- so the two properties below, which only a real server can
+demonstrate, are tested against one.
+
+Both are properties the in-memory backend gets for free and Redis has to
+arrange deliberately: expiry that does not fire mid-run, and finality that
+outlives the data it was derived from.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Iterator
+
+import pytest
+
+from optio.errors import LedgerInvariantError
+from optio.lanes.cost.ledger_redis import RedisLedgerStore
+from optio.store.redis_client import RedisClient, StoreUnavailableError
+
+#: Both markers, deliberately. ``integration`` is the directory's convention and
+#: a contract test enforces it; ``redis`` is what the gate selects on to run
+#: these against a service container, where a skip would be a silent hole.
+pytestmark = [pytest.mark.integration, pytest.mark.redis]
+
+REDIS_URL = os.environ.get("OPTIO_TEST_REDIS_URL", "redis://localhost:6379/15")
+
+
+@pytest.fixture
+def store() -> Iterator[RedisLedgerStore]:
+    """A store against a flushed database.
+
+    Database 15 by convention, and flushed rather than assumed empty: a test
+    that inherits another run's keys fails in ways that look like logic bugs.
+    """
+    client = RedisClient(REDIS_URL, timeout_ms=1000)
+    try:
+        client.ping()
+    except StoreUnavailableError:
+        pytest.skip(f"no Redis at {REDIS_URL}")
+    client._redis.flushdb()
+    yield RedisLedgerStore(client, ttl_seconds=60.0, tombstone_ttl_seconds=300.0)
+    client._redis.flushdb()
+    client.close()
+
+
+class TestTtlIsAnIdleTimeoutNotADeadline:
+    def test_a_second_write_refreshes_the_expiry(self, store: RedisLedgerStore) -> None:
+        """An absolute expiry would be a time bomb on a long run.
+
+        State would vanish mid-flight, open reservations with it, and
+        ``budget_remaining`` would jump back to full -- ADR-044's failure
+        arriving on a timer rather than through a bug. So every write pushes
+        the expiry out.
+        """
+        short = RedisLedgerStore(store._client, ttl_seconds=5.0, tombstone_ttl_seconds=300.0)
+        short.reserve("run", "a", 1.0)
+        first = short.ttl_seconds_remaining("run")
+
+        # A longer-lived store writing to the same run must extend it, which is
+        # only observable because the first write set a short expiry.
+        long = RedisLedgerStore(store._client, ttl_seconds=120.0, tombstone_ttl_seconds=300.0)
+        long.reserve("run", "b", 1.0)
+        second = long.ttl_seconds_remaining("run")
+
+        assert first <= 5.0
+        assert second > first, "a later write did not refresh the TTL"
+
+    def test_reconciling_also_refreshes(self, store: RedisLedgerStore) -> None:
+        """Reconcile is a write too. A run that only reconciles -- the tail of
+        any run -- must not age out while it is still reporting."""
+        short = RedisLedgerStore(store._client, ttl_seconds=5.0, tombstone_ttl_seconds=300.0)
+        short.reserve("run", "a", 1.0)
+
+        long = RedisLedgerStore(store._client, ttl_seconds=120.0, tombstone_ttl_seconds=300.0)
+        long.reconcile("run", "a", 0.5)
+
+        assert long.ttl_seconds_remaining("run") > 5.0
+
+
+class TestTheTombstoneOutlivesThePayload:
+    def test_a_closed_run_stays_finalised_after_its_payload_is_gone(
+        self, store: RedisLedgerStore
+    ) -> None:
+        """Without this, a late span arriving after expiry starts a *fresh*
+        run record -- resurrecting a run ADR-010 declares final."""
+        store.reserve("run", "a", 1.0)
+        store.close_run("run")
+
+        # Simulate the payload expiring while the tombstone has not. Deleting
+        # the keys directly is the only way to reach that state without waiting
+        # out a real TTL, and it is the state the TTL split exists to survive.
+        open_key, totals_key, _ = store._keys("run")
+        store._client._redis.delete(open_key, totals_key)
+
+        assert store.is_finalised("run") is True
+
+    def test_a_resurrected_run_is_still_refused_after_expiry(self, store: RedisLedgerStore) -> None:
+        """The tombstone is not decoration: it has to actually reject writes."""
+        store.reserve("run", "a", 1.0)
+        store.close_run("run")
+        open_key, totals_key, _ = store._keys("run")
+        store._client._redis.delete(open_key, totals_key)
+
+        with pytest.raises(LedgerInvariantError):
+            store.reserve("run", "b", 1.0)
+
+    def test_a_run_that_never_existed_is_not_finalised(self, store: RedisLedgerStore) -> None:
+        assert store.is_finalised("never") is False
+
+
+class TestConcurrentReconcilesDoNotLoseUpdates:
+    def test_many_threads_reconciling_produce_the_exact_total(
+        self, store: RedisLedgerStore
+    ) -> None:
+        """The reason reconcile is one script rather than three round trips.
+
+        Threads here share a process, but they contend on the *server* exactly
+        as separate processes would -- so a read-modify-write implementation
+        loses updates here too, and the total comes out plausibly low.
+        """
+        import threading
+
+        steps = 200
+        for n in range(steps):
+            store.reserve("run", f"s{n}", 0.01)
+
+        def work(start: int) -> None:
+            for n in range(start, steps, 4):
+                store.reconcile("run", f"s{n}", 0.01)
+
+        threads = [threading.Thread(target=work, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+            assert not t.is_alive(), "a reconcile thread hung"
+
+        snap = store.snapshot("run")
+
+        assert snap.actual == pytest.approx(steps * 0.01)
+        assert snap.reconciled_steps == steps
+        assert snap.open_steps == 0

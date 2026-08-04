@@ -12,22 +12,41 @@ through the extraction and are the regression net for it.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 
 import pytest
 
 from optio.errors import LedgerInvariantError
 from optio.lanes.cost.ledger_memory import InMemoryLedgerStore
+from optio.lanes.cost.ledger_redis import RedisLedgerStore
 from optio.lanes.cost.ledger_store import LedgerStore
+from optio.store.redis_client import RedisClient, StoreUnavailableError
+
+REDIS_URL = os.environ.get("OPTIO_TEST_REDIS_URL", "redis://localhost:6379/15")
 
 
-@pytest.fixture(params=["memory"])
+@pytest.fixture(params=["memory", "redis"])
 def store(request: pytest.FixtureRequest) -> Iterator[LedgerStore]:
-    """A backend under test."""
+    """A backend under test.
+
+    Redis skips when no server is reachable, which keeps this suite runnable on
+    a laptop -- and the gate runs ``-m redis`` explicitly against a service
+    container, where a skip would be a silent hole rather than a convenience.
+    """
     if request.param == "memory":
         yield InMemoryLedgerStore()
         return
-    raise AssertionError(f"unknown backend {request.param!r}")
+
+    client = RedisClient(REDIS_URL, timeout_ms=1000)
+    try:
+        client.ping()
+    except StoreUnavailableError:
+        pytest.skip(f"no Redis at {REDIS_URL}")
+    client._redis.flushdb()
+    yield RedisLedgerStore(client, ttl_seconds=60.0, tombstone_ttl_seconds=300.0)
+    client._redis.flushdb()
+    client.close()
 
 
 class TestReserveAndReconcile:
