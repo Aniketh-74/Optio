@@ -12,6 +12,7 @@ outlives the data it was derived from.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from collections.abc import Iterator
 
@@ -38,12 +39,33 @@ REDIS_URL = os.environ.get("OPTIO_TEST_REDIS_URL", "redis://localhost:6379/15")
 #: green having proved nothing. Mirrors ``OPTIO_REQUIRE_PROVIDER_SDKS``.
 REQUIRE_REDIS = bool(os.environ.get("OPTIO_REQUIRE_REDIS"))
 
+#: Whether the optional driver is installed at all -- a different condition
+#: from "a server answers". The floor job installs the declared minimums and
+#: nothing else, so it has neither, and a test needing only the driver still
+#: has to say which of the two it is missing.
+HAS_REDIS_DRIVER = importlib.util.find_spec("redis") is not None
+
+needs_driver = pytest.mark.skipif(not HAS_REDIS_DRIVER, reason="the redis driver is not installed")
+
 
 def connect_or_skip(timeout_ms: int = 2000) -> RedisClient:
-    """Return a live client, or skip -- unless CI demanded one."""
-    client = RedisClient(REDIS_URL, timeout_ms=timeout_ms)
+    """Return a live client, or skip -- unless CI demanded one.
+
+    Catches ``ImportError`` as well as ``StoreUnavailableError`` because they
+    are different problems with the same symptom. ``redis`` is an optional
+    runtime extra, so a job that installs only the declared minimums -- the
+    floor job does exactly that -- has no driver at all, and
+    ``RedisClient.__init__`` raises ``ImportError`` before there is anything to
+    ping. Letting that propagate turns "this environment cannot run these
+    tests" into a failed build.
+    """
     try:
+        client = RedisClient(REDIS_URL, timeout_ms=timeout_ms)
         client.ping()
+    except ImportError:
+        if REQUIRE_REDIS:
+            pytest.fail("OPTIO_REQUIRE_REDIS is set but the redis driver is not installed")
+        pytest.skip("the redis driver is not installed")
     except StoreUnavailableError:
         if REQUIRE_REDIS:
             pytest.fail(f"OPTIO_REQUIRE_REDIS is set but no Redis answered at {REDIS_URL}")
@@ -166,6 +188,7 @@ class TestTheConfiguredBackendActuallyReachesTheLane:
         cost = next(lane for lane in lanes if isinstance(lane, CostLane))
         assert isinstance(cost.ledger._store, InMemoryLedgerStore)
 
+    @needs_driver
     def test_an_unreachable_redis_fails_at_setup_not_at_runtime(self) -> None:
         """Loud here, fail-open later. Configuration that cannot do what it
         claims is a setup error (Section 4.2), and discovering it on the first

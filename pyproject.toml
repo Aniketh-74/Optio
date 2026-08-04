@@ -78,6 +78,13 @@ dev = [
     # skipped in CI's main test job.
     "openai>=1.0.0",
     "anthropic>=0.34.0",
+    # The Redis driver, for the same reason and with the same lesson. It is an
+    # optional *runtime* extra (ADR-050) but a required *development* one:
+    # `redis_client.py` imports it, so without it here `mypy` cannot resolve
+    # the import and the lint job fails on a module that is perfectly correct.
+    # Having it also means the shared-store tests skip on "no server" rather
+    # than "no driver", which are different problems with the same symptom.
+    "redis>=5.0",
 ]
 
 [project.urls]
