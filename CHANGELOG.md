@@ -73,6 +73,32 @@ be promoted to the top level deliberately.
   **every** step, since a divergence that a later eviction cancels out would pass a final-state
   check having produced wrong verdicts throughout.
 
+- **Outcome scoring works across processes: all three lanes are now shared-state**
+  ([ADR-050](docs/design/adr/adr-050-the-store-speaks-the-domain.md)).
+  The third instance of the same bug, and the one where a wrong answer is most likely to be
+  believed — a cost total is arithmetic you could check against an invoice, and a loop verdict has
+  a step count behind it, but a quality score is a number between 0 and 1 that looks equally
+  plausible computed from the whole run or from a quarter of it. Sharded, the judge was told a
+  quarter of the run's length, and the heuristic scored whichever step was last *in one worker*, so
+  a run that ended in an error could be scored from a healthy step that finished earlier somewhere
+  else.
+
+  **The span buffer is gone entirely.** The lane retained up to 64 `ReadableSpan` objects per run;
+  deriving what run-end actually reads showed it needs a step count and the final step. So the
+  state per run is a counter and one three-field projection, `MAX_RETAINED_SPANS` is deleted, and
+  bounded memory stops being a cap someone has to remember and becomes a property of the shape — a
+  run costs the same at three steps or thirty thousand. A `ReadableSpan` was also the reason this
+  lane could not be shared at all: it is not serializable. A test now drives all three lanes
+  through their real code paths and rejects anything reaching a store that could not cross a
+  process, checking recursively, because a span nested in a tuple is the shape a leak would take.
+
+  Enabling this lane together with `store_backend="redis"` costs a round trip per step that buys
+  nothing until run end, since quality emits no per-step signal. That is measured and published
+  rather than smoothed over; the alternative — accumulate locally and merge once at run end — is
+  recorded in the ADR as considered and deferred, because choosing the run's genuinely final step
+  across processes then needs a comparable clock, and a wrong "last step" is a wrong verdict rather
+  than a missing one.
+
 ### Changed
 
 - **The overhead table now separates two things it had been conflating.** Classification is flat
@@ -86,6 +112,28 @@ be promoted to the top level deliberately.
   the SC-5 budget. Both axes are now separate benchmark assertions.
 
 ### Fixed
+
+- **Your judge was told a 500-step run took 64 steps.** `JudgeRequest.step_count` is documented as
+  "how many steps the run took", and [docs/quality.md](docs/quality.md) shows it being passed
+  straight into a user's own evaluator as `steps=request.step_count`. It was built from
+  `len(spans)`, and that buffer was capped at 64 — so every longer run understated itself, by a
+  number plausible enough that nobody would query it, as an input to someone else's scoring logic.
+
+  No test pinned it: the existing judge tests construct a `JudgeRequest` directly and never
+  exercise the lane building one. Found by asking what `len(spans)` meant while deriving the
+  projection for the shared store — the design spec had asked for that claim to be checked against
+  the code rather than trusted, and it was the checking that turned this up.
+
+  **If you calibrated a rubric against the capped value, its input changes.** The documented
+  meaning was always the true count.
+
+- **The test fixtures called `flushdb()` on a Redis they did not own.** `OPTIO_TEST_REDIS_URL`
+  defaults to port 6379 — the conventional one, which on a developer machine is very often another
+  project's server — and the fixtures flushed a database there on every run of the suite,
+  unattended. That is correct only while the database number is right, and a database number is a
+  weak thing to put between a test run and someone else's data. The reset is now scoped to the
+  `optio:` namespace every key this project writes already lives under, so the blast radius is
+  structural rather than conditional. Contributors only; no shipped code was affected.
 
 - **A shipped error message pointed at a repository this project no longer owns.** The
   `store_backend='redis'` error still sent users to the pre-rename `Agent-Meter` issue tracker;
