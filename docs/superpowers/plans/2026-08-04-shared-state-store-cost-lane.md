@@ -27,7 +27,7 @@
 
 | File | Responsibility |
 |---|---|
-| `src/optio/store/redis_client.py` | **Create.** Domain-free Redis access: connection with timeouts, script load/EVALSHA with NOSCRIPT fallback, `StoreUnavailable`. Knows nothing about ledgers. |
+| `src/optio/store/redis_client.py` | **Create.** Domain-free Redis access: connection with timeouts, script load/EVALSHA with NOSCRIPT fallback, `StoreUnavailableError`. Knows nothing about ledgers. |
 | `src/optio/lanes/cost/ledger_store.py` | **Create.** The `LedgerStore` Protocol — exactly today's `CostLedger` method set. |
 | `src/optio/lanes/cost/ledger_memory.py` | **Create.** `InMemoryLedgerStore` — today's `CostLedger` body, moved verbatim. |
 | `src/optio/lanes/cost/ledger_redis.py` | **Create.** `RedisLedgerStore` — the Lua scripts and their argument marshalling. |
@@ -120,12 +120,12 @@ git commit -m "The rename reached five root files and stopped at src/"
 **Interfaces:**
 - Consumes: nothing.
 - Produces:
-  - `class StoreUnavailable(StateStoreError)` — raised when Redis cannot answer.
+  - `class StoreUnavailableError(StateStoreError)` — raised when Redis cannot answer.
   - `class RedisClient` with:
     - `__init__(self, url: str, *, timeout_ms: int = 50) -> None`
     - `register_script(self, name: str, source: str) -> None`
     - `run_script(self, name: str, keys: list[str], args: list[str]) -> Any`
-    - `ping(self) -> None` — raises `StoreUnavailable`; used at setup.
+    - `ping(self) -> None` — raises `StoreUnavailableError`; used at setup.
     - `close(self) -> None`
 
 - [ ] **Step 1: Write the failing tests**
@@ -145,7 +145,7 @@ from __future__ import annotations
 import pytest
 
 from optio.errors import StateStoreError
-from optio.store.redis_client import RedisClient, StoreUnavailable
+from optio.store.redis_client import RedisClient, StoreUnavailableError
 
 
 class _FakeRedis:
@@ -227,13 +227,13 @@ class TestUnavailability:
         client = _client(fake)
         client.register_script("bump", "return 1")
 
-        with pytest.raises(StoreUnavailable):
+        with pytest.raises(StoreUnavailableError):
             client.run_script("bump", ["k"], ["1"])
 
     def test_store_unavailable_is_a_state_store_error(self) -> None:
         """The fail-open guard already absorbs StateStoreError; this must not
         slip past it as a new unrelated type."""
-        assert issubclass(StoreUnavailable, StateStoreError)
+        assert issubclass(StoreUnavailableError, StateStoreError)
 ```
 
 - [ ] **Step 2: Run them and watch them fail**
@@ -273,7 +273,7 @@ if TYPE_CHECKING:
 DEFAULT_TIMEOUT_MS: Final = 50
 
 
-class StoreUnavailable(StateStoreError):
+class StoreUnavailableError(StateStoreError):
     """The store could not answer.
 
     A subclass of :class:`~optio.errors.StateStoreError` so the existing
@@ -324,7 +324,7 @@ class RedisClient:
         ordinary restart into a run with no cost signals.
 
         Raises:
-            StoreUnavailable: If Redis cannot be reached or errors.
+            StoreUnavailableError: If Redis cannot be reached or errors.
         """
         try:
             return self._redis.evalsha(self._shas[name], len(keys), *keys, *args)
@@ -334,8 +334,8 @@ class RedisClient:
                 try:
                     return self._redis.evalsha(self._shas[name], len(keys), *keys, *args)
                 except Exception as retry_exc:  # noqa: BLE001 - normalised below
-                    raise StoreUnavailable(f"redis script failed: {name}") from retry_exc
-            raise StoreUnavailable(f"redis unavailable running {name}") from exc
+                    raise StoreUnavailableError(f"redis script failed: {name}") from retry_exc
+            raise StoreUnavailableError(f"redis unavailable running {name}") from exc
 
     def ping(self) -> None:
         """Verify the server answers.
@@ -344,12 +344,12 @@ class RedisClient:
         rather than silently on the runtime path.
 
         Raises:
-            StoreUnavailable: If the server does not answer.
+            StoreUnavailableError: If the server does not answer.
         """
         try:
             self._redis.ping()
         except Exception as exc:  # noqa: BLE001 - normalised to one type
-            raise StoreUnavailable("redis did not answer ping") from exc
+            raise StoreUnavailableError("redis did not answer ping") from exc
 
     def close(self) -> None:
         """Release the connection. Idempotent."""
@@ -687,7 +687,7 @@ git commit -m "The ledger grows a seam, and its own tests are the net"
 - Test: `tests/integration/test_redis_ledger.py`
 
 **Interfaces:**
-- Consumes: `RedisClient`, `StoreUnavailable` from Task 2; `LedgerStore` from Task 3.
+- Consumes: `RedisClient`, `StoreUnavailableError` from Task 2; `LedgerStore` from Task 3.
 - Produces: `RedisLedgerStore(client: RedisClient, *, ttl_seconds: float, tombstone_ttl_seconds: float)`.
 
 **Key layout in Redis**, per run:
@@ -891,7 +891,7 @@ def store(request: pytest.FixtureRequest) -> Iterator[LedgerStore]:
     client = RedisClient(redis_url)
     try:
         client.ping()
-    except StoreUnavailable:
+    except StoreUnavailableError:
         pytest.skip(f"no Redis at {redis_url}")
     client._redis.flushdb()  # type: ignore[attr-defined]
     yield RedisLedgerStore(client, ttl_seconds=60.0, tombstone_ttl_seconds=300.0)
@@ -1051,7 +1051,7 @@ git commit -m "store_backend='redis' stops raising and starts working"
 - Test: `tests/failinject/test_store_unavailable.py`
 
 **Interfaces:**
-- Consumes: `StoreUnavailable`.
+- Consumes: `StoreUnavailableError`.
 - Produces: nothing later tasks depend on.
 
 - [ ] **Step 1: Write the failing test**
@@ -1076,7 +1076,7 @@ import pytest
 
 from optio.config import Config
 from optio.lanes.cost.lane import CostLane
-from optio.store.redis_client import StoreUnavailable
+from optio.store.redis_client import StoreUnavailableError
 
 pytestmark = pytest.mark.failinject
 
@@ -1085,28 +1085,28 @@ class _DeadStore:
     """Every operation fails the way an unreachable Redis does."""
 
     def reserve(self, run_id: str, step_id: str, projected: float) -> None:
-        raise StoreUnavailable("redis unavailable")
+        raise StoreUnavailableError("redis unavailable")
 
     def reconcile(self, run_id: str, step_id: str, actual: float) -> None:
-        raise StoreUnavailable("redis unavailable")
+        raise StoreUnavailableError("redis unavailable")
 
     def snapshot(self, run_id: str) -> object:
-        raise StoreUnavailable("redis unavailable")
+        raise StoreUnavailableError("redis unavailable")
 
     def close_run(self, run_id: str) -> object:
-        raise StoreUnavailable("redis unavailable")
+        raise StoreUnavailableError("redis unavailable")
 
     def is_finalised(self, run_id: str) -> bool:
-        raise StoreUnavailable("redis unavailable")
+        raise StoreUnavailableError("redis unavailable")
 
     def knows(self, run_id: str) -> bool:
-        raise StoreUnavailable("redis unavailable")
+        raise StoreUnavailableError("redis unavailable")
 
     def evict(self, run_id: str) -> None:
-        raise StoreUnavailable("redis unavailable")
+        raise StoreUnavailableError("redis unavailable")
 
     def run_count(self) -> int:
-        raise StoreUnavailable("redis unavailable")
+        raise StoreUnavailableError("redis unavailable")
 
 
 def test_an_unreachable_store_emits_no_cost_signal(run_fixture) -> None:
@@ -1137,11 +1137,11 @@ def test_it_warns_once_rather_than_every_step(
 - [ ] **Step 2: Run and watch it fail**
 
 Run: `pytest tests/failinject/test_store_unavailable.py -v`
-Expected: FAIL — `CostLane` does not accept `store` yet, and does not catch `StoreUnavailable`.
+Expected: FAIL — `CostLane` does not accept `store` yet, and does not catch `StoreUnavailableError`.
 
 - [ ] **Step 3: Implement**
 
-In `src/optio/lanes/cost/lane.py`: accept `store: LedgerStore | None = None` and pass it to `CostLedger`. Wrap the signal-producing path so `StoreUnavailable` yields `[]` and logs once, guarded by an instance flag so the warning does not repeat.
+In `src/optio/lanes/cost/lane.py`: accept `store: LedgerStore | None = None` and pass it to `CostLedger`. Wrap the signal-producing path so `StoreUnavailableError` yields `[]` and logs once, guarded by an instance flag so the warning does not repeat.
 
 - [ ] **Step 4: Run the tests and the gate**
 
@@ -1368,6 +1368,6 @@ git commit -m "ADR-050: the store speaks the domain, and ADR-005's shape retires
 
 **Placeholder scan.** No TBD/TODO. Task 4 Step 4 and Task 6 Step 3 describe the remaining methods rather than printing every line — the signatures they must satisfy are fixed by the Protocol in Task 3 and the exception messages are given verbatim where behaviour depends on them.
 
-**Type consistency.** `LedgerStore` names in Task 3 match their uses in 4, 5 and 6. `RedisClient.run_script(name, keys, args)` in Task 2 matches the calls in Task 4. `StoreUnavailable` subclasses `StateStoreError` in Task 2 and is caught as such in Task 6. `RedisLedgerStore(client, *, ttl_seconds, tombstone_ttl_seconds)` is constructed identically in Tasks 4, 5 and 7.
+**Type consistency.** `LedgerStore` names in Task 3 match their uses in 4, 5 and 6. `RedisClient.run_script(name, keys, args)` in Task 2 matches the calls in Task 4. `StoreUnavailableError` subclasses `StateStoreError` in Task 2 and is caught as such in Task 6. `RedisLedgerStore(client, *, ttl_seconds, tombstone_ttl_seconds)` is constructed identically in Tasks 4, 5 and 7.
 
 **Known risk carried deliberately.** Task 3 moves a locking implementation verbatim; the regression net is that no existing test may be edited. If the extraction tempts anyone to change a test, that is the signal to stop and re-read the diff.
