@@ -80,11 +80,24 @@ class BehaviorStore(Protocol):
         """
         ...
 
-    def close_run(self, run_id: str) -> None:
-        """Release a run's window. Idempotent -- run end can fire twice.
+    def close_run(self, run_id: str, k: int) -> WindowState | None:
+        """Release a run's window and return the state it held.
+
+        Reading then releasing would be two operations, and on a shared backend
+        two round trips with a gap another worker's step can land in -- so the
+        final verdict would describe a window that no longer existed. One call
+        makes the read and the release the same event.
 
         Args:
             run_id: The run's identifier.
+            k: How many top counts to return.
+
+        Returns:
+            The final state, or ``None`` if the run held no window. ``None`` is
+            not an empty window: run end can fire more than once (M1-2), and a
+            second close that reported an empty state would let the caller emit
+            ``healthy`` with no repeats, overwriting a real ``looping`` verdict
+            on the run span. Absence is reported as absence (ADR-044).
         """
         ...
 

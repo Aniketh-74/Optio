@@ -157,6 +157,7 @@ def test_package_is_typed():
         # StateStore ABC that no consumer ever constructed. Replaced by the
         # ledger's own Protocol, which has two live implementations.
         "optio.lanes.cost.ledger_store",
+        "optio.lanes.behavior.store",
     ],
 )
 def test_every_module_imports(module):
