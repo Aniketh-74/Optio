@@ -112,6 +112,57 @@ class TestTheTombstoneOutlivesThePayload:
         assert store.is_finalised("never") is False
 
 
+class TestTheConfiguredBackendActuallyReachesTheLane:
+    """ADR-005's addendum exists because a setting was read by nobody.
+
+    ``store_backend='redis'`` was accepted, validated, given an extra and an
+    env var, and no lane ever looked at it. Asserting the config parses would
+    have passed then too, so these assert the object graph instead.
+    """
+
+    def test_redis_config_builds_a_redis_backed_cost_lane(self) -> None:
+        from optio.config import Config
+        from optio.lanes.cost.lane import CostLane
+        from optio.lanes.registry import enabled_lanes
+
+        lanes = enabled_lanes(Config(store_backend="redis", redis_url=REDIS_URL))
+
+        cost = next(lane for lane in lanes if isinstance(lane, CostLane))
+        assert isinstance(cost.ledger._store, RedisLedgerStore)
+
+    def test_the_default_config_stays_in_process(self) -> None:
+        """The zero-infrastructure default is the reason SC-1 is achievable;
+        a change that quietly networked it would be a regression."""
+        from optio.config import Config
+        from optio.lanes.cost.lane import CostLane
+        from optio.lanes.cost.ledger_memory import InMemoryLedgerStore
+        from optio.lanes.registry import enabled_lanes
+
+        lanes = enabled_lanes(Config())
+
+        cost = next(lane for lane in lanes if isinstance(lane, CostLane))
+        assert isinstance(cost.ledger._store, InMemoryLedgerStore)
+
+    def test_an_unreachable_redis_fails_at_setup_not_at_runtime(self) -> None:
+        """Loud here, fail-open later. Configuration that cannot do what it
+        claims is a setup error (Section 4.2), and discovering it on the first
+        billed step instead is how ADR-005's addendum got written.
+        """
+        from optio.config import Config
+        from optio.lanes.registry import enabled_lanes
+
+        # Port 1 is reserved and never listening, so this is a connection
+        # refusal rather than a timeout -- fast and deterministic.
+        config = Config(
+            store_backend="redis",
+            redis_url="redis://localhost:1/15",
+            store_timeout_ms=200,
+        )
+
+        with pytest.raises(StoreUnavailableError):
+            enabled_lanes(config)
+
+
 class TestConcurrentReconcilesDoNotLoseUpdates:
     def test_many_threads_reconciling_produce_the_exact_total(
         self, store: RedisLedgerStore
