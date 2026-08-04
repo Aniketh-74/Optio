@@ -244,6 +244,7 @@ markers = [
     "frameworks: adapters against the real frameworks they claim (R-TECH-3)",
     "soak: long-run memory stability (§11)",
     "optimize: the optio_optimize package (ADR-013)",
+    "redis: needs a real Redis server; the gate runs one as a service container",
 ]
 
 [tool.coverage.run]

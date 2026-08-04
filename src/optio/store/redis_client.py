@@ -130,6 +130,101 @@ class RedisClient:
         except Exception as exc:
             raise StoreUnavailableError(f"redis script {name!r} failed after reload") from exc
 
+    def exists(self, key: str) -> bool:
+        """Whether a key is present.
+
+        Args:
+            key: The key to check.
+
+        Returns:
+            ``True`` if it exists.
+
+        Raises:
+            StoreUnavailableError: If Redis cannot be reached.
+        """
+        try:
+            return bool(self._redis.exists(key))
+        except Exception as exc:
+            raise StoreUnavailableError(f"redis unavailable checking {key!r}") from exc
+
+    def hget(self, key: str, field: str) -> str | None:
+        """Read one field of a hash.
+
+        Args:
+            key: The hash key.
+            field: Field within the hash.
+
+        Returns:
+            The value, or ``None`` if the key or field is absent.
+
+        Raises:
+            StoreUnavailableError: If Redis cannot be reached.
+        """
+        try:
+            value = self._redis.hget(key, field)
+        except Exception as exc:
+            raise StoreUnavailableError(f"redis unavailable reading {key!r}") from exc
+        return None if value is None else str(value)
+
+    def delete(self, *keys: str) -> None:
+        """Remove keys. Idempotent -- deleting an absent key is not an error.
+
+        Args:
+            *keys: Keys to remove.
+
+        Raises:
+            StoreUnavailableError: If Redis cannot be reached.
+        """
+        if not keys:
+            return
+        try:
+            self._redis.delete(*keys)
+        except Exception as exc:
+            raise StoreUnavailableError("redis unavailable deleting keys") from exc
+
+    def pttl(self, key: str) -> int:
+        """Milliseconds until a key expires.
+
+        Args:
+            key: The key to inspect.
+
+        Returns:
+            Remaining lifetime in milliseconds; ``0`` when the key is gone or
+            carries no expiry. Redis signals both with negative values, and
+            collapsing them to zero keeps callers from doing arithmetic on a
+            sentinel.
+
+        Raises:
+            StoreUnavailableError: If Redis cannot be reached.
+        """
+        try:
+            remaining = int(self._redis.pttl(key))
+        except Exception as exc:
+            raise StoreUnavailableError(f"redis unavailable reading ttl of {key!r}") from exc
+        return max(remaining, 0)
+
+    def count_keys(self, pattern: str) -> int:
+        """Count keys matching a glob pattern.
+
+        Uses ``SCAN`` rather than ``KEYS``: the latter blocks the server for
+        the length of the keyspace, which is unacceptable on a Redis shared
+        with anything else. Still O(keyspace), so this is for diagnostics and
+        never for a request path.
+
+        Args:
+            pattern: Glob pattern, e.g. ``"optio:*:totals"``.
+
+        Returns:
+            Number of matching keys.
+
+        Raises:
+            StoreUnavailableError: If Redis cannot be reached.
+        """
+        try:
+            return sum(1 for _ in self._redis.scan_iter(match=pattern, count=500))
+        except Exception as exc:
+            raise StoreUnavailableError(f"redis unavailable scanning {pattern!r}") from exc
+
     def ping(self) -> None:
         """Verify the server answers.
 
