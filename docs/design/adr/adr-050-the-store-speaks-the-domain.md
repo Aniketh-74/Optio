@@ -116,3 +116,52 @@ ledger, which is where the money is. Their stores are the next two plans in this
 the behaviour window is the harder of the two: it maintains incremental aggregates that give it
 an O(1)-in-window-size guarantee the README publishes as measured, and a naive port would turn
 that into O(window) without failing anything.
+
+## Addendum — 2026-08-04: the behaviour lane, and what the guarantee was actually about
+
+The behaviour lane has landed on a `BehaviorStore`, the second of the three Protocols. The shape
+held: same per-lane Protocol, same two backends, same contract suite run against both, same
+multi-process proof. Three things are worth recording because they were not predictable from the
+cost lane's version.
+
+**The paragraph above was right, and the fix was smaller than expected.** `classify` never
+iterates the step signatures. Reading it before porting anything, it uses five numbers: the window
+size, the error count, the distinct-call count, and the top two counts. So `WindowState` is three
+scalars and a tuple bounded by `k`, the Lua reduces server-side, and the payload is the same size
+at a window of 50 and of 1,000. Returning the `Counter` — the obvious port — would have put up to
+`behavior_window_size` entries on the wire per step and broken a published guarantee while every
+existing test passed. The test that would have caught it now exists, and asserts against the reply
+rather than against `WindowState`, whose shape is fixed by construction and so proves nothing.
+
+**`close_run` had to return the state it releases.** The Protocol as designed returned `None`,
+which cannot serve `on_run_end`: the lane emits a final verdict from the window it is releasing,
+and splitting that into a read then a close is two round trips with a gap another worker's step
+can land in. `LedgerStore.close_run` already returned its final snapshot for the same reason; the
+symmetry was there to be noticed and was not. It returns `WindowState | None`, and `None` means
+*no window*, never *an empty one* — run end fires more than once (M1-2), and a second close
+reporting zeros would let the lane emit `healthy` over a real `looping` verdict (ADR-044).
+
+**The published flatness guarantee named the wrong axis.** Making it a test rather than a
+hand-measurement showed that per-step cost is flat in window *size* — the claim holds — but the
+driver is the number of **distinct calls** the window holds, because finding the top `k` means
+scanning the live ones on both backends. The two coincide only when tool diversity is bounded, and
+the original benchmark's workload used 64 tool names, so the distinction never appeared. A first
+version of the new test let every step name a new tool, making `distinct == window`, and "found" a
+4.7× regression that was really the workload.
+
+The growth is real and was left in place. It peaks when every step is different, which is precisely
+the case with no loop to detect, and it is cheapest on the tight cycles the lane exists to catch;
+the worst case is two orders of magnitude inside SC-5. Making it O(1) would mean maintaining a heap
+whose keys change on every step, which is real complexity bought for the workload that needs it
+least. So the decision is to state it accurately and assert both axes separately, rather than to
+optimise it or to keep publishing a number whose scope was wider than its evidence.
+
+**Costs, accepted.** The eviction arithmetic now exists twice, in Python and in Lua. That is the
+highest-risk surface in the milestone, because a divergence produces a different verdict rather
+than an error, so it is guarded by a Hypothesis property test that steps both backends together
+and compares after every step. Four mutations were run against it; three fail it and the fourth —
+flipping which of two equal counts is selected — correctly does not, because the reply carries
+counts rather than call identities and a test that failed there would be pinning a hash ordering
+Redis never promised.
+
+**Still open.** The quality lane. Its store is the last plan in this milestone.
