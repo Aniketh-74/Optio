@@ -19,7 +19,6 @@ from optio import semconv
 from optio.lanes.base import Lane, RunLike, Signal
 from optio.lanes.registry import enabled_lanes
 from optio.runtime.run_context import RunContext
-from optio.store.base import StateStore
 
 
 class TestRunLikeProtocol:
@@ -50,12 +49,27 @@ class TestAbstractContracts:
             return
         raise AssertionError("Lane must be abstract; process_span is required")
 
-    def test_state_store_cannot_be_instantiated_directly(self):
-        try:
-            StateStore()  # type: ignore[abstract]
-        except TypeError:
-            return
-        raise AssertionError("StateStore must be abstract")
+    def test_the_ledger_store_protocol_is_not_instantiable_state(self):
+        """ADR-050 replaced the generic ``StateStore`` ABC with per-lane
+        Protocols, so there is no abstract base to instantiate any more.
+
+        What the old test protected -- that the storage contract is a contract
+        and not a usable object -- now holds structurally: a ``Protocol`` is a
+        typing construct, and the backends satisfy it without inheriting it.
+        The property worth asserting instead is that both backends really do
+        satisfy the same set of operations, and the parametrised contract suite
+        in ``test_ledger_store_contract.py`` does that against live objects
+        rather than against a declaration.
+        """
+        from optio.lanes.cost.ledger_memory import InMemoryLedgerStore
+        from optio.lanes.cost.ledger_redis import RedisLedgerStore
+        from optio.lanes.cost.ledger_store import LedgerStore
+
+        required = [name for name in vars(LedgerStore) if not name.startswith("_")]
+        assert required, "the Protocol declares no operations"
+        for backend in (InMemoryLedgerStore, RedisLedgerStore):
+            missing = [name for name in required if not hasattr(backend, name)]
+            assert not missing, f"{backend.__name__} is missing {missing}"
 
     def test_cost_and_behavior_are_enabled_by_default(self):
         # Cost landed in M2, behavior in M3. Quality (M5) is off by default

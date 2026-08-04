@@ -11,7 +11,7 @@ Summaries live in [IMPLEMENTATION.md §15](../../../IMPLEMENTATION.md); full rec
 | [002](adr-002-otel-genai-semconv-as-the-wire-format.md) | OTel GenAI semconv as the wire format | Accepted |
 | [003](adr-003-quality-lane-is-tiered-sampled-and-off-by-default.md) | Quality lane is tiered, sampled, opt-in, off by default | Accepted |
 | [004](adr-004-fail-open-is-absolute.md) | Fail-open is absolute | Accepted |
-| [005](adr-005-pluggable-state-store-in-memory-default.md) | Pluggable state store, in-memory default | Accepted — Redis backend deferred |
+| [005](adr-005-pluggable-state-store-in-memory-default.md) | Pluggable state store, in-memory default | Accepted — interface superseded by ADR-050 |
 | [006](adr-006-two-delivery-surfaces-library-and-demo.md) | Two delivery surfaces: library + standalone demo | Accepted |
 | [007](adr-007-enterprise-control-plane-designed-not-scheduled.md) | Enterprise control plane designed but not scheduled | Accepted |
 | [008](adr-008-apache-2-0-license.md) | Apache-2.0 | Accepted |
@@ -56,6 +56,7 @@ Summaries live in [IMPLEMENTATION.md §15](../../../IMPLEMENTATION.md); full rec
 | [047](adr-047-what-ships-must-look-like-a-library.md) | What ships must look like a library to the tools that consume it | Accepted |
 | [048](adr-048-the-exact-counter-is-an-instrument-not-a-request-path.md) | The exact counter is an instrument, not a request path | Accepted |
 | [049](adr-049-exact-is-a-claim-about-a-vendor-not-a-counter.md) | "Exact" is a claim about a vendor, not about a counter | Accepted |
+| [050](adr-050-the-store-speaks-the-domain.md) | The store speaks the domain, because the generic one could not | Accepted — supersedes ADR-005's interface |
 
 ADRs 000, 001, and 004 were expanded first because M0 code already depended on them: they
 determine what the library is allowed to do, and what it must never do.

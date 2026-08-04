@@ -72,6 +72,27 @@ write), TTL-based eviction matching `run_ttl_seconds`, connection failures that 
 rather than hang, and integration tests against a real Redis in CI. That is a milestone, not a
 patch.
 
+---
+
+## Addendum (2026-08-04): the interface is superseded, the decision is not
+
+[ADR-050](adr-050-the-store-speaks-the-domain.md) replaces the generic `StateStore` ABC with one
+Protocol per lane, and builds the Redis backend this ADR deferred.
+
+Everything decided above stands: pluggable storage, in-memory default, atomicity as an interface
+requirement, store failures as lane failures. Only the *shape* is superseded — and it is
+superseded because it was never exercised. No consumer ever constructed a `StateStore`, so
+`get`/`set`/`incr`/`delete` was a guess, and it turned out it could not express `reconcile`
+atomically, could not read a run's reservations as a collection, and collapsed `is_finalised`
+into `unknown` under TTL.
+
+The "what implementing it properly would take" list below proved accurate and complete. The ABC,
+`InMemoryStateStore`, and their tests are deleted rather than left as a fixture nothing reaches.
+
+The costs recorded below are now settled: **multi-process runs are supported**, proved by four
+spawned processes metering one run to the exact total, and `store_backend='redis'` no longer
+raises.
+
 ## Consequences
 
 **Good**
