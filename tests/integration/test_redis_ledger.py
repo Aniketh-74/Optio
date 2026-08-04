@@ -26,7 +26,29 @@ from optio.store.redis_client import RedisClient, StoreUnavailableError
 #: these against a service container, where a skip would be a silent hole.
 pytestmark = [pytest.mark.integration, pytest.mark.redis]
 
+#: Both read at import. ``tests/conftest.py`` strips every ``OPTIO_*`` variable
+#: in an autouse fixture, so anything consulted from inside a fixture body would
+#: always look unset -- the same trap that sent this suite's spawned workers to
+#: the wrong server.
 REDIS_URL = os.environ.get("OPTIO_TEST_REDIS_URL", "redis://localhost:6379/15")
+
+#: Set in CI. Skipping when no server is reachable is right on a laptop and is a
+#: silent hole in a gate whose entire purpose is running these -- a
+#: misconfigured service container is simply "unreachable", and the job would go
+#: green having proved nothing. Mirrors ``OPTIO_REQUIRE_PROVIDER_SDKS``.
+REQUIRE_REDIS = bool(os.environ.get("OPTIO_REQUIRE_REDIS"))
+
+
+def connect_or_skip(timeout_ms: int = 2000) -> RedisClient:
+    """Return a live client, or skip -- unless CI demanded one."""
+    client = RedisClient(REDIS_URL, timeout_ms=timeout_ms)
+    try:
+        client.ping()
+    except StoreUnavailableError:
+        if REQUIRE_REDIS:
+            pytest.fail(f"OPTIO_REQUIRE_REDIS is set but no Redis answered at {REDIS_URL}")
+        pytest.skip(f"no Redis at {REDIS_URL}")
+    return client
 
 
 @pytest.fixture
@@ -36,11 +58,7 @@ def store() -> Iterator[RedisLedgerStore]:
     Database 15 by convention, and flushed rather than assumed empty: a test
     that inherits another run's keys fails in ways that look like logic bugs.
     """
-    client = RedisClient(REDIS_URL, timeout_ms=1000)
-    try:
-        client.ping()
-    except StoreUnavailableError:
-        pytest.skip(f"no Redis at {REDIS_URL}")
+    client = connect_or_skip(timeout_ms=1000)
     client._redis.flushdb()
     yield RedisLedgerStore(client, ttl_seconds=60.0, tombstone_ttl_seconds=300.0)
     client._redis.flushdb()

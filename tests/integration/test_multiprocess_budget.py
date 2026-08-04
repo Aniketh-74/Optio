@@ -14,17 +14,15 @@ that actually fails.
 from __future__ import annotations
 
 import multiprocessing as mp
-import os
 
 import pytest
 
 from optio.lanes.cost.ledger_memory import InMemoryLedgerStore
 from optio.lanes.cost.ledger_redis import RedisLedgerStore
-from optio.store.redis_client import RedisClient, StoreUnavailableError
+from optio.store.redis_client import RedisClient
+from tests.integration.test_redis_ledger import REDIS_URL, connect_or_skip
 
 pytestmark = [pytest.mark.integration, pytest.mark.redis]
-
-REDIS_URL = os.environ.get("OPTIO_TEST_REDIS_URL", "redis://localhost:6379/15")
 
 WORKERS = 4
 STEPS_PER_WORKER = 25
@@ -64,11 +62,7 @@ def _meter(worker: int, redis_url: str) -> None:
 @pytest.fixture
 def client() -> RedisClient:
     """A client against a flushed database, or a skip."""
-    conn = RedisClient(REDIS_URL, timeout_ms=2000)
-    try:
-        conn.ping()
-    except StoreUnavailableError:
-        pytest.skip(f"no Redis at {REDIS_URL}")
+    conn = connect_or_skip()
     conn._redis.flushdb()
     return conn
 

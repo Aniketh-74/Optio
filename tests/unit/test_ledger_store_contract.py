@@ -12,7 +12,6 @@ through the extraction and are the regression net for it.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator
 
 import pytest
@@ -21,9 +20,7 @@ from optio.errors import LedgerInvariantError
 from optio.lanes.cost.ledger_memory import InMemoryLedgerStore
 from optio.lanes.cost.ledger_redis import RedisLedgerStore
 from optio.lanes.cost.ledger_store import LedgerStore
-from optio.store.redis_client import RedisClient, StoreUnavailableError
-
-REDIS_URL = os.environ.get("OPTIO_TEST_REDIS_URL", "redis://localhost:6379/15")
+from tests.integration.test_redis_ledger import connect_or_skip
 
 
 @pytest.fixture(params=["memory", "redis"])
@@ -31,18 +28,15 @@ def store(request: pytest.FixtureRequest) -> Iterator[LedgerStore]:
     """A backend under test.
 
     Redis skips when no server is reachable, which keeps this suite runnable on
-    a laptop -- and the gate runs ``-m redis`` explicitly against a service
-    container, where a skip would be a silent hole rather than a convenience.
+    a laptop -- and the gate sets ``OPTIO_REQUIRE_REDIS`` so the same skip is a
+    failure there, because a job whose purpose is running these must not pass
+    by not running them.
     """
     if request.param == "memory":
         yield InMemoryLedgerStore()
         return
 
-    client = RedisClient(REDIS_URL, timeout_ms=1000)
-    try:
-        client.ping()
-    except StoreUnavailableError:
-        pytest.skip(f"no Redis at {REDIS_URL}")
+    client = connect_or_skip(timeout_ms=1000)
     client._redis.flushdb()
     yield RedisLedgerStore(client, ttl_seconds=60.0, tombstone_ttl_seconds=300.0)
     client._redis.flushdb()
