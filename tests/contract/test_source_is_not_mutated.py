@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from optio.lanes.behavior import detectors
-from optio.lanes.cost import ledger, project
+from optio.lanes.cost import ledger_memory, project
 from optio.runtime import failopen
 
 pytestmark = pytest.mark.contract
@@ -69,8 +69,13 @@ class TestGuardConditionsAreNotInverted:
         # found it surviving the whole suite; three tests in
         # test_ledger_lifecycle.py now assert the behaviour, and this pins the
         # source so the two cannot drift apart.
-        assert "if leaked:" in _source(ledger)
-        assert "if not leaked:" not in _source(ledger)
+        #
+        # Reads `ledger_memory` since ADR-050 moved the implementation behind a
+        # backend. `ledger` now holds only the facade, so pinning it here would
+        # have quietly stopped guarding anything -- which is how this assertion
+        # caught the extraction rather than sleeping through it.
+        assert "if leaked:" in _source(ledger_memory)
+        assert "if not leaked:" not in _source(ledger_memory)
 
     def test_cost_evidence_requires_positive_reserved(self) -> None:
         assert "if snapshot.reserved > 0.0:" in _source(project)

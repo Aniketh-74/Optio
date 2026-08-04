@@ -22,6 +22,7 @@ import pytest
 from optio import semconv
 from optio.errors import LedgerInvariantError
 from optio.lanes.cost.ledger import CostLedger
+from optio.lanes.cost.ledger_memory import InMemoryLedgerStore
 
 
 class TestEvictionReleasesState:
@@ -39,12 +40,15 @@ class TestEvictionReleasesState:
     def test_the_closed_id_window_is_bounded(self) -> None:
         # The other half of the leak fix: remembering closed ids forever would
         # just move the unbounded growth somewhere else.
-        ledger = CostLedger(closed_memory=64)
+        # Addresses the backend rather than the facade: the closed-id window is
+        # the in-memory store's own structure, and Redis bounds the same thing
+        # with a TTL instead. `CostLedger` therefore has no such attribute.
+        store = InMemoryLedgerStore(closed_memory=64)
         for n in range(5000):
-            ledger.close_run(f"run-{n}")
-            ledger.evict(f"run-{n}")
+            store.close_run(f"run-{n}")
+            store.evict(f"run-{n}")
 
-        assert len(ledger._recently_closed) == 64
+        assert len(store._recently_closed) == 64
 
     def test_an_active_run_is_not_evicted(self) -> None:
         ledger = CostLedger()
