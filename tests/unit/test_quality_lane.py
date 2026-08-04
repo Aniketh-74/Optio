@@ -291,6 +291,31 @@ class TestStateIsBounded:
         # long-lived agent process, and there is no public way to observe it.
         assert len(lane._spans[run.run_id]) == MAX_RETAINED_SPANS
 
+    def test_only_the_final_step_decides_the_verdict(self) -> None:
+        """An error mid-run that the agent recovered from is not a failed task.
+
+        Lived in the heuristic suite until the projection split. The heuristic
+        now scores one step, so *which* step it is handed is the lane's
+        responsibility -- and after ADR-050 the store's. Asserted here so the
+        behaviour keeps a test at the level where it now lives.
+        """
+        run = FakeRun()
+        lane = QualityLane(enabled())
+        lane.process_span(span({}, errored=True), run)
+        lane.process_span(answered(), run)
+
+        assert semconv.RUN_SUCCESS not in values(lane.on_run_end(run))
+
+    def test_an_errored_final_step_fails_the_run(self) -> None:
+        """The mirror, so the pair pins the ordering rather than one direction
+        of it."""
+        run = FakeRun()
+        lane = QualityLane(enabled())
+        lane.process_span(answered(), run)
+        lane.process_span(span({}, errored=True), run)
+
+        assert values(lane.on_run_end(run))[semconv.RUN_SUCCESS] is False
+
     def test_the_newest_spans_are_kept(self) -> None:
         # The heuristic judges the final answer, so the tail is what matters.
         run = FakeRun()

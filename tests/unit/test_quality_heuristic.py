@@ -19,7 +19,7 @@ from unittest.mock import Mock
 from opentelemetry.trace import StatusCode
 
 from optio import semconv
-from optio.lanes.quality.heuristic import UNKNOWN, HeuristicResult, score
+from optio.lanes.quality.heuristic import UNKNOWN, HeuristicResult, project, score
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -44,55 +44,50 @@ def answered(tokens: int = 50) -> Mock:
 
 
 class TestFailureIsDetected:
-    def test_an_errored_final_step_is_a_failure(self) -> None:
-        result = score([answered(), span({}, errored=True)])
+    def test_an_errored_step_is_a_failure(self) -> None:
+        result = score(project(span({}, errored=True)))
         assert result.failed
         assert result.succeeded is False
 
     def test_no_output_tokens_is_a_failure(self) -> None:
-        result = score([answered(tokens=0)])
+        result = score(project(answered(tokens=0)))
         assert result.failed
         assert result.succeeded is False
 
     def test_a_truncated_generation_is_a_failure(self) -> None:
         # Reads as complete text up to the cut, but the task did not finish.
-        result = score([span({semconv.GEN_AI_RESPONSE_FINISH_REASONS: ["length"]})])
+        result = score(project(span({semconv.GEN_AI_RESPONSE_FINISH_REASONS: ["length"]})))
         assert result.failed
         assert "incomplete" in (result.reason or "")
 
     def test_a_flattened_finish_reason_is_still_read(self) -> None:
         # Upstream types this as an array, but several instrumentations flatten
         # it. Rejecting the string form would silently disable this check.
-        result = score([span({semconv.GEN_AI_RESPONSE_FINISH_REASONS: "max_tokens"})])
+        result = score(project(span({semconv.GEN_AI_RESPONSE_FINISH_REASONS: "max_tokens"})))
         assert result.failed
 
     def test_a_content_filter_stop_is_a_failure(self) -> None:
-        result = score([span({semconv.GEN_AI_RESPONSE_FINISH_REASONS: ["content_filter"]})])
+        result = score(project(span({semconv.GEN_AI_RESPONSE_FINISH_REASONS: ["content_filter"]})))
         assert result.failed
-
-    def test_only_the_final_step_decides(self) -> None:
-        # An error mid-run that the agent recovered from is not a failed task.
-        result = score([span({}, errored=True), answered()])
-        assert not result.failed
 
 
 class TestSuccessIsNeverClaimed:
     """The asymmetry, tested directly."""
 
     def test_a_normal_answer_does_not_report_success(self) -> None:
-        result = score([answered()])
+        result = score(project(answered()))
         assert result.succeeded is None, "heuristic must never assert success"
 
     def test_a_long_answer_does_not_report_success(self) -> None:
         # More output is not more correct. A confidently wrong essay scores the
         # same as a confidently right one here, because they are identical from
         # the outside.
-        assert score([answered(tokens=100_000)]).succeeded is None
+        assert score(project(answered(tokens=100_000))).succeeded is None
 
     def test_a_completed_run_is_conclusive_but_not_successful(self) -> None:
         # "It ran and produced output" is a real conclusion; "it did the right
         # thing" is not one this tier can reach.
-        result = score([answered()])
+        result = score(project(answered()))
         assert result.conclusive
         assert not result.failed
         assert result.succeeded is None
@@ -100,28 +95,28 @@ class TestSuccessIsNeverClaimed:
 
 class TestAbsenceIsUnknown:
     def test_no_spans_is_unknown(self) -> None:
-        assert score([]) == UNKNOWN
-        assert score([]).succeeded is None
+        assert score(None) == UNKNOWN
+        assert score(None).succeeded is None
 
     def test_a_span_with_no_usage_attribute_is_unknown(self) -> None:
         # Some instrumentations omit token counts. Reporting failure here would
         # flag every run from those users.
-        result = score([span({semconv.GEN_AI_REQUEST_MODEL: "gpt-4o"})])
+        result = score(project(span({semconv.GEN_AI_REQUEST_MODEL: "gpt-4o"})))
         assert not result.conclusive
         assert result.succeeded is None
 
     def test_a_non_integer_token_count_is_unknown(self) -> None:
-        result = score([span({semconv.GEN_AI_USAGE_OUTPUT_TOKENS: "fifty"})])
+        result = score(project(span({semconv.GEN_AI_USAGE_OUTPUT_TOKENS: "fifty"})))
         assert not result.conclusive
 
     def test_a_boolean_token_count_is_not_read_as_a_number(self) -> None:
         # bool is a subclass of int; True would otherwise pass as "1 token".
-        result = score([span({semconv.GEN_AI_USAGE_OUTPUT_TOKENS: True})])
+        result = score(project(span({semconv.GEN_AI_USAGE_OUTPUT_TOKENS: True})))
         assert not result.conclusive
 
     def test_an_unreadable_finish_reason_does_not_crash(self) -> None:
         for value in (42, {"a": 1}, None, [None, 7]):
-            result = score([span({semconv.GEN_AI_RESPONSE_FINISH_REASONS: value})])
+            result = score(project(span({semconv.GEN_AI_RESPONSE_FINISH_REASONS: value})))
             assert not result.failed
 
 
@@ -131,7 +126,7 @@ class TestNoContentIsRetained:
     def test_the_result_holds_no_run_content(self) -> None:
         secret = "patient SSN 123-45-6789"
         result = score(
-            [
+            project(
                 span(
                     {
                         semconv.GEN_AI_USAGE_OUTPUT_TOKENS: 10,
@@ -139,7 +134,7 @@ class TestNoContentIsRetained:
                         "gen_ai.prompt": secret,
                     }
                 )
-            ]
+            )
         )
 
         assert secret not in repr(result)
@@ -148,9 +143,9 @@ class TestNoContentIsRetained:
     def test_the_reason_is_a_fixed_vocabulary(self) -> None:
         # Reasons reach logs. They must describe a category, never quote the run.
         results = [
-            score([span({}, errored=True)]),
-            score([answered(tokens=0)]),
-            score([span({semconv.GEN_AI_RESPONSE_FINISH_REASONS: ["length"]})]),
+            score(project(span({}, errored=True))),
+            score(project(answered(tokens=0))),
+            score(project(span({semconv.GEN_AI_RESPONSE_FINISH_REASONS: ["length"]}))),
         ]
         for result in results:
             assert result.reason is not None
