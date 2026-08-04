@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from optio.config import Config
     from optio.lanes.base import Lane
+    from optio.lanes.behavior.store import BehaviorStore
     from optio.lanes.cost.ledger import CostLedger
     from optio.lanes.quality.judge import Judge
 
@@ -73,7 +74,7 @@ def enabled_lanes(config: Config) -> list[Lane]:
     if config.behavior_lane:
         from optio.lanes.behavior.lane import BehaviorLane
 
-        lanes.append(BehaviorLane(config))
+        lanes.append(BehaviorLane(config, store=_behavior_store(config)))
 
     return lanes
 
@@ -118,3 +119,45 @@ def _ledger(config: Config) -> CostLedger:
             tombstone_ttl_seconds=config.run_ttl_seconds * 10,
         )
     )
+
+
+def _behavior_store(config: Config) -> BehaviorStore:
+    """Build the window store over the configured backend.
+
+    Mirrors :func:`_ledger`, including where it raises: an unreachable Redis is
+    a configuration error and fails **here**, at setup (Section 4.2), rather
+    than on the agent's path. A backend that stops answering later is a runtime
+    condition and the lane fails open on it.
+
+    Each lane opens its **own** client rather than sharing one. They have
+    independent lifecycles by contract (Section 3.1) -- either can be disabled
+    without the other noticing -- and a shared connection would make the
+    behaviour lane's timeout budget depend on whether the cost lane happened to
+    be enabled.
+
+    Args:
+        config: Active configuration.
+
+    Returns:
+        The process-local backend, or the Redis one when configured.
+
+    Raises:
+        StoreUnavailableError: If ``store_backend='redis'`` and the server does
+            not answer at setup.
+    """
+    from optio.lanes.behavior.store_memory import InMemoryBehaviorStore
+
+    if config.store_backend != "redis":
+        return InMemoryBehaviorStore()
+
+    from optio.lanes.behavior.store_redis import RedisBehaviorStore
+    from optio.store.redis_client import RedisClient
+
+    # `redis_url` is guaranteed non-empty: Config rejects the combination at
+    # construction, so the fallback here is unreachable rather than a default.
+    client = RedisClient(config.redis_url or "", timeout_ms=config.store_timeout_ms)
+    client.ping()
+    # No tombstone counterpart. Closing a window is not final -- a re-opened one
+    # is short again, so the lane under-reports rather than misreporting, which
+    # is the direction Section 6.4 requires.
+    return RedisBehaviorStore(client, ttl_seconds=config.run_ttl_seconds)

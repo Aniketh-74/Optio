@@ -18,7 +18,7 @@ from collections.abc import Iterator
 import pytest
 
 from optio.lanes.behavior.store_redis import _PREFIX, RedisBehaviorStore
-from tests.integration.test_redis_ledger import connect_or_skip
+from tests.integration.test_redis_ledger import connect_or_skip, needs_driver
 
 #: Both markers, deliberately. ``integration`` is the directory's convention and
 #: a contract test enforces it; ``redis`` is what the gate selects on.
@@ -162,6 +162,20 @@ class TestLifecycle:
         for key in store._keys("run"):
             assert not store._client.exists(key), f"{key} survived close"
 
+    def test_closing_an_orphaned_counter_set_clears_it(self, store: RedisBehaviorStore) -> None:
+        """The list can outlive nothing, but the counters can outlive the list.
+
+        Only if something deleted the list alone -- an operator, an eviction
+        policy. Left behind, they would give the next window counts for
+        signatures nobody can see, inflating ``distinct_calls`` and repeat
+        counts for a run that has barely started.
+        """
+        store.record("run", ("tool", "read"), False, maxlen=50, k=2)
+        store._client.delete(f"{_PREFIX}:run:steps")
+
+        assert store.close_run("run", k=2) is None
+        assert not store._client.exists(f"{_PREFIX}:run:counts")
+
     def test_run_count_sees_only_this_backend(self, store: RedisBehaviorStore) -> None:
         """The ledger shares this Redis. A count that swept ``optio:*`` would
         report cost runs as behaviour runs and make leak detection useless."""
@@ -169,3 +183,93 @@ class TestLifecycle:
         store._client._redis.hset("optio:other:totals", "actual", "1.0")
 
         assert store.run_count() == 1
+
+
+class TestTheConfiguredBackendActuallyReachesTheLane:
+    """ADR-005's addendum exists because a setting was read by nobody.
+
+    ``store_backend='redis'`` was accepted, validated, given an extra and an
+    env var, and no lane ever looked at it. Asserting the config parses would
+    have passed then too, so these assert the object graph instead -- and the
+    behaviour lane is the second lane to be wired to it, which is exactly when
+    the same omission is easiest to repeat.
+    """
+
+    def test_redis_config_builds_a_redis_backed_behavior_lane(self) -> None:
+        from optio.config import Config
+        from optio.lanes.behavior.lane import BehaviorLane
+        from optio.lanes.registry import enabled_lanes
+        from tests.integration.test_redis_ledger import REDIS_URL
+
+        # Takes no `store` fixture -- it builds its own lanes -- so it has to
+        # ask for the skip itself. Without this it *fails* rather than skips
+        # wherever Redis is absent, which is every leg of the test matrix.
+        connect_or_skip().close()
+
+        lanes = enabled_lanes(Config(store_backend="redis", redis_url=REDIS_URL))
+
+        behavior = next(lane for lane in lanes if isinstance(lane, BehaviorLane))
+        assert isinstance(behavior._store, RedisBehaviorStore)
+
+    def test_the_default_config_stays_in_process(self) -> None:
+        """The zero-infrastructure default is the reason SC-1 is achievable;
+        a change that quietly networked it would be a regression."""
+        from optio.config import Config
+        from optio.lanes.behavior.lane import BehaviorLane
+        from optio.lanes.behavior.store_memory import InMemoryBehaviorStore
+        from optio.lanes.registry import enabled_lanes
+
+        lanes = enabled_lanes(Config())
+
+        behavior = next(lane for lane in lanes if isinstance(lane, BehaviorLane))
+        assert isinstance(behavior._store, InMemoryBehaviorStore)
+
+    def test_each_lane_gets_its_own_client(self) -> None:
+        """Independent lifecycles, by contract (Section 3.1).
+
+        A shared connection would make the behaviour lane's timeout budget
+        depend on whether the cost lane happened to be enabled, and closing one
+        lane's client would silently blind the other.
+        """
+        from optio.config import Config
+        from optio.lanes.behavior.lane import BehaviorLane
+        from optio.lanes.cost.lane import CostLane
+        from optio.lanes.cost.ledger_redis import RedisLedgerStore
+        from optio.lanes.registry import enabled_lanes
+        from tests.integration.test_redis_ledger import REDIS_URL
+
+        connect_or_skip().close()
+
+        lanes = enabled_lanes(Config(store_backend="redis", redis_url=REDIS_URL))
+
+        behavior = next(lane for lane in lanes if isinstance(lane, BehaviorLane))
+        cost = next(lane for lane in lanes if isinstance(lane, CostLane))
+        assert isinstance(behavior._store, RedisBehaviorStore)
+        assert isinstance(cost.ledger._store, RedisLedgerStore)
+        assert behavior._store._client is not cost.ledger._store._client
+
+    @needs_driver
+    def test_an_unreachable_redis_fails_at_setup_not_at_runtime(self) -> None:
+        """Loud here, fail-open later. A backend that cannot be reached at
+        wiring time is a configuration error (Section 4.2); discovering it on
+        the first step instead is how ADR-005's addendum got written.
+
+        Covers the behaviour lane specifically: with the cost lane disabled,
+        nothing else in the graph would touch Redis, so a lane that skipped its
+        ping would reach the agent's path before failing.
+        """
+        from optio.config import Config
+        from optio.lanes.registry import enabled_lanes
+        from optio.store.redis_client import StoreUnavailableError
+
+        # Port 1 is reserved and never listening, so this is a connection
+        # refusal rather than a timeout -- fast and deterministic.
+        config = Config(
+            store_backend="redis",
+            redis_url="redis://localhost:1/15",
+            store_timeout_ms=200,
+            cost_lane=False,
+        )
+
+        with pytest.raises(StoreUnavailableError):
+            enabled_lanes(config)

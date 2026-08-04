@@ -414,10 +414,16 @@ class TestTheBehaviorLaneLockIsLoadBearing:
       agent survives -- but the behavior signal vanishes for the affected steps
       and only the `optio.internal.lane_errors` metric would say why.
 
-    Both are contained today because `add` and `classify` are called inside the
-    same lock. This test exists so that narrowing that lock for performance --
-    an entirely reasonable-looking change, since classify is now O(1) -- fails
-    here instead of in a user's agent.
+    Both are contained today because `add` and the summary read happen inside
+    the same lock. This test exists so that narrowing that lock for performance
+    -- an entirely reasonable-looking change, since classify is now O(1) --
+    fails here instead of in a user's agent.
+
+    ADR-050 moved the lock and the window dictionary into
+    `InMemoryBehaviorStore`, so the assertions below reach through the lane to
+    the store. They are unchanged: the lock had to move with the state it
+    guards, since a lock in the lane would say nothing about a window another
+    process is writing.
     """
 
     @pytest.mark.timeout(TIMEOUT_SECONDS)
@@ -462,7 +468,7 @@ class TestTheBehaviorLaneLockIsLoadBearing:
 
         assert not errors, f"classification raised under contention: {errors[:3]}"
 
-        window = lane._windows["shared"]
+        window = lane._store._windows["shared"]  # type: ignore[attr-defined]
         assert window.call_counts == Counter(step.call for step in window), (
             "maintained call counts drifted from the window's actual contents"
         )
