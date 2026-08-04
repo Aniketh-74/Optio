@@ -210,9 +210,13 @@ class TestManyShortRuns:
     def test_the_closed_run_memory_is_itself_bounded(self) -> None:
         # Closed run ids are remembered so a straggling callback cannot restart
         # a finished run (ADR-010). That memory must also be capped.
-        from optio.lanes.cost.ledger import _CLOSED_MEMORY, CostLedger
+        # Addresses the backend rather than the facade: the closed-id window is
+        # the in-memory store's own structure, and Redis bounds the same thing
+        # with a TTL instead.
+        from optio.lanes.cost.ledger import _CLOSED_MEMORY
+        from optio.lanes.cost.ledger_memory import InMemoryLedgerStore
 
-        ledger = CostLedger()
+        ledger = InMemoryLedgerStore()
         overshoot = _CLOSED_MEMORY + 1_000
         for i in range(overshoot):
             ledger.reserve(f"run-{i}", "s", 0.01)
