@@ -143,6 +143,11 @@ class TestTheConfiguredBackendActuallyReachesTheLane:
         from optio.lanes.cost.lane import CostLane
         from optio.lanes.registry import enabled_lanes
 
+        # Takes no `store` fixture -- it builds its own lanes -- so it has to
+        # ask for the skip itself. Without this it *fails* rather than skips
+        # wherever Redis is absent, which is every leg of the test matrix.
+        connect_or_skip().close()
+
         lanes = enabled_lanes(Config(store_backend="redis", redis_url=REDIS_URL))
 
         cost = next(lane for lane in lanes if isinstance(lane, CostLane))
