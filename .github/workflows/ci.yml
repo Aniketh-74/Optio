@@ -280,6 +280,45 @@ jobs:
         # against these exact strings (R-TECH-2).
         run: pytest -v -m contract
 
+  redis:
+    name: Shared state store (ADR-050)
+    runs-on: ubuntu-latest
+    # Its own job rather than a `services:` block on the test matrix: service
+    # containers are Linux-only, so adding one there would break the macOS and
+    # Windows legs of a matrix that exists precisely to cover them.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      # `.[dev,redis]` rather than `.[dev] redis`: this also proves the extra
+      # declares a driver that actually installs, which is the promise it makes.
+      - run: pip install -e ".[dev,redis]"
+
+      - name: The ledger is correct across processes
+        # Against a real server, because Lua carries the atomicity here and a
+        # fake's Lua is exactly where it diverges.
+        #
+        # OPTIO_REQUIRE_REDIS turns the fixtures' skip into a failure. Skipping
+        # is right on a laptop and is a silent hole in the one job whose whole
+        # purpose is running these: a misconfigured service container reads as
+        # "unreachable", and the job would go green having proved nothing.
+        env:
+          OPTIO_TEST_REDIS_URL: redis://localhost:6379/15
+          OPTIO_REQUIRE_REDIS: "1"
+        run: pytest -v -m redis --no-cov
+
   security:
     name: Dependency audit
     runs-on: ubuntu-latest
