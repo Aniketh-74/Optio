@@ -4,13 +4,28 @@ Ties the three M5 pieces together: :mod:`sampling` picks a tier,
 :mod:`heuristic` scores cheaply inline, :mod:`judge` scores deeply on sampled
 runs, and this module turns whatever came back into signals.
 
+## Where the signals go
+
+Two destinations, because the two tiers answer at different times.
+
+The heuristic is synchronous, so its verdict goes on the **run span**, with
+everything else optio emits. The judge is a model call dispatched at run end:
+it answers long after that span has closed, and an ended span cannot be
+modified. Its scores go on a **separate ``optio.quality`` span**, linked back to
+the run's and carrying ``gen_ai.run.id`` to join on
+(:mod:`optio.lanes.quality.deferred`).
+
+Through 0.4.0 this lane dispatched the judge and then polled it with a
+zero-second timeout on the very next line, so a judge that made a network call
+never delivered a single score. See :mod:`optio.lanes.quality.judge`.
+
 ## What it emits, and when it stays silent
 
 ``gen_ai.run.success`` is the signal most consumers want, and it is the one this
 lane is most careful about. It is emitted **only on evidence**:
 
-* the heuristic found positive evidence of failure -> ``False``
-* the judge scored ``task_success`` -> thresholded
+* the heuristic found positive evidence of failure -> ``False`` on the run span
+* the judge scored ``task_success`` -> thresholded, on the quality span
 * neither -> **nothing at all**
 
 That third case is the common one and it is deliberate. A run that produced
@@ -43,15 +58,23 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Final
 
+from opentelemetry import trace
+
 from optio import semconv
 from optio.lanes.base import Lane, Signal
-from optio.lanes.quality import heuristic
-from optio.lanes.quality.judge import JudgeRequest, JudgeRunner, JudgeScores
+from optio.lanes.quality import deferred, heuristic
+from optio.lanes.quality.judge import (
+    DEFAULT_DRAIN_TIMEOUT,
+    JudgeRequest,
+    JudgeRunner,
+    JudgeScores,
+)
 from optio.lanes.quality.sampling import Tier, decide
 from optio.lanes.quality.store_memory import InMemoryQualityStore
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import ReadableSpan
+    from opentelemetry.trace import Tracer
 
     from optio.config import Config
     from optio.lanes.base import RunLike
@@ -74,7 +97,11 @@ class QualityLane(Lane):
     name = "quality"
 
     def __init__(
-        self, config: Config, judge: Judge | None = None, store: QualityStore | None = None
+        self,
+        config: Config,
+        judge: Judge | None = None,
+        store: QualityStore | None = None,
+        tracer: Tracer | None = None,
     ) -> None:
         """Create the lane.
 
@@ -89,6 +116,11 @@ class QualityLane(Lane):
                 and wrong in a way nothing reports for a run sharded across
                 workers -- so the registry injects the shared one when
                 configured.
+            tracer: Tracer the deferred judge span is emitted with. Must belong
+                to the provider the tap was installed on: a user who passes
+                their own ``TracerProvider`` would otherwise have quality spans
+                recorded by the global one, where nothing they configured is
+                listening. ``None`` uses the global provider.
         """
         super().__init__(config)
         # The lock that guarded the span buffer moved into the store with the
@@ -96,6 +128,7 @@ class QualityLane(Lane):
         # process is writing.
         self._store: QualityStore = store if store is not None else InMemoryQualityStore()
         self._runner = JudgeRunner(judge)
+        self._tracer: Tracer = tracer if tracer is not None else trace.get_tracer("optio")
 
         if config.quality_lane and judge is None:
             # Said once, at setup, because the alternative is a user believing
@@ -157,43 +190,52 @@ class QualityLane(Lane):
         signals: list[Signal] = []
         inline = heuristic.score(summary.last)
 
-        scores = self._judge_scores(run, decision.tier, summary.step_count)
-        if scores is not None:
-            if scores.groundedness is not None:
-                signals.append(Signal(semconv.RUN_QUALITY_GROUNDEDNESS, scores.groundedness))
-            if scores.task_success is not None:
-                signals.append(Signal(semconv.RUN_QUALITY_TASK_SUCCESS, scores.task_success))
+        # Dispatched, not awaited. Its scores land on their own span later
+        # (`deferred`), because the run span this returns into is about to
+        # close and cannot be written to afterwards.
+        self._dispatch_judge(run, decision.tier, summary.step_count)
 
-        success = _resolve_success(inline, scores)
+        # The heuristic is what the run span can carry, because it is the only
+        # verdict available synchronously. It never claims success, so this is
+        # `False` or nothing.
+        success = inline.succeeded
         if success is not None:
             signals.append(Signal(semconv.RUN_SUCCESS, success))
             _record_successes(run, success)
 
         return signals
 
-    def _judge_scores(self, run: RunLike, tier: Tier, step_count: int) -> JudgeScores | None:
-        """Dispatch and collect the judge, without blocking the run.
+    def _dispatch_judge(self, run: RunLike, tier: Tier, step_count: int) -> None:
+        """Send the run to the judge, to be scored on a worker thread.
 
         Args:
             run: The run being scored.
             tier: The assigned tier.
-            step_count: How many steps the run took. The counted total, not
-                ``len(retained spans)`` -- the buffer is capped at
-                :data:`MAX_RETAINED_SPANS`, so measuring it reported the cap for
-                every longer run, and ``docs/quality.md`` shows users passing
-                this number straight into their own evaluator.
-
-        Returns:
-            Validated scores, or ``None``.
+            step_count: How many steps the run took. The counted total, not the
+                size of a buffer -- ``docs/quality.md`` shows users passing this
+                number straight into their own evaluator, and it reported a
+                capped buffer's length until 0.4.0.
         """
         if not tier.uses_judge or not self._runner.enabled:
-            return None
+            return
+
+        # Captured here, on the run's thread, while its span is still current.
+        # The worker thread that emits has no OTel context of its own.
+        parent = deferred.parent_context()
+
+        def deliver(scores: JudgeScores) -> None:
+            """Emit the scores. Runs on a judge worker thread."""
+            deferred.emit_scores(
+                self._tracer, run, parent, scores, success_threshold=SUCCESS_THRESHOLD
+            )
 
         # Content is the caller's to provide. optio passes no trace text of
         # its own (Section 10): a judge that needs prompts should be closed over
         # the user's own record of them.
-        self._runner.submit(JudgeRequest(run_id=run.run_id, step_count=step_count, content={}))
-        return self._runner.collect(run.run_id)
+        self._runner.submit(
+            JudgeRequest(run_id=run.run_id, step_count=step_count, content={}),
+            on_scores=deliver,
+        )
 
     def run_count(self) -> int:
         """Return how many runs are holding scoring state.
@@ -202,19 +244,43 @@ class QualityLane(Lane):
         """
         return self._store.run_count()
 
-    def shutdown(self) -> None:
-        """Release the judge's worker pool."""
-        self._runner.shutdown()
+    def shutdown(self, drain_timeout: float = DEFAULT_DRAIN_TIMEOUT) -> None:
+        """Let outstanding judgements land, then release the worker pool.
+
+        Args:
+            drain_timeout: Seconds to wait for in-flight judge calls to finish
+                emitting their spans. Scores are dispatched asynchronously, so
+                a process that exits the moment its last run ends would discard
+                judgements it has already been billed for.
+        """
+        self._runner.shutdown(drain_timeout)
+
+    def drain(self, timeout: float = DEFAULT_DRAIN_TIMEOUT) -> int:
+        """Wait for outstanding judge scores to be emitted.
+
+        Args:
+            timeout: Seconds to wait.
+
+        Returns:
+            How many judgements were still undelivered when the wait ended.
+        """
+        return self._runner.drain(timeout)
 
 
 def _record_successes(run: RunLike, success: bool) -> None:
-    """Record the success count on the run for the cost lane to read.
+    """Record the success count on the run.
 
-    This is the seam ``cost_per_successful_task`` needs: the cost lane owns the
-    numerator and this lane owns the denominator, and neither imports the other
-    (Section 3.1). The value is written onto the run object, which both already
-    hold. The registry orders quality ahead of cost so the value is present when
-    cost reads it.
+    Written for anyone downstream who reads the run object, and consumed by the
+    cost lane, which computes ``cost_per_successful_task`` from it when it is
+    positive. In practice this lane can only ever write ``0`` here: the value
+    comes from the heuristic, which reports failure or abstains and never claims
+    success. The judge -- the only thing that can -- answers after the run span
+    has closed, so its verdict and the ratio derived from it are emitted on the
+    deferred quality span instead (ADR-051).
+
+    Kept because the field is part of the run object's contract and a caller who
+    determines success themselves may set it, in which case the cost lane's copy
+    of the signal is correct and reachable.
 
     A run is one task, so the count is 1 or 0. It is an ``int`` rather than a
     ``bool`` because the field is a count -- a future batching run could record
@@ -236,23 +302,3 @@ def _record_successes(run: RunLike, success: bool) -> None:
         # RunContext. The cost signal is then omitted rather than wrong, which
         # is the correct degradation (docs/signals.md).
         _log.debug("run object does not accept a success count; skipping")
-
-
-def _resolve_success(inline: heuristic.HeuristicResult, scores: JudgeScores | None) -> bool | None:
-    """Decide the run's success flag from the available evidence.
-
-    Args:
-        inline: The heuristic verdict.
-        scores: Judge scores, when the judge answered.
-
-    Returns:
-        ``True``/``False`` on evidence, ``None`` when there is none.
-    """
-    # The judge wins when it spoke: it is the only component that looked at what
-    # the run actually said, whereas the heuristic only saw that it said
-    # something.
-    if scores is not None and scores.task_success is not None:
-        return scores.task_success >= SUCCESS_THRESHOLD
-
-    # The heuristic reports failure or abstains; it never claims success.
-    return inline.succeeded

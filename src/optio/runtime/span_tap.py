@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from opentelemetry.context import Context
     from opentelemetry.sdk.trace import ReadableSpan
     from opentelemetry.sdk.trace import Span as SdkSpan
-    from opentelemetry.trace import Span
+    from opentelemetry.trace import Span, Tracer
 
     from optio.config import Config
     from optio.lanes.base import Lane, RunLike
@@ -102,16 +102,26 @@ class OptioSpanTap(SpanProcessor):
         lanes: The lanes this tap dispatches to.
     """
 
-    def __init__(self, config: Config, lanes: list[Lane] | None = None) -> None:
+    def __init__(
+        self,
+        config: Config,
+        lanes: list[Lane] | None = None,
+        tracer: Tracer | None = None,
+    ) -> None:
         """Build a tap.
 
         Args:
             config: Active configuration.
             lanes: Explicit lane list, primarily for tests. Resolved from
                 ``config`` when omitted.
+            tracer: Tracer for lanes that emit spans of their own rather than
+                attributes on the run span -- currently the quality lane's
+                deferred judge score. Comes from the provider this tap is
+                installed on, so those spans are recorded where the user is
+                actually listening.
         """
         self.config = config
-        self.lanes: list[Lane] = enabled_lanes(config) if lanes is None else lanes
+        self.lanes: list[Lane] = enabled_lanes(config, tracer) if lanes is None else lanes
 
     def on_start(self, span: SdkSpan, parent_context: Context | None = None) -> None:
         """Handle span start.

@@ -24,6 +24,7 @@ from opentelemetry import trace
 from optio.runtime import selfobs
 from optio.runtime.run_context import (
     register_run_end_observer,
+    set_default_tracer,
     unregister_run_end_observer,
 )
 from optio.runtime.span_tap import OptioSpanTap
@@ -122,8 +123,17 @@ def install_tap(config: Config, provider: TracerProvider | None = None) -> Optio
             unregister_run_end_observer(tap.on_run_end)
             del _installed[key]
 
-        tap = OptioSpanTap(config)
+        # The tracer comes from `target`, not from `trace.get_tracer`: a user
+        # who passes their own provider must not have the quality lane's
+        # deferred spans recorded by the global one, where no exporter of
+        # theirs is attached.
+        tracer = target.get_tracer("optio")
+        tap = OptioSpanTap(config, tracer=tracer)
         add_processor(tap)
+        # So a bare `with RunContext(...)` opens its run span on this provider
+        # rather than the global one. Without a span there is nowhere to write
+        # signals, and every one of them is computed and then dropped.
+        set_default_tracer(tracer)
         # Run end is driven by RunContext, not by the OTel SDK, so the tap has
         # to be told about it separately from being added as a processor.
         register_run_end_observer(tap.on_run_end)
@@ -177,3 +187,6 @@ def reset_installations() -> None:
         for _ref, tap in _installed.values():
             unregister_run_end_observer(tap.on_run_end)
         _installed.clear()
+        # Also a cross-test leak: a tracer left pointing at a discarded
+        # provider sends the next test's run spans somewhere it cannot see them.
+        set_default_tracer(None)

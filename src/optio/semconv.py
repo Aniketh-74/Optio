@@ -86,6 +86,17 @@ RUN_QUALITY_GROUNDEDNESS: Final = "gen_ai.run.quality.groundedness"
 RUN_QUALITY_TASK_SUCCESS: Final = "gen_ai.run.quality.task_success"
 RUN_SUCCESS: Final = "gen_ai.run.success"
 
+#: Name of the span carrying judge scores that arrived after the run ended.
+#:
+#: Part of the integration contract, not an implementation detail: a consumer
+#: querying quality has to know where to look. The judge is a model call
+#: dispatched at run end, so its answer arrives hundreds of milliseconds after
+#: the run span has closed -- and an ended span cannot be modified. Waiting for
+#: it would put model latency on the agent's return path, so the score is
+#: emitted on its own span instead, linked to the run's, carrying
+#: :data:`RUN_ID` to join on.
+QUALITY_SPAN_NAME: Final = "optio.quality"
+
 
 # ---------------------------------------------------------------------------
 # Enumerated values

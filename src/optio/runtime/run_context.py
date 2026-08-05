@@ -28,11 +28,16 @@ from contextvars import ContextVar, Token
 from types import TracebackType
 from typing import TYPE_CHECKING, Final, Literal
 
+from opentelemetry import trace
+
 from optio.config import BudgetPolicy, Config, default_config
 from optio.runtime.failopen import guard
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from contextlib import AbstractContextManager
+
+    from opentelemetry.trace import Span, Tracer
 
     # typing.Self is 3.11+; the floor is 3.10. Type-checking-only, so this adds
     # no runtime dependency.
@@ -74,6 +79,28 @@ def unregister_run_end_observer(observer: Callable[[RunContext], None]) -> None:
 _current_run: Final[ContextVar[RunContext | None]] = ContextVar("optio_current_run", default=None)
 
 
+#: Tracer used for run spans this module opens itself. Set by the installer.
+#:
+#: The same inversion as :data:`_run_end_observers`, and for the same reason: a
+#: run has to reach something the installer configured, and importing the
+#: installer from here would be a cycle. ``None`` falls back to the global
+#: provider, which is right until a user passes one of their own -- at which
+#: point ``trace.get_tracer`` would put their run spans somewhere nothing they
+#: configured is listening.
+_default_tracer: Tracer | None = None
+
+
+def set_default_tracer(tracer: Tracer | None) -> None:
+    """Set the tracer used for run spans opened by :class:`RunContext`.
+
+    Args:
+        tracer: Tracer from the provider the tap was installed on, or ``None``
+            to fall back to the global provider.
+    """
+    global _default_tracer
+    _default_tracer = tracer
+
+
 def current_run() -> RunContext | None:
     """Return the run active in this context, if any.
 
@@ -103,11 +130,20 @@ class RunContext:
             *unknown* success count, and treating it as zero would make the
             headline unit-economics number infinite for every run of the default
             configuration.
+        actual_cost: Final reconciled cost of this run in USD, or ``None`` when
+            nothing could be priced. Written by the cost lane at run end and
+            read by the quality lane's deferred emitter, which needs a cost and
+            a judged outcome together and is the only place both are known --
+            the judge answers after the run span has closed. The exact mirror of
+            ``successes``, which travels the other way, and for the same reason:
+            the two lanes may not import each other (Section 3.1).
     """
 
     __slots__ = (
         "_ended",
+        "_span",
         "_token",
+        "actual_cost",
         "budget",
         "config",
         "ended_at",
@@ -143,8 +179,10 @@ class RunContext:
         self.started_at: float | None = None
         self.ended_at: float | None = None
         self.successes: int | None = None
+        self.actual_cost: float | None = None
         self._ended: bool = False
         self._token: Token[RunContext | None] | None = None
+        self._span: AbstractContextManager[Span] | None = None
         self.sampled: bool = self._decide_sampling()
 
     def _decide_sampling(self) -> bool:
@@ -193,7 +231,48 @@ class RunContext:
             return self
         self.started_at = time.monotonic()
         self._token = _current_run.set(self)
+        self._open_span()
         return self
+
+    def _open_span(self) -> None:
+        """Open a run span when the caller has not provided one.
+
+        Signals are span attributes, so they need a live span to be written to.
+        ``@meter`` opens one; a bare ``with RunContext(...)`` -- the documented
+        path for a raw SDK loop or an unsupported framework -- did not, and
+        every signal it produced was computed and then dropped for want of
+        somewhere to put it. The run worked, the budget parsed, and nothing was
+        emitted.
+
+        Nothing is opened when a recording span is already current, so the
+        ``@meter`` and adapter paths are untouched and a run never gets two.
+        """
+        current = trace.get_current_span()
+        if current is not trace.INVALID_SPAN and current.is_recording():
+            return
+
+        tracer = _default_tracer if _default_tracer is not None else trace.get_tracer("optio")
+        # Held as the context manager rather than the span, so exiting restores
+        # whatever context was current before -- ending the span alone would
+        # leave it attached as current for everything the caller does next.
+        span = tracer.start_as_current_span(f"optio.run.{self.run_id[:8]}")
+        span.__enter__()
+        self._span = span
+
+    def _close_span(self) -> None:
+        """Close the span opened by :meth:`_open_span`, if there was one.
+
+        Best-effort: a run whose span cannot be closed is a dropped signal, not
+        a broken agent (ADR-004). Called after the run-end observers, so their
+        signals still land on it.
+        """
+        span, self._span = self._span, None
+        if span is None:
+            return
+        try:
+            span.__exit__(None, None, None)
+        except Exception as error:  # noqa: BLE001 - a dropped span never breaks the agent
+            _log.debug("could not close the run span (%s)", type(error).__name__)
 
     def end(self) -> None:
         """Mark the run ended and run end-of-run work exactly once.
@@ -215,6 +294,10 @@ class RunContext:
             for observer in tuple(_run_end_observers):
                 guard(observer, None, self, component="run_end")
         finally:
+            # Observers first, then the span they wrote to. Closing it earlier
+            # would drop exactly the end-of-run signals -- the final cost, the
+            # loop verdict -- that this whole call exists to produce.
+            self._close_span()
             self._clear_current()
 
     def _clear_current(self) -> None:
