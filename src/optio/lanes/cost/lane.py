@@ -144,6 +144,7 @@ class CostLane(Lane):
         # `docs/signals.md` forbids.
         if snapshot.reconciled_steps > 0:
             signals.append(Signal(semconv.RUN_ACTUAL_COST, snapshot.actual))
+            _record_actual_cost(run, snapshot.actual)
 
         remaining = budget_remaining(snapshot, run.budget)
         if remaining is not None:
@@ -277,3 +278,29 @@ def _success_count(run: RunLike) -> int | None:
     if isinstance(successes, bool) or not isinstance(successes, int):
         return None
     return successes
+
+
+def _record_actual_cost(run: RunLike, cost: float) -> None:
+    """Publish the run's final cost on the run object.
+
+    The mirror image of ``successes``, which the quality lane writes and this
+    lane reads. Both lanes need one number the other owns, and neither may
+    import the other (Section 3.1) -- so the exchange happens through the run
+    object they both already hold.
+
+    The quality lane needs it because its judge answers after the run span has
+    closed, which makes the deferred quality span the only place where a final
+    cost and a judged outcome are both known. Written only when the run could
+    actually be priced, so an unpriced run leaves the attribute absent rather
+    than reading as free (ADR-044).
+
+    Args:
+        run: The run being metered.
+        cost: Final reconciled cost in USD.
+    """
+    try:
+        setattr(run, "actual_cost", cost)  # noqa: B010
+    except AttributeError:
+        # A minimal run stub, or an older RunContext without the slot. The
+        # deferred signal is then omitted rather than wrong.
+        _log.debug("run object does not accept a cost; skipping")

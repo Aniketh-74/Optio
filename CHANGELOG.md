@@ -21,6 +21,55 @@ be promoted to the top level deliberately.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The LLM-judge never emitted a score, on any configuration**
+  ([ADR-051](docs/design/adr/adr-051-a-late-score-needs-its-own-span.md)).
+  The lane dispatched the judge to a worker pool and polled it on the next line with a
+  zero-second timeout, so a result could only arrive if a model call finished between two adjacent
+  statements. Measured against a warm pool: **2 scores in 200 runs with an instant in-process
+  judge, and none at all with a 200 ms one**. Every test asserted otherwise and passed, because
+  each built a fresh lane whose cold `ThreadPoolExecutor` blocks in `Thread.start()` until the
+  worker is running — handing an instant judge the head start a real deployment never gives it
+  (200/200 fresh, 2/200 long-lived).
+
+  Scores are now pushed to a callback when they land and emitted on a linked **`optio.quality`
+  span**, because an ended OpenTelemetry span cannot be modified and waiting for the judge would
+  put model latency on the agent's return path. **If you query `gen_ai.run.quality.groundedness`,
+  `gen_ai.run.quality.task_success`, `gen_ai.run.success` or `gen_ai.run.cost_per_successful_task`
+  on the run span, repoint those queries** — join on `gen_ai.run.id` or follow the span link. They
+  have been returning an empty set, so nothing that worked stops working.
+
+  This took `gen_ai.run.cost_per_successful_task` down with it. The inline heuristic never claims
+  success by design, so the judge was the only source of `success = true` anywhere in the library
+  — which made the headline unit-economics signal unreachable by any configuration. It is now
+  emitted, on the quality span.
+
+- **`@meter` silently measured nothing on `async def` agents.** The decorator had one wrapper, a
+  synchronous one, so `fn(...)` returned a coroutine object without executing a line of the body
+  and the run closed before the agent started. The decorator looked applied, the agent worked, and
+  every signal was absent. Most agent code is async. No test covered it.
+
+- **A bare `with RunContext(...)` emitted nothing.** Signals are span attributes, and this path —
+  the README's "or scope it yourself", and the documented answer for a raw SDK loop or an
+  unsupported framework — opened no span, so every signal was computed and then dropped for want
+  of anywhere to put it. `RunContext` now opens a run span when no recording span is current, and
+  opens it on the provider the tap was installed on rather than the global one.
+
+- **In-flight judgements were cancelled at shutdown**, discarding model calls the user had already
+  been billed for. `JudgeRunner.shutdown` now drains first, bounded, and `drain(timeout)` is
+  available for a short-lived script that needs its scores to land before exit.
+
+### Changed
+
+- **The cost lane now runs before the quality lane.** The ordering existed so the cost lane could
+  read a success count the quality lane wrote; that count can no longer be anything but zero, and
+  the dependency reversed — the deferred quality span needs the run's final cost. Neither lane
+  imports the other; the exchange is still a value on the run object.
+- **At most 64 judgements may be in flight.** Delivery now holds a run until its scores land, and
+  the judge pool is two threads wide, so a judge slower than the run rate would queue without
+  bound. Beyond the cap, runs go unscored and a warning is logged once.
+
 ### Added
 
 - **Multi-process runs report one correct cost total: `store_backend="redis"` works**

@@ -23,12 +23,12 @@ All names live under the `gen_ai.` namespace. Monetary values are USD doubles.
 | `gen_ai.run.actual_cost` | double | cost | per run span | Cumulative **reconciled** cost — actual token spend, not estimate. |
 | `gen_ai.run.projected_cost` | double | cost | per step + run span | Worst-case projected total cost for the run. Emitted **before** the step's tokens burn, which is what makes pre-spend gating possible. Absent without a `max_steps` ceiling, or when no step could be priced. |
 | `gen_ai.run.budget_remaining` | double | cost | per step + run span | `budget − committed`. Absent when no budget policy was supplied, **or when the run took steps and none of them could be priced** — see below. |
-| `gen_ai.run.cost_per_successful_task` | double | cost × quality | per run span | `actual_cost / success`. Requires a success signal; absent when the quality lane is off and no heuristic success is available. |
+| `gen_ai.run.cost_per_successful_task` | double | cost × quality | **`optio.quality` span** | `actual_cost / successes`. Requires a judge; absent when the run was not judged or was judged a failure. |
 | `gen_ai.run.loop_state` | string (enum) | behavior | per step + run span | One of `healthy`, `repeating`, `looping`, `retry_storm`. |
 | `gen_ai.run.repeat_count` | int | behavior | per step + run span | Highest repeated-signature count within the current window. |
-| `gen_ai.run.quality.groundedness` | double `[0,1]` | quality | per run span | Judge score. Opt-in; absent unless the quality lane is enabled *and* the run was sampled. |
-| `gen_ai.run.quality.task_success` | double `[0,1]` | quality | per run span | Judge score. Same opt-in conditions. |
-| `gen_ai.run.success` | bool | quality | per run span | Success flag, from the inline heuristic or the judge. Denominator for `cost_per_successful_task`. |
+| `gen_ai.run.quality.groundedness` | double `[0,1]` | quality | **`optio.quality` span** | Judge score. Opt-in; absent unless the quality lane is enabled *and* the run was sampled. |
+| `gen_ai.run.quality.task_success` | double `[0,1]` | quality | **`optio.quality` span** | Judge score. Same opt-in conditions. |
+| `gen_ai.run.success` | bool | quality | run span **or** `optio.quality` span | Success flag. `false` from the inline heuristic lands on the run span; a judge verdict lands on the quality span. Denominator for `cost_per_successful_task`. |
 
 ### `gen_ai.run.loop_state` values
 
@@ -42,6 +42,20 @@ All names live under the `gen_ai.` namespace. Monetary values are USD doubles.
 See [`behavior.md`](behavior.md) for the thresholds behind each state, the measured
 false-positive rate, and guidance on which states are safe to gate on. In short:
 gate on `looping` and `retry_storm`; alert on `repeating`, which normal agents produce.
+
+### The `optio.quality` span
+
+Four signals are not on the run span. The judge is a model call dispatched at run end, so it
+answers after that span has closed — and an ended span cannot be modified. Waiting for it would
+put model latency on the agent's return path, so the scores are emitted on a short span of their
+own instead:
+
+- named `optio.quality`
+- **linked** to the run span (not parented — the run span is already exported)
+- carrying the run id so you can join without following the link
+
+Query it as a separate span and join on the run id. See
+[`quality.md`](quality.md#where-judge-scores-land).
 
 ### Absence is meaningful
 
@@ -174,9 +188,10 @@ packs and adapters could be written ahead of the code; **no name has changed sin
 
 Two caveats that matter more than the status column:
 
-`cost_per_successful_task` requires the quality lane, because its denominator is a success count.
-With the lane off it is absent — correct for an unknown value, and the reason a policy must never
-read absence as zero.
+`cost_per_successful_task` requires the quality lane **and a judge**, because its denominator is a
+success count and the heuristic never reports success. Without one it is absent — correct for an
+unknown value, and the reason a policy must never read absence as zero. It is emitted on the
+`optio.quality` span, not the run span.
 
 `gen_ai.run.success` is absent on most scored runs too. The inline heuristic reports failure on
 evidence and abstains otherwise; it never claims success, because a fluent wrong answer is

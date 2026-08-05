@@ -18,6 +18,9 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 
 from optio import semconv
@@ -26,7 +29,7 @@ from optio.lanes.quality.judge import Judge, JudgeRequest, JudgeRunner, JudgeSco
 from optio.lanes.quality.lane import QualityLane
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from optio.lanes.base import Signal
 
@@ -76,6 +79,45 @@ def scoring_judge(groundedness: float = 0.9, task_success: float = 0.8) -> Judge
 def enabled(**overrides: object) -> Config:
     """Config with the quality lane on."""
     return Config(quality_lane=True, **overrides)  # type: ignore[arg-type]
+
+
+def judging_lane(judge: Judge, **overrides: object) -> tuple[QualityLane, InMemorySpanExporter]:
+    """A judging lane whose deferred quality span can be read back.
+
+    The judge's scores no longer come back from ``on_run_end``: it answers after
+    the run span has closed, so it emits its own span instead (ADR-051). That
+    means a test asserting on judge output needs somewhere for spans to land,
+    and has to wait for delivery rather than assume it -- see
+    :func:`judged_values`.
+    """
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    lane = QualityLane(
+        enabled(quality_sample_rate=1.0, **overrides),
+        judge=judge,
+        tracer=provider.get_tracer("test"),
+    )
+    return lane, exporter
+
+
+def judged_values(lane: QualityLane, exporter: InMemorySpanExporter) -> dict[str, object]:
+    """Drain the judge, then return the attributes of the quality span.
+
+    Draining rather than sleeping or hoping: through 0.4.0 these assertions
+    raced a worker pool and passed only because a fresh lane's cold pool gave an
+    instant judge a head start no real one gets.
+
+    Returns:
+        The span's attributes, or an empty mapping when no quality span was
+        emitted -- which is what "this run was not scored" looks like.
+    """
+    assert lane.drain(5.0) == 0, "a judgement was still outstanding after the drain"
+    span = next(
+        (s for s in exporter.get_finished_spans() if s.name == semconv.QUALITY_SPAN_NAME),
+        None,
+    )
+    return {} if span is None else dict(span.attributes or {})
 
 
 def _state_values(lane: QualityLane) -> list[object]:
@@ -151,30 +193,49 @@ class TestSuccessIsNeverAssumed:
 class TestTheJudgeDecidesWhenItSpeaks:
     def test_judge_scores_are_emitted(self) -> None:
         run = FakeRun(sampled=True)
-        lane = QualityLane(enabled(quality_sample_rate=1.0), judge=scoring_judge())
+        lane, exporter = judging_lane(scoring_judge())
         lane.process_span(answered(), run)
-        emitted = values(lane.on_run_end(run))
+        lane.on_run_end(run)
+        emitted = judged_values(lane, exporter)
 
         assert emitted[semconv.RUN_QUALITY_GROUNDEDNESS] == 0.9
         assert emitted[semconv.RUN_QUALITY_TASK_SUCCESS] == 0.8
         assert emitted[semconv.RUN_SUCCESS] is True
 
+    def test_the_run_span_carries_no_judge_score(self) -> None:
+        """The other half of the split, stated as its own test.
+
+        An ended span cannot be modified, so a judge score on the run span could
+        only mean one thing: the run waited for a model call. Asserting its
+        absence is how that stays true.
+        """
+        run = FakeRun(sampled=True)
+        lane, _ = judging_lane(scoring_judge())
+        lane.process_span(answered(), run)
+
+        emitted = values(lane.on_run_end(run))
+
+        assert semconv.RUN_QUALITY_GROUNDEDNESS not in emitted
+        assert semconv.RUN_QUALITY_TASK_SUCCESS not in emitted
+
     def test_a_low_task_success_score_is_a_failure(self) -> None:
         run = FakeRun(sampled=True)
-        lane = QualityLane(enabled(), judge=scoring_judge(task_success=0.2))
+        lane, exporter = judging_lane(scoring_judge(task_success=0.2))
         lane.process_span(answered(), run)
+        lane.on_run_end(run)
 
-        assert values(lane.on_run_end(run))[semconv.RUN_SUCCESS] is False
+        assert judged_values(lane, exporter)[semconv.RUN_SUCCESS] is False
 
-    def test_the_judge_overrides_a_silent_heuristic(self) -> None:
+    def test_the_judge_scores_a_run_the_heuristic_stayed_silent_on(self) -> None:
         # The heuristic abstains on a normal run; the judge is the only thing
-        # that looked at what the run actually said.
+        # that looked at what the run actually said, so it is the only source of
+        # a `success = true` anywhere in the library.
         run = FakeRun(sampled=True)
-        lane = QualityLane(enabled(), judge=scoring_judge(task_success=0.95))
+        lane, exporter = judging_lane(scoring_judge(task_success=0.95))
         lane.process_span(answered(), run)
 
-        assert values(lane.on_run_end(run))[semconv.RUN_SUCCESS] is True
-        assert run.successes == 1
+        assert semconv.RUN_SUCCESS not in values(lane.on_run_end(run))
+        assert judged_values(lane, exporter)[semconv.RUN_SUCCESS] is True
 
     def test_an_unsampled_run_never_reaches_the_judge(self) -> None:
         called: list[str] = []
@@ -226,10 +287,14 @@ class RecordingRunner(JudgeRunner):
         super().__init__(judge)
         self.requests: list[JudgeRequest] = []
 
-    def submit(self, request: JudgeRequest) -> bool:
+    def submit(
+        self,
+        request: JudgeRequest,
+        on_scores: Callable[[JudgeScores], None] | None = None,
+    ) -> bool:
         """Record the request, then dispatch it normally."""
         self.requests.append(request)
-        return super().submit(request)
+        return super().submit(request, on_scores)
 
 
 def recording_lane(**overrides: object) -> tuple[QualityLane, RecordingRunner]:
@@ -388,15 +453,33 @@ class TestStateIsBounded:
     def test_a_second_run_end_emits_nothing(self) -> None:
         # Run end can fire more than once (M1-2). Re-scoring would overwrite a
         # real verdict with a weaker one -- the bug the behavior lane hit in M3.
+        # An errored span, so the heuristic has something to say and "nothing
+        # the second time" is a difference rather than two empty lists.
         run = FakeRun(sampled=True)
-        lane = QualityLane(enabled(), judge=scoring_judge())
-        lane.process_span(answered(), run)
+        lane, _ = judging_lane(scoring_judge())
+        lane.process_span(span({}, errored=True), run)
 
         first = lane.on_run_end(run)
         second = lane.on_run_end(run)
 
-        assert first != []
+        assert values(first)[semconv.RUN_SUCCESS] is False
         assert second == []
+
+    def test_a_second_run_end_does_not_pay_for_a_second_judgement(self) -> None:
+        """The same rule where it costs real money.
+
+        A judge is a billed model call, so a duplicated run end must not buy the
+        same verdict twice -- and this is no longer visible in the returned
+        signals, because the judge does not answer through them.
+        """
+        run = FakeRun(sampled=True)
+        lane, runner = recording_lane()
+        lane.process_span(answered(), run)
+
+        lane.on_run_end(run)
+        lane.on_run_end(run)
+
+        assert len(runner.requests) == 1
 
     def test_concurrent_runs_do_not_mix(self) -> None:
         lane = QualityLane(enabled())
@@ -474,9 +557,10 @@ class TestAPartialJudgement:
             return JudgeScores(groundedness=0.8)
 
         run = FakeRun(sampled=True)
-        lane = QualityLane(enabled(), judge=partial)
+        lane, exporter = judging_lane(partial)
         lane.process_span(answered(), run)
-        emitted = values(lane.on_run_end(run))
+        lane.on_run_end(run)
+        emitted = judged_values(lane, exporter)
 
         assert emitted[semconv.RUN_QUALITY_GROUNDEDNESS] == 0.8
         assert semconv.RUN_QUALITY_TASK_SUCCESS not in emitted
@@ -489,9 +573,10 @@ class TestAPartialJudgement:
             return JudgeScores(task_success=0.9)
 
         run = FakeRun(sampled=True)
-        lane = QualityLane(enabled(), judge=partial)
+        lane, exporter = judging_lane(partial)
         lane.process_span(answered(), run)
-        emitted = values(lane.on_run_end(run))
+        lane.on_run_end(run)
+        emitted = judged_values(lane, exporter)
 
         assert semconv.RUN_QUALITY_GROUNDEDNESS not in emitted
         assert emitted[semconv.RUN_QUALITY_TASK_SUCCESS] == 0.9
@@ -499,14 +584,17 @@ class TestAPartialJudgement:
 
     def test_a_partial_judgement_over_a_failed_heuristic(self) -> None:
         # The judge scored groundedness but not success; the heuristic saw the
-        # run error out. The failure evidence stands.
+        # run error out. Both verdicts survive, on their own spans: the
+        # heuristic's failure evidence is not overwritten by a judge that
+        # declined to rule on success, and the groundedness score is not lost
+        # because the run failed.
         def partial(_request: JudgeRequest) -> JudgeScores:
             return JudgeScores(groundedness=0.95)
 
         run = FakeRun(sampled=True)
-        lane = QualityLane(enabled(), judge=partial)
+        lane, exporter = judging_lane(partial)
         lane.process_span(span({}, errored=True), run)
         emitted = values(lane.on_run_end(run))
 
-        assert emitted[semconv.RUN_QUALITY_GROUNDEDNESS] == 0.95
         assert emitted[semconv.RUN_SUCCESS] is False
+        assert judged_values(lane, exporter)[semconv.RUN_QUALITY_GROUNDEDNESS] == 0.95

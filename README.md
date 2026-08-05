@@ -137,17 +137,22 @@ These attribute names *are* the integration contract — mirrored as constants i
 and asserted by contract tests.
 [`docs/signals.md`](https://github.com/Aniketh-74/Optio/blob/main/docs/signals.md) is authoritative.
 
-| Signal | Type | Lane |
-|---|---|---|
-| `gen_ai.run.actual_cost` | double (USD) | cost |
-| `gen_ai.run.projected_cost` | double (USD) | cost |
-| `gen_ai.run.budget_remaining` | double (USD) | cost |
-| `gen_ai.run.cost_per_successful_task` | double (USD) | cost × quality |
-| `gen_ai.run.loop_state` | enum string | behavior |
-| `gen_ai.run.repeat_count` | int | behavior |
-| `gen_ai.run.quality.groundedness` | double [0,1] | quality (opt-in) |
-| `gen_ai.run.quality.task_success` | double [0,1] | quality (opt-in) |
-| `gen_ai.run.success` | bool | quality |
+| Signal | Type | Lane | On |
+|---|---|---|---|
+| `gen_ai.run.actual_cost` | double (USD) | cost | run span |
+| `gen_ai.run.projected_cost` | double (USD) | cost | run span |
+| `gen_ai.run.budget_remaining` | double (USD) | cost | run span |
+| `gen_ai.run.cost_per_successful_task` | double (USD) | cost × quality | `optio.quality` |
+| `gen_ai.run.loop_state` | enum string | behavior | run span |
+| `gen_ai.run.repeat_count` | int | behavior | run span |
+| `gen_ai.run.quality.groundedness` | double [0,1] | quality (opt-in) | `optio.quality` |
+| `gen_ai.run.quality.task_success` | double [0,1] | quality (opt-in) | `optio.quality` |
+| `gen_ai.run.success` | bool | quality | either |
+
+Judge scores live on a separate `optio.quality` span, linked to the run span and carrying the run
+id. A model call answers after the run has ended, and an ended OTel span cannot be modified —
+waiting for it would put model latency on your agent's return path. See
+[quality.md](https://github.com/Aniketh-74/Optio/blob/main/docs/quality.md#where-judge-scores-land).
 
 Policies match the exact names, so they stay portable across backends:
 

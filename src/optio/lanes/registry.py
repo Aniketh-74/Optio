@@ -17,6 +17,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
+    from opentelemetry.trace import Tracer
+
     from optio.config import Config
     from optio.lanes.base import Lane
     from optio.lanes.behavior.store import BehaviorStore
@@ -25,37 +27,61 @@ if TYPE_CHECKING:
     from optio.lanes.quality.store import QualityStore
 
 
-def enabled_lanes(config: Config) -> list[Lane]:
+def enabled_lanes(config: Config, tracer: Tracer | None = None) -> list[Lane]:
     """Return the lane instances enabled by configuration.
 
     Concrete lanes are imported inside the function so that a lane module which
     fails to import cannot take down the library at import time, and so the
     optional dependencies of a lane are only touched when it is enabled.
 
-    **Order is load-bearing at run end.** The tap dispatches lanes in list
-    order, and ``cost_per_successful_task`` is a cost x quality signal: the cost
-    lane reads a success count that the quality lane records. With cost first,
-    that count is always one run stale -- the signal would be computed from the
-    *previous* run's outcome, which is wrong rather than absent, and silently so.
-    So quality is placed ahead of cost.
+    **Order is load-bearing at run end**, and it points the opposite way from
+    how it did through 0.4.0. The tap dispatches lanes in list order, and
+    ``cost_per_successful_task`` is a cost x quality signal, so one of the two
+    has to go first.
 
-    This is the only inter-lane ordering dependency in the system, and it does
-    not breach the independence contract (Section 3.1): neither lane imports the
-    other, and each still produces its own signals correctly in isolation. What
-    the ordering buys is one *derived* signal. If that ever grows into a second
-    case, the honest fix is an explicit two-phase run-end rather than more
-    implicit ordering.
+    It used to be quality, because the cost lane read a success count the
+    quality lane wrote. That count can no longer be anything but zero: the
+    inline heuristic never claims success (it reports failure or abstains), and
+    the only component that can say a run *succeeded* is the judge, which
+    answers asynchronously and emits on its own span. So the cost lane's copy of
+    the signal is now unreachable through this ordering, and the dependency has
+    reversed -- the deferred quality span is where a final cost and a judged
+    outcome are both known, and it needs the cost.
+
+    Hence cost first: it publishes ``actual_cost`` on the run object before the
+    quality lane dispatches its judge. With quality first, an instant judge
+    (a test double, never a real model call) can answer before the cost is
+    written and silently drop the ratio -- a signal whose presence depends on a
+    race is worse than one that is honestly absent.
+
+    This remains the only inter-lane ordering dependency in the system, and it
+    does not breach the independence contract (Section 3.1): neither lane
+    imports the other, and each still produces its own signals correctly in
+    isolation. What the ordering buys is one *derived* signal. A second case
+    would justify an explicit two-phase run-end; one does not.
 
     Args:
         config: Active configuration.
+        tracer: Tracer the quality lane emits its deferred judge span with.
+            Must come from the same provider the tap was installed on, or those
+            spans are recorded by the global provider and a user who passed
+            their own gets none of them. ``None`` falls back to the global one,
+            which is correct for the default setup and for tests that build a
+            lane directly.
 
     Returns:
         Enabled lane instances, in dispatch order.
     """
     lanes: list[Lane] = []
 
-    # Quality first -- see the ordering note above. Off by default (ADR-003), so
-    # for most users this branch does nothing and costs one boolean check.
+    # Cost first -- see the ordering note above.
+    if config.cost_lane:
+        from optio.lanes.cost.lane import CostLane
+
+        lanes.append(CostLane(config, ledger=_ledger(config)))
+
+    # Off by default (ADR-003), so for most users this branch does nothing and
+    # costs one boolean check.
     if config.quality_lane:
         from optio.lanes.quality.lane import QualityLane
 
@@ -70,13 +96,9 @@ def enabled_lanes(config: Config) -> list[Lane]:
                 config,
                 judge=cast("Judge | None", config.judge),
                 store=_quality_store(config),
+                tracer=tracer,
             )
         )
-
-    if config.cost_lane:
-        from optio.lanes.cost.lane import CostLane
-
-        lanes.append(CostLane(config, ledger=_ledger(config)))
 
     if config.behavior_lane:
         from optio.lanes.behavior.lane import BehaviorLane

@@ -1,17 +1,31 @@
 """Quality signals from a real instrumented run (M5-4 gate).
 
 The path a user actually takes: enable the lane, supply a judge, run an agent,
-read the attributes off the exported run span.
+read the attributes off the exported spans.
+
+**Two spans, deliberately.** The heuristic answers synchronously, so its verdict
+is an attribute on the run span. The judge is a model call dispatched at run
+end, so it answers after that span has closed -- and an ended span cannot be
+modified. Its scores go on a linked ``optio.quality`` span instead.
+
+Until 0.4.0 they were asserted on the run span and the tests passed, because
+each built a fresh lane whose cold thread pool let an instant in-process judge
+win a race that a real one always loses. That is why the helpers here drain the
+judge explicitly rather than assuming it has finished, and why one test measures
+that the run itself did not wait.
 
 This is also where ``gen_ai.run.cost_per_successful_task`` is proven end to end.
 It is the only cross-lane signal in the system -- the cost lane owns the
-numerator, the quality lane owns the denominator, and neither imports the other
--- so it only works if the registry orders quality ahead of cost. Nothing in the
-unit tests would catch that ordering breaking.
+numerator, the judge owns the denominator, and neither imports the other -- so
+it only works if the registry orders cost ahead of quality, so that the cost is
+on the run object before the judge is dispatched. Nothing in the unit tests
+would catch that ordering breaking.
 """
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -69,8 +83,8 @@ def run_agent(
     steps: int = 3,
     output_tokens: int = 40,
 ) -> None:
-    """Drive a short instrumented run."""
-    installer.install_tap(config, provider)
+    """Drive a short instrumented run, and let any judge finish."""
+    tap = installer.install_tap(config, provider)
     tracer = provider.get_tracer("test")
 
     with tracer.start_as_current_span("optio.run.test"), RunContext(config=config):
@@ -80,12 +94,55 @@ def run_agent(
                 span.set_attribute(semconv.GEN_AI_USAGE_INPUT_TOKENS, 200)
                 span.set_attribute(semconv.GEN_AI_USAGE_OUTPUT_TOKENS, output_tokens)
 
+    # The judge is asynchronous by design, so the assertions below have to wait
+    # for it rather than race it. Waiting *here*, after the run has closed, is
+    # also the proof that the run itself did not: a test that could only pass by
+    # blocking the run would fail at the `elapsed` assertion in
+    # `TestTheRunDoesNotWaitForTheJudge`.
+    if tap is not None:
+        drain(tap)
+
+
+def drain(tap: object, timeout: float = 5.0) -> None:
+    """Wait for every enabled lane's outstanding async work."""
+    for lane in tap.lanes:  # type: ignore[attr-defined]
+        drain_lane = getattr(lane, "drain", None)
+        if drain_lane is not None:
+            assert drain_lane(timeout) == 0, "a judge did not finish within the drain timeout"
+
 
 def signals(exporter: InMemorySpanExporter) -> dict[str, object]:
     """Return the optio signals on the run span."""
     span: ReadableSpan = next(
         s for s in exporter.get_finished_spans() if s.name.startswith("optio.run")
     )
+    return {k: v for k, v in (span.attributes or {}).items() if k in semconv.EMITTED_SIGNALS}
+
+
+def link_span_ids(span: ReadableSpan) -> list[int]:
+    """Return the span ids this span links to."""
+    ids = []
+    for link in span.links:
+        context = link.context
+        if context is not None:
+            ids.append(context.span_id)
+    return ids
+
+
+def quality_signals(exporter: InMemorySpanExporter) -> dict[str, object]:
+    """Return the optio signals on the deferred quality span.
+
+    A separate span because the judge answers after the run span has closed and
+    an ended span cannot be modified -- so this is where every judge-derived
+    signal lives. Returns an empty mapping when no quality span was emitted,
+    which is what "the judge did not score this run" looks like to a consumer.
+    """
+    span = next(
+        (s for s in exporter.get_finished_spans() if s.name == semconv.QUALITY_SPAN_NAME),
+        None,
+    )
+    if span is None:
+        return {}
     return {k: v for k, v in (span.attributes or {}).items() if k in semconv.EMITTED_SIGNALS}
 
 
@@ -122,11 +179,75 @@ class TestWithAJudge:
     ) -> None:
         config = Config(quality_lane=True, quality_sample_rate=1.0, judge=judge_scoring())
         run_agent(provider, config)
-        emitted = signals(exporter)
+        emitted = quality_signals(exporter)
 
         assert emitted[semconv.RUN_QUALITY_GROUNDEDNESS] == 0.92
         assert emitted[semconv.RUN_QUALITY_TASK_SUCCESS] == 0.85
         assert emitted[semconv.RUN_SUCCESS] is True
+
+    def test_the_quality_span_links_back_to_the_run(
+        self, provider: TracerProvider, exporter: InMemorySpanExporter
+    ) -> None:
+        """Scores on an unjoinable span are scores nobody can use.
+
+        Linked rather than parented: the run span was exported before this one
+        existed, and a child of a finished span is rendered by backends as a
+        gap or dropped outright.
+        """
+        config = Config(quality_lane=True, quality_sample_rate=1.0, judge=judge_scoring())
+        run_agent(provider, config)
+
+        spans = exporter.get_finished_spans()
+        run = next(s for s in spans if s.name == "optio.run.test")
+        quality = next(s for s in spans if s.name == semconv.QUALITY_SPAN_NAME)
+
+        run_context = run.get_span_context()
+        assert run_context is not None
+        assert link_span_ids(quality) == [run_context.span_id]
+        assert (quality.attributes or {})[semconv.RUN_ID] is not None
+
+    def test_the_run_does_not_wait_for_the_judge(
+        self, provider: TracerProvider, exporter: InMemorySpanExporter
+    ) -> None:
+        """The constraint the whole deferred design exists to satisfy.
+
+        Through 0.4.0 this was satisfied trivially, by discarding every score.
+        Now that scores actually arrive, something has to keep the wait from
+        creeping back onto the agent's path -- a judge slow enough to be
+        unmissable in the timing is the cheapest way to say so.
+        """
+        judged = threading.Event()
+
+        def slow_judge(_request: JudgeRequest) -> JudgeScores:
+            judged.wait(timeout=5.0)
+            return JudgeScores(task_success=0.9)
+
+        config = Config(quality_lane=True, quality_sample_rate=1.0, judge=slow_judge)
+        tap = installer.install_tap(config, provider)
+        tracer = provider.get_tracer("test")
+
+        started = time.perf_counter()
+        with (
+            tracer.start_as_current_span("optio.run.test"),
+            RunContext(config=config),
+            tracer.start_as_current_span("chat") as span,
+        ):
+            span.set_attribute(semconv.GEN_AI_REQUEST_MODEL, "gpt-4o")
+            span.set_attribute(semconv.GEN_AI_USAGE_INPUT_TOKENS, 200)
+            span.set_attribute(semconv.GEN_AI_USAGE_OUTPUT_TOKENS, 40)
+        elapsed = time.perf_counter() - started
+
+        assert elapsed < 0.5, (
+            f"the run took {elapsed:.3f}s with a judge that had not answered; "
+            "run end is waiting for the judge"
+        )
+        assert semconv.RUN_QUALITY_TASK_SUCCESS not in quality_signals(exporter)
+
+        # Only now let it answer, and the score still arrives.
+        judged.set()
+        assert tap is not None
+        drain(tap)
+        assert quality_signals(exporter)[semconv.RUN_QUALITY_TASK_SUCCESS] == 0.9
 
     def test_cost_per_successful_task_is_emitted(
         self, provider: TracerProvider, exporter: InMemorySpanExporter
@@ -135,10 +256,16 @@ class TestWithAJudge:
         # did not exist; this is the first time it can be computed.
         config = Config(quality_lane=True, quality_sample_rate=1.0, judge=judge_scoring())
         run_agent(provider, config)
-        emitted = signals(exporter)
 
-        assert semconv.RUN_COST_PER_SUCCESSFUL_TASK in emitted
-        assert emitted[semconv.RUN_COST_PER_SUCCESSFUL_TASK] == emitted[semconv.RUN_ACTUAL_COST]
+        # On the quality span, because the numerator is final at run end and the
+        # denominator is not: the judge is the only thing that can say a run
+        # succeeded, and it answers afterwards. So this is the one place both
+        # halves are known, and the cost has to travel there on the run object.
+        emitted = quality_signals(exporter)
+        assert (
+            emitted[semconv.RUN_COST_PER_SUCCESSFUL_TASK]
+            == signals(exporter)[semconv.RUN_ACTUAL_COST]
+        )
 
     def test_a_failed_run_reports_no_successful_tasks(
         self, provider: TracerProvider, exporter: InMemorySpanExporter
@@ -150,7 +277,7 @@ class TestWithAJudge:
             judge=judge_scoring(task_success=0.1),
         )
         run_agent(provider, config)
-        emitted = signals(exporter)
+        emitted = quality_signals(exporter)
 
         assert emitted[semconv.RUN_SUCCESS] is False
         assert semconv.RUN_COST_PER_SUCCESSFUL_TASK not in emitted
@@ -191,7 +318,7 @@ class TestSamplingGovernsSpend:
         run_agent(provider, config)
 
         assert called == []
-        assert semconv.RUN_QUALITY_TASK_SUCCESS not in signals(exporter)
+        assert quality_signals(exporter) == {}
 
 
 class TestFailOpen:
@@ -208,4 +335,6 @@ class TestFailOpen:
         # The run completed and the other lanes are unaffected.
         assert semconv.RUN_ACTUAL_COST in emitted
         assert semconv.RUN_LOOP_STATE in emitted
-        assert semconv.RUN_QUALITY_TASK_SUCCESS not in emitted
+        # And no quality span at all: a judge that raised produced no score, and
+        # an empty span asserting nothing is worse than no span (ADR-044).
+        assert quality_signals(exporter) == {}

@@ -17,9 +17,10 @@ The opposite rule governs the runtime -- see ``runtime/failopen.py``.
 from __future__ import annotations
 
 import functools
+import inspect
 import logging
 from collections.abc import Callable
-from typing import ParamSpec, TypeVar, overload
+from typing import Any, ParamSpec, TypeVar, cast, overload
 
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
@@ -161,6 +162,31 @@ def meter(
 
     def decorate(fn: Callable[P, R]) -> Callable[P, R]:
         tracer = provider.get_tracer("optio") if provider is not None else trace.get_tracer("optio")
+        span_name = f"optio.run.{fn.__name__}"
+
+        # An `async def` has to be wrapped by an `async def`. Wrapping one with
+        # the sync branch below measures the *construction of the coroutine* --
+        # `fn(...)` returns immediately, the `with` closes the run before a
+        # single step has run, and every signal is silently absent. The
+        # decorator looks applied and the agent works, which is the worst
+        # possible way to be wrong, and most agent code is async.
+        if inspect.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
+                # `RunContext` is a sync context manager used inside a
+                # coroutine, which is correct: it sets a `ContextVar`, and each
+                # asyncio task runs with its own copy of the context, so
+                # concurrent runs cannot see each other's.
+                with (
+                    tracer.start_as_current_span(span_name),
+                    RunContext(budget=resolved_budget, config=resolved_config),
+                ):
+                    return await fn(*args, **kwargs)
+
+            # `P` is preserved; only the return type is unrepresentable here,
+            # because `R` is already the coroutine type that `await` unwraps.
+            return cast("Callable[P, R]", async_wrapper)
 
         @functools.wraps(fn)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
@@ -168,7 +194,7 @@ def meter(
             # while the steps inside it start and end, and a span processor
             # cannot write back to a span that has already ended (see span_tap).
             with (
-                tracer.start_as_current_span(f"optio.run.{fn.__name__}"),
+                tracer.start_as_current_span(span_name),
                 RunContext(budget=resolved_budget, config=resolved_config),
             ):
                 return fn(*args, **kwargs)

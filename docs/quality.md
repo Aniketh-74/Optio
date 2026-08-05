@@ -47,14 +47,66 @@ manufacture the false assurance this lane exists to replace, on every run.
 
 So:
 
-| Situation | `gen_ai.run.success` |
-|---|---|
-| Run errored, produced nothing, or was truncated | `false` |
-| Judge scored `task_success` | `true`/`false` at the 0.5 threshold |
-| Everything else | **absent** |
+| Situation | `gen_ai.run.success` | Lands on |
+|---|---|---|
+| Run errored, produced nothing, or was truncated | `false` | the run span |
+| Judge scored `task_success` | `true`/`false` at the 0.5 threshold | the `optio.quality` span |
+| Everything else | **absent** | — |
 
 Absent means *unknown*. A policy must not read it as failure — see
 [signals.md](signals.md#absence-is-meaningful).
+
+## Where judge scores land
+
+**Judge scores are on their own span, not the run span.** This is the one thing to know before
+you build a dashboard on them.
+
+The judge is a model call dispatched when the run ends. It answers hundreds of milliseconds later,
+by which time the run span has closed — and an ended OpenTelemetry span cannot be modified. So
+there were two options: make the run wait for the judge, or emit the score somewhere else.
+Waiting would put model latency on your agent's return path, which is the one thing this library
+promises never to do. So the score gets its own span:
+
+```
+optio.run.your_agent            ← closes when your agent returns
+    gen_ai.run.actual_cost      = 0.0121
+    gen_ai.run.loop_state       = "healthy"
+    gen_ai.run.success          = false      ← only if the heuristic found failure
+
+optio.quality                   ← emitted when the judge answers, links → the run span
+    gen_ai.run.id                       = "8f2c…"
+    gen_ai.run.quality.groundedness     = 0.92
+    gen_ai.run.quality.task_success     = 0.85
+    gen_ai.run.success                  = true
+    gen_ai.run.cost_per_successful_task = 0.0121
+```
+
+Join the two on `gen_ai.run.id`, or follow the span link. A link rather than a parent-child
+relationship, because the run span was already exported — a child of a finished span is rendered
+by most backends as a gap, or dropped.
+
+> **Upgrading from 0.4.0 or earlier?** These four attributes used to be documented as living on
+> the run span. In practice they were never emitted at all: the lane dispatched the judge and then
+> polled it with a zero-second timeout on the next line, so any judge that made a network call
+> missed every time. If your dashboards query them on the run span, they have been reading an
+> empty set and now need to read `optio.quality`.
+
+### Making sure scores land before your process exits
+
+A short-lived script can finish before the judge answers. `drain()` waits, bounded:
+
+```python
+from optio.runtime.installer import install_tap
+
+tap = install_tap(config, provider)
+...  # run your agent
+
+for lane in tap.lanes:  # let outstanding judgements land
+    if hasattr(lane, "drain"):
+        lane.drain(timeout=5.0)  # returns how many were abandoned
+```
+
+Long-running services do not need this — the scores arrive while the process keeps running.
 
 ## Writing a judge
 
@@ -83,10 +135,14 @@ Rules the runner enforces so you don't have to:
 - **Scores outside `[0, 1]` are dropped, not clamped.** A judge returning `7` misread the scale;
   clamping to `1.0` would publish a confident wrong number where absence is honest.
 - **Return an empty `JudgeScores()` to decline.** No signal is emitted.
+- **At most 64 judgements are in flight at once.** Past that, further runs go unscored and a
+  warning is logged once. The pool is two threads wide, so a 200 ms judge sustains roughly ten
+  judged runs a second; beyond that, runs end faster than the judge can answer. Dropping the
+  extras keeps the queue from growing without bound. If you see that warning, lower
+  `quality_sample_rate` or make your judge faster.
 
-If the judge hasn't answered by the time the run ends, **no quality signal is emitted for that
-run**. A late score is worth less than a fast run, and the cost signals are already correct
-without it.
+The run never waits for it. Scores are emitted on a separate span when they arrive — see
+[where judge scores land](#where-judge-scores-land).
 
 ### Content and privacy
 
@@ -96,13 +152,20 @@ your data going to your model; we neither log nor retain it.
 
 ## Cost per successful task
 
-Enabling this lane is what makes `gen_ai.run.cost_per_successful_task` appear. It is the number
-that says whether an agent is worth running: the cost lane owns the numerator, this lane owns the
-denominator.
+Enabling this lane **with a judge** is what makes `gen_ai.run.cost_per_successful_task` appear. It
+is the number that says whether an agent is worth running: the cost lane owns the numerator, the
+judge owns the denominator.
 
-It stays **absent** when a run wasn't scored — an unknown denominator makes the ratio unknowable,
-and publishing a headline unit-economics figure derived from a guess would be worse than
-publishing nothing.
+It is emitted on the **`optio.quality` span**, for the same reason the scores are: the cost is
+final when the run ends and the outcome is not. That span is the only place both are known.
+
+It stays **absent** when a run wasn't judged, or was judged a failure — an unknown denominator
+makes the ratio unknowable, and a run that succeeded at nothing has a cost and a failure, both
+already reported separately. Publishing a headline unit-economics figure derived from a guess
+would be worse than publishing nothing.
+
+The heuristic alone cannot produce this number, because it never reports success. A judge is
+required.
 
 ## Overhead
 
@@ -111,12 +174,15 @@ Measured by the CI benchmark job, not asserted:
 | Path | Result | Budget (§11) |
 |---|---|---|
 | Inline heuristic, per step | mean 127 µs, p99 243 µs | < 10 ms p99 |
-| Run end with a 200 ms judge | **0.57 ms** | judge is off the hot path |
+| Run end with a 200 ms judge | **mean 24 µs, p99 243 µs** | judge is off the hot path |
 | Per-step state, in process | ~1 µs, flat at 10 steps and 10,000 | — |
 | Per-step state, shared store | ~600 µs, of which ~500 µs is the round trip | < 3 round trips |
 
 That second row is the guarantee that makes the judge tier usable: a slow judge does not become a
-slow agent.
+slow agent. It is ~24× cheaper than the 0.57 ms published through 0.4.0, because run end no longer
+polls the judge at all — it dispatches and returns. A test asserts a run with an unanswered judge
+completes in under 500 ms, so an implementation that started waiting again would fail rather than
+merely get slower.
 
 The last row is worth reading carefully before you enable `store_backend="redis"` with this lane.
 Quality emits nothing per step — it only scores at run end — so on a shared store it pays a round
