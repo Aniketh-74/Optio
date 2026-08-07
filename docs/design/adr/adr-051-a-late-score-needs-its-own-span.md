@@ -96,7 +96,7 @@ unbounded queue is a leak that ends the process.
 
 **Good.** The judge tier works. Every quality signal is emitted, including
 `cost_per_successful_task`. Run end got ~24× cheaper — mean 24 µs against the
-0.57 ms published through 0.4.0 — because it dispatches and returns rather than
+0.57 ms published through 0.3.0 — because it dispatches and returns rather than
 polling. A test asserts a run with an unanswered judge finishes in under 500 ms,
 so an implementation that starts waiting again fails rather than merely slows.
 

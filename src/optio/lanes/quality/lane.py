@@ -15,7 +15,7 @@ modified. Its scores go on a **separate ``optio.quality`` span**, linked back to
 the run's and carrying ``gen_ai.run.id`` to join on
 (:mod:`optio.lanes.quality.deferred`).
 
-Through 0.4.0 this lane dispatched the judge and then polled it with a
+Through 0.3.0 this lane dispatched the judge and then polled it with a
 zero-second timeout on the very next line, so a judge that made a network call
 never delivered a single score. See :mod:`optio.lanes.quality.judge`.
 
@@ -214,7 +214,7 @@ class QualityLane(Lane):
             step_count: How many steps the run took. The counted total, not the
                 size of a buffer -- ``docs/quality.md`` shows users passing this
                 number straight into their own evaluator, and it reported a
-                capped buffer's length until 0.4.0.
+                capped buffer's length through 0.3.0.
         """
         if not tier.uses_judge or not self._runner.enabled:
             return

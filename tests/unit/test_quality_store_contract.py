@@ -54,7 +54,7 @@ def _step(
 class TestRecording:
     def test_the_summary_counts_every_step(self, store: QualityStore) -> None:
         """A count, not a buffer size. This is the number a user's own evaluator
-        receives, and it reported a retention cap until 0.3.1."""
+        receives, and it reported a retention cap through 0.3.0."""
         for _ in range(100):
             store.record("run", _step())
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "optio"
-version = "0.3.0"
+version = "0.4.0"
 description = "Economic cost and outcome quality signals for agent runs, in OpenTelemetry GenAI vocabulary."
 readme = "README.md"
 requires-python = ">=3.10"

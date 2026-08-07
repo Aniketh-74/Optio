@@ -35,7 +35,7 @@ def enabled_lanes(config: Config, tracer: Tracer | None = None) -> list[Lane]:
     optional dependencies of a lane are only touched when it is enabled.
 
     **Order is load-bearing at run end**, and it points the opposite way from
-    how it did through 0.4.0. The tap dispatches lanes in list order, and
+    how it did through 0.3.0. The tap dispatches lanes in list order, and
     ``cost_per_successful_task`` is a cost x quality signal, so one of the two
     has to go first.
 

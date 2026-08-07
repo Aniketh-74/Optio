@@ -259,8 +259,13 @@ is trivially achievable by never detecting anything.
 
 ## Status
 
-> **alpha (0.3.0).** All three lanes work end to end and every signal in the contract is
+> **alpha (0.4.0).** All three lanes work end to end and every signal in the contract is
 > implemented, on 99% coverage with 100% on the ledger and the fail-open guard.
+>
+> - **Judge scores moved to their own span in 0.4.0.** Through 0.3.0 the LLM-judge could not
+>   emit a score at all, which took `gen_ai.run.cost_per_successful_task` with it. If you query
+>   the quality signals on the run span, repoint those queries at `optio.quality`
+>   ([ADR-051](https://github.com/Aniketh-74/Optio/blob/main/docs/design/adr/adr-051-a-late-score-needs-its-own-span.md)).
 >
 > - **State is in-process by default**, which needs no infrastructure and meters one process. Set
 >   `store_backend="redis"` for runs sharded across workers — proved by four processes metering

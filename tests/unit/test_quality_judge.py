@@ -295,7 +295,7 @@ class TestRequestCarriesNoContentByDefault:
 class TestScoresArePushedRatherThanPolled:
     """The delivery mode that can actually deliver a model call's result.
 
-    Polling with a zero-second timeout -- what the lane did through 0.4.0 --
+    Polling with a zero-second timeout -- what the lane did through 0.3.0 --
     could only succeed if the judge finished between two adjacent statements on
     the calling thread. Against a warm pool that is 2 successes in 200 with an
     *instant* judge, and none at all with a realistic one.

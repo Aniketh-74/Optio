@@ -8,7 +8,7 @@ is an attribute on the run span. The judge is a model call dispatched at run
 end, so it answers after that span has closed -- and an ended span cannot be
 modified. Its scores go on a linked ``optio.quality`` span instead.
 
-Until 0.4.0 they were asserted on the run span and the tests passed, because
+Through 0.3.0 they were asserted on the run span and the tests passed, because
 each built a fresh lane whose cold thread pool let an instant in-process judge
 win a race that a real one always loses. That is why the helpers here drain the
 judge explicitly rather than assuming it has finished, and why one test measures
@@ -211,7 +211,7 @@ class TestWithAJudge:
     ) -> None:
         """The constraint the whole deferred design exists to satisfy.
 
-        Through 0.4.0 this was satisfied trivially, by discarding every score.
+        Through 0.3.0 this was satisfied trivially, by discarding every score.
         Now that scores actually arrive, something has to keep the wait from
         creeping back onto the agent's path -- a judge slow enough to be
         unmissable in the timing is the cheapest way to say so.

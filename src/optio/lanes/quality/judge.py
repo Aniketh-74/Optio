@@ -15,7 +15,7 @@ cannot be modified.** The score is pushed to a callback when it lands
 back to the run's -- see :mod:`optio.lanes.quality.deferred`.
 
 This replaces dispatching and immediately polling with a zero-second timeout,
-which is what this module did through 0.4.0. That could only ever succeed if the
+which is what this module did through 0.3.0. That could only ever succeed if the
 judge finished between two adjacent statements on the same thread: measured
 against a warm worker pool it collected 2 scores in 200 runs with an *instant*
 in-process judge, and none at all with a 200 ms one. The tests passed because
