@@ -19,7 +19,7 @@ importable, documented and typed ([ADR-012](docs/design/adr/adr-012-the-public-a
 If you need one of those, please open an issue rather than importing it — a real use case can
 be promoted to the top level deliberately.
 
-## [Unreleased]
+## [0.4.0] — 2026-08-07
 
 ### Fixed
 
@@ -1812,7 +1812,8 @@ never touches the hot path.
 - **The enterprise control plane (M6+) is not implemented** and is out of scope for this line
   of releases (ADR-007).
 
-[Unreleased]: https://github.com/Aniketh-74/Optio/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Aniketh-74/Optio/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Aniketh-74/Optio/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Aniketh-74/Optio/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Aniketh-74/Optio/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Aniketh-74/Optio/commit/840e7f8

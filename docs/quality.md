@@ -85,7 +85,7 @@ Join the two on `gen_ai.run.id`, or follow the span link. A link rather than a p
 relationship, because the run span was already exported — a child of a finished span is rendered
 by most backends as a gap, or dropped.
 
-> **Upgrading from 0.4.0 or earlier?** These four attributes used to be documented as living on
+> **Upgrading from 0.3.0 or earlier?** These four attributes used to be documented as living on
 > the run span. In practice they were never emitted at all: the lane dispatched the judge and then
 > polled it with a zero-second timeout on the next line, so any judge that made a network call
 > missed every time. If your dashboards query them on the run span, they have been reading an
@@ -123,7 +123,7 @@ def my_judge(request: JudgeRequest) -> JudgeScores:
     return JudgeScores(groundedness=verdict.grounded, task_success=verdict.solved)
 ```
 
-`request.step_count` is **how many steps the run actually took**. Before 0.3.1 it was the size of
+`request.step_count` is **how many steps the run actually took**. Through 0.3.0 it was the size of
 an internal span buffer capped at 64, so any longer run understated itself — a 500-step run was
 reported as 64. If you calibrated a rubric against that number, it will now be larger and correct.
 
@@ -179,7 +179,7 @@ Measured by the CI benchmark job, not asserted:
 | Per-step state, shared store | ~600 µs, of which ~500 µs is the round trip | < 3 round trips |
 
 That second row is the guarantee that makes the judge tier usable: a slow judge does not become a
-slow agent. It is ~24× cheaper than the 0.57 ms published through 0.4.0, because run end no longer
+slow agent. It is ~24× cheaper than the 0.57 ms published through 0.3.0, because run end no longer
 polls the judge at all — it dispatches and returns. A test asserts a run with an unanswered judge
 completes in under 500 ms, so an implementation that started waiting again would fail rather than
 merely get slower.

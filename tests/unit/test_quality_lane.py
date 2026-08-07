@@ -104,7 +104,7 @@ def judging_lane(judge: Judge, **overrides: object) -> tuple[QualityLane, InMemo
 def judged_values(lane: QualityLane, exporter: InMemorySpanExporter) -> dict[str, object]:
     """Drain the judge, then return the attributes of the quality span.
 
-    Draining rather than sleeping or hoping: through 0.4.0 these assertions
+    Draining rather than sleeping or hoping: through 0.3.0 these assertions
     raced a worker pool and passed only because a fresh lane's cold pool gave an
     instant judge a head start no real one gets.
 

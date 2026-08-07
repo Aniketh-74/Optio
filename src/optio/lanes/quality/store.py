@@ -61,7 +61,7 @@ class QualitySummary:
         step_count: How many steps the run took. The counted total, not the
             size of any buffer -- ``docs/quality.md`` shows users passing this
             straight into their own evaluator, and it reported a retention cap
-            until 0.3.1.
+            through 0.3.0.
         last: The final step, which is the only one the heuristic scores. Never
             ``None`` for a run that recorded a step; the type admits it so a
             backend cannot be forced to invent one.
